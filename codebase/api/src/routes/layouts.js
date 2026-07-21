@@ -14,13 +14,23 @@ import {
 } from "../services/shelfFaces.js";
 import {
   assertInsideOrThrow,
+  assertNoOverlapOrThrow,
   collectContainmentViolations,
+  collectOverlapViolations,
+  entityInsideLayout,
   validatePolygonRing,
 } from "../services/polygonContainment.js";
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../services/zones.js";
 import { packAislesAndShelves } from "../services/layoutPacker.js";
 import { assignCategoryMix } from "../services/categoryMixPacker.js";
+import { applyFixtureTypesToShelves } from "../services/categoryFixtureDefaults.js";
 import { productAllowedForShelf } from "../services/categoryTree.js";
+import {
+  SegmentError,
+  getShelfSegment,
+  normalizeRotationDeg,
+  normalizeShelfSegments,
+} from "../services/shelfSegments.js";
 
 export const layoutsRouter = Router();
 
@@ -42,7 +52,8 @@ function refreshValidation(layout) {
   const config = getConfig(layout.vertical);
   const aisleViolations = validateAisles(layout, config);
   const containmentViolations = collectContainmentViolations(layout);
-  layout.validation = { aisleViolations, containmentViolations };
+  const overlapViolations = collectOverlapViolations(layout);
+  layout.validation = { aisleViolations, containmentViolations, overlapViolations };
   layout.autoCalc = computeAutoCalc(layout, config);
   layout.autoCalc.durationMs = Date.now() - started;
   layout.updatedAt = now();
@@ -57,8 +68,11 @@ function refreshValidation(layout) {
   return layout;
 }
 
-function saveNormalized(layout) {
+function saveNormalized(layout, options = {}) {
   normalizeLayout(layout);
+  if (!options.skipRevisionBump) {
+    layout.contentRevision = (Number(layout.contentRevision) || 0) + 1;
+  }
   refreshValidation(layout);
   repo.saveLayout(layout);
   return layout;
@@ -67,6 +81,9 @@ function saveNormalized(layout) {
 function containmentError(res, err) {
   if (err?.code === "containment_violation") {
     return res.status(400).json({ error: "containment_violation" });
+  }
+  if (err?.code === "overlap_violation") {
+    return res.status(400).json({ error: "overlap_violation" });
   }
   throw err;
 }
@@ -99,6 +116,18 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
     heightMeters: heightMeters != null ? Number(heightMeters) : 3,
     shape: shape || "rectangle",
     polygon: poly,
+    storeEnvelope: {
+      x: 0,
+      y: 0,
+      widthMeters: Number(widthMeters),
+      depthMeters: Number(depthMeters),
+    },
+    contentRevision: 0,
+    submittedRevision: null,
+    reviewComment: null,
+    reviewedAt: null,
+    reviewedBy: null,
+    lastSubmittedAt: null,
     aisles: [],
     shelves: [],
     fixtures: [],
@@ -110,7 +139,7 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
     validation: { aisleViolations: [] },
     updatedAt: now(),
   };
-  saveNormalized(layout);
+  saveNormalized(layout, { skipRevisionBump: true });
   audit(req.user.email, "layout.create", layout.id);
   res.status(201).json(layout);
 });
@@ -138,14 +167,16 @@ layoutsRouter.patch("/layouts/:layoutId", authRequired, (req, res) => {
   const layout = repo.getLayout(req.params.layoutId);
   if (!layout) return res.status(404).json({ error: "not_found" });
 
-  const { name, status, widthMeters, depthMeters, heightMeters, shape, polygon } = req.body || {};
+  const { name, status, widthMeters, depthMeters, heightMeters, shape, polygon, storeEnvelope } =
+    req.body || {};
   const mutatingGeometry =
     widthMeters != null ||
     depthMeters != null ||
     heightMeters != null ||
     name != null ||
     shape != null ||
-    polygon != null;
+    polygon != null ||
+    storeEnvelope != null;
   const mutatingStatus = status != null;
   const config = getConfig(layout.vertical);
 
@@ -167,26 +198,157 @@ layoutsRouter.patch("/layouts/:layoutId", authRequired, (req, res) => {
     if (status === "in_review" && layout.status === "draft") {
       repo.saveLayoutVersion(layout, "submit_for_review");
       audit(req.user.email, "layout.version.snapshot", layout.id);
+      layout.submittedRevision = Number(layout.contentRevision) || 0;
+      layout.lastSubmittedAt = now();
+      layout.reviewComment = null;
     }
     layout.status = status;
     audit(req.user.email, "layout.status", `${layout.id}:${status}`);
   }
   if (name != null) layout.name = name;
-  if (widthMeters != null) layout.widthMeters = Number(widthMeters);
-  if (depthMeters != null) layout.depthMeters = Number(depthMeters);
+  if (widthMeters != null) {
+    layout.widthMeters = Number(widthMeters);
+    layout.storeEnvelope = {
+      ...(layout.storeEnvelope || { x: 0, y: 0 }),
+      widthMeters: Number(widthMeters),
+      depthMeters: layout.storeEnvelope?.depthMeters ?? layout.depthMeters,
+    };
+  }
+  if (depthMeters != null) {
+    layout.depthMeters = Number(depthMeters);
+    layout.storeEnvelope = {
+      ...(layout.storeEnvelope || { x: 0, y: 0 }),
+      widthMeters: layout.storeEnvelope?.widthMeters ?? layout.widthMeters,
+      depthMeters: Number(depthMeters),
+    };
+  }
   if (heightMeters != null) layout.heightMeters = Number(heightMeters);
   if (shape != null) layout.shape = shape;
+  if (storeEnvelope != null && typeof storeEnvelope === "object") {
+    layout.storeEnvelope = {
+      x: Number(storeEnvelope.x) || 0,
+      y: Number(storeEnvelope.y) || 0,
+      widthMeters: Number(storeEnvelope.widthMeters) || layout.widthMeters,
+      depthMeters: Number(storeEnvelope.depthMeters) || layout.depthMeters,
+    };
+  }
   if (polygon != null) {
     const polyCheck = validatePolygonRing(polygon);
     if (!polyCheck.ok) return res.status(400).json({ error: polyCheck.error });
     layout.polygon = polygon;
     if (polygon.length >= 3) layout.shape = shape || "polygon";
+    const env =
+      layout.storeEnvelope ||
+      (storeEnvelope && typeof storeEnvelope === "object" ? storeEnvelope : null) ||
+      { x: 0, y: 0, widthMeters: layout.widthMeters, depthMeters: layout.depthMeters };
+    layout.storeEnvelope = {
+      x: Number(env.x) || 0,
+      y: Number(env.y) || 0,
+      widthMeters: Number(env.widthMeters) || layout.widthMeters,
+      depthMeters: Number(env.depthMeters) || layout.depthMeters,
+    };
+    // Never shrink store footprint to polygon AABB — envelope stays the full store size.
+    layout.widthMeters = layout.storeEnvelope.widthMeters;
+    layout.depthMeters = layout.storeEnvelope.depthMeters;
+  } else if (!layout.storeEnvelope) {
+    layout.storeEnvelope = {
+      x: 0,
+      y: 0,
+      widthMeters: layout.widthMeters,
+      depthMeters: layout.depthMeters,
+    };
   }
 
-  saveNormalized(layout);
+  saveNormalized(layout, { skipRevisionBump: mutatingStatus && !mutatingGeometry });
   audit(req.user.email, "layout.update", layout.id);
   res.json(layout);
 });
+
+function reviewSubmitHandler(req, res) {
+  const layout = repo.getLayout(req.params.layoutId);
+  if (!layout) return res.status(404).json({ error: "not_found" });
+  if (!["Designer", "Admin"].includes(req.user.role)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  const allowed =
+    layout.status === "draft" ||
+    layout.status === "rejected" ||
+    (Number(layout.contentRevision) || 0) > (Number(layout.submittedRevision) ?? -1);
+  if (!allowed) return res.status(400).json({ error: "submit_not_allowed" });
+  if (layout.status === "draft" || layout.status === "rejected") {
+    repo.saveLayoutVersion(layout, "submit_for_review");
+    audit(req.user.email, "layout.version.snapshot", layout.id);
+  }
+  layout.status = "in_review";
+  layout.submittedRevision = Number(layout.contentRevision) || 0;
+  layout.lastSubmittedAt = now();
+  layout.reviewComment = null;
+  layout.reviewedAt = null;
+  layout.reviewedBy = null;
+  saveNormalized(layout, { skipRevisionBump: true });
+  audit(req.user.email, "layout.review.submit", layout.id);
+  res.json(layout);
+}
+
+function reviewApproveHandler(req, res) {
+  const layout = repo.getLayout(req.params.layoutId);
+  if (!layout) return res.status(404).json({ error: "not_found" });
+  if (!["Approver", "Admin"].includes(req.user.role)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  const config = getConfig(layout.vertical);
+  if (config.approvalWorkflowEnabled === false && req.user.role !== "Admin") {
+    return res.status(403).json({ error: "approval_disabled" });
+  }
+  if (layout.status !== "in_review") return res.status(400).json({ error: "not_in_review" });
+  layout.status = "approved";
+  layout.reviewedAt = now();
+  layout.reviewedBy = req.user.email;
+  saveNormalized(layout, { skipRevisionBump: true });
+  audit(req.user.email, "layout.review.approve", layout.id);
+  res.json(layout);
+}
+
+function reviewRejectHandler(req, res) {
+  const layout = repo.getLayout(req.params.layoutId);
+  if (!layout) return res.status(404).json({ error: "not_found" });
+  if (!["Approver", "Admin"].includes(req.user.role)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  const config = getConfig(layout.vertical);
+  if (config.approvalWorkflowEnabled === false && req.user.role !== "Admin") {
+    return res.status(403).json({ error: "approval_disabled" });
+  }
+  if (layout.status !== "in_review") return res.status(400).json({ error: "not_in_review" });
+  const comment = String(req.body?.comment || "").trim();
+  if (!comment) return res.status(400).json({ error: "review_comment_required" });
+  layout.status = "rejected";
+  layout.reviewComment = comment.slice(0, 2000);
+  layout.reviewedAt = now();
+  layout.reviewedBy = req.user.email;
+  saveNormalized(layout, { skipRevisionBump: true });
+  audit(req.user.email, "layout.review.reject", `${layout.id}:${comment.length}`);
+  res.json(layout);
+}
+
+layoutsRouter.post(
+  "/layouts/:layoutId/review/submit",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  reviewSubmitHandler
+);
+layoutsRouter.post(
+  "/layouts/:layoutId/review/approve",
+  authRequired,
+  requireRoles("Approver", "Admin"),
+  reviewApproveHandler
+);
+layoutsRouter.post(
+  "/layouts/:layoutId/review/reject",
+  authRequired,
+  requireRoles("Approver", "Admin"),
+  reviewRejectHandler
+);
 
 layoutsRouter.get("/layouts/:layoutId/versions", authRequired, (req, res) => {
   const layout = repo.getLayout(req.params.layoutId);
@@ -211,6 +373,7 @@ layoutsRouter.post("/layouts/:layoutId/aisles", authRequired, requireRoles("Desi
   layout.aisles = layout.aisles || [];
   try {
     assertInsideOrThrow(aisle, "aisle", layout);
+    assertNoOverlapOrThrow(aisle, "aisle", layout);
   } catch (err) {
     return containmentError(res, err);
   }
@@ -249,6 +412,7 @@ layoutsRouter.patch(
     }
     try {
       assertInsideOrThrow(aisle, "aisle", layout);
+      assertNoOverlapOrThrow(aisle, "aisle", layout, { ignoreId: aisle.id });
     } catch (err) {
       return containmentError(res, err);
     }
@@ -424,6 +588,7 @@ layoutsRouter.post("/layouts/:layoutId/fixtures", authRequired, requireRoles("De
   const shelf = fixtureToShelf(fixture);
   try {
     assertInsideOrThrow(shelf, "shelf", layout);
+    assertNoOverlapOrThrow(shelf, "shelf", layout);
   } catch (err) {
     return containmentError(res, err);
   }
@@ -452,6 +617,7 @@ layoutsRouter.patch(
     if (patch.label != null) target.label = patch.label;
     try {
       assertInsideOrThrow(target, "shelf", layout);
+      assertNoOverlapOrThrow(target, "shelf", layout, { ignoreId: target.id });
     } catch (err) {
       return containmentError(res, err);
     }
@@ -497,6 +663,7 @@ layoutsRouter.post("/layouts/:layoutId/shelves", authRequired, requireRoles("Des
   layout.shelves = layout.shelves || [];
   try {
     assertInsideOrThrow(shelf, "shelf", layout);
+    assertNoOverlapOrThrow(shelf, "shelf", layout);
   } catch (err) {
     return containmentError(res, err);
   }
@@ -518,13 +685,23 @@ layoutsRouter.patch(
     const shelf = (layout.shelves || []).find((s) => s.id === req.params.shelfId);
     if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
     const patch = req.body || {};
-    for (const key of ["x", "y", "widthMeters", "depthMeters", "heightMeters", "rotationDeg", "usableWidthMeters"]) {
+    for (const key of ["x", "y", "widthMeters", "depthMeters", "heightMeters", "usableWidthMeters"]) {
       if (patch[key] != null) shelf[key] = Number(patch[key]);
     }
+    if (patch.rotationDeg != null) shelf.rotationDeg = normalizeRotationDeg(patch.rotationDeg);
     if (patch.label != null) shelf.label = patch.label;
     if (patch.type != null) shelf.type = patch.type;
     if (patch.aisleId !== undefined) shelf.aisleId = patch.aisleId || null;
     if (Array.isArray(patch.levels)) shelf.levels = patch.levels;
+    if (Array.isArray(patch.segments)) {
+      try {
+        shelf.segments = patch.segments;
+        normalizeShelfSegments(shelf);
+      } catch (err) {
+        if (err instanceof SegmentError) return res.status(400).json({ error: err.code });
+        throw err;
+      }
+    }
     if (patch.categoryId !== undefined) {
       const faceId = patch.faceId === "B" ? "B" : "A";
       setFaceCategory(shelf, faceId, patch.categoryId || null, patch.color);
@@ -544,6 +721,7 @@ layoutsRouter.patch(
     if (patch.color != null && patch.categoryId === undefined) shelf.color = patch.color;
     try {
       assertInsideOrThrow(shelf, "shelf", layout);
+      assertNoOverlapOrThrow(shelf, "shelf", layout, { ignoreId: shelf.id });
     } catch (err) {
       return containmentError(res, err);
     }
@@ -624,10 +802,14 @@ layoutsRouter.post(
     if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
     normalizeShelf(shelf);
     const faceId = req.body?.faceId === "B" ? "B" : "A";
+    const segmentId = req.body?.segmentId || null;
     const activeCategoryId = faceCategoryId(shelf, faceId);
     if (!activeCategoryId) return res.status(400).json({ error: "shelf_category_required" });
     const productId = req.body?.productId;
     if (!productId) return res.status(400).json({ error: "missing_fields" });
+    if (segmentId && !getShelfSegment(shelf, segmentId)) {
+      return res.status(404).json({ error: "segment_not_found" });
+    }
     const product = repo.listProducts().find((p) => p.id === productId);
     if (!product) return res.status(404).json({ error: "product_not_found" });
     const categories = repo.listCategories(layout.vertical);
@@ -639,6 +821,7 @@ layoutsRouter.post(
       shelf: shelfForGate,
       product,
       levelIndex: req.body?.levelIndex,
+      segmentId,
     });
     const facings = clampFacings(req.body?.facings, preview.maxFacings);
     const placement = {
@@ -649,6 +832,7 @@ layoutsRouter.post(
       maxFacings: preview.maxFacings,
       positionX: Number(req.body?.positionX || 0),
       faceId,
+      segmentId: segmentId || undefined,
     };
     const pog = facePlanogram(shelf, faceId);
     pog.push(placement);
@@ -691,8 +875,12 @@ layoutsRouter.post("/layouts/:layoutId/planogram/preview", authRequired, (req, r
   if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
   normalizeShelf(shelf);
   const faceId = req.body?.faceId === "B" ? "B" : "A";
+  const segmentId = req.body?.segmentId || null;
   const activeCategoryId = faceCategoryId(shelf, faceId);
   if (!activeCategoryId) return res.status(400).json({ error: "shelf_category_required" });
+  if (segmentId && !getShelfSegment(shelf, segmentId)) {
+    return res.status(404).json({ error: "segment_not_found" });
+  }
   const product = repo.listProducts().find((p) => p.id === req.body?.productId);
   if (!product) return res.status(404).json({ error: "product_not_found" });
   res.json(
@@ -700,6 +888,7 @@ layoutsRouter.post("/layouts/:layoutId/planogram/preview", authRequired, (req, r
       shelf: { ...shelf, categoryId: activeCategoryId },
       product,
       levelIndex: req.body?.levelIndex,
+      segmentId,
     })
   );
 });
@@ -746,24 +935,41 @@ layoutsRouter.post(
       }
       const categories = repo.listCategories().filter((c) => c.vertical === layout.vertical);
       const assigned = assignCategoryMix(packed.shelves, categoryMix, categories);
-      layout.shelves = assigned.shelves;
+      layout.shelves = applyFixtureTypesToShelves(
+        assigned.shelves,
+        categoryMix,
+        categories,
+        config
+      );
       layout.shelfMappings = assigned.shelfMappings;
     } else {
       layout.shelves = packed.shelves;
       layout.shelfMappings = [];
     }
 
+    let droppedOutside = 0;
+    layout.aisles = (layout.aisles || []).filter((a) => {
+      if (entityInsideLayout(a, "aisle", layout)) return true;
+      droppedOutside += 1;
+      return false;
+    });
+    layout.shelves = (layout.shelves || []).filter((s) => {
+      if (entityInsideLayout(s, "shelf", layout)) return true;
+      droppedOutside += 1;
+      return false;
+    });
+
     layout.fixtures = [];
     layout.mappings = [];
     saveNormalized(layout);
-    audit(req.user.email, "layout.autogenerate", `${layout.id}:${packed.shelves.length}`);
+    audit(req.user.email, "layout.autogenerate", `${layout.id}:${layout.shelves.length}`);
     res.json({
       ...layout,
       generated: {
-        aisles: packed.aisles.length,
-        shelves: packed.shelves.length,
+        aisles: layout.aisles.length,
+        shelves: layout.shelves.length,
         categoryMapped: categoryMix.length > 0,
-        skippedOutsideCount: packed.skippedOutsideCount ?? 0,
+        skippedOutsideCount: (packed.skippedOutsideCount ?? 0) + droppedOutside,
       },
       replaced: replaceExisting && hasContent,
     });

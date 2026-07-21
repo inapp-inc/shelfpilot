@@ -1,4 +1,5 @@
 /** Dual-face shelf helpers: normalize legacy ↔ faces[], display numbers. */
+import { normalizeRotationDeg, normalizeShelfSegments } from "./shelfSegments.js";
 
 export function isDoubleSidedType(type) {
   return type === "gondola";
@@ -50,10 +51,12 @@ export function normalizeShelf(shelf) {
   if (!shelf) return shelf;
   const doubleSided = shelf.doubleSided ?? isDoubleSidedType(shelf.type);
   shelf.doubleSided = doubleSided;
+  shelf.rotationDeg = normalizeRotationDeg(shelf.rotationDeg);
   if (!Array.isArray(shelf.faces) || !shelf.faces.length) {
     shelf.faces = buildFacesFromLegacy(shelf);
   }
   syncLegacyFromFaces(shelf);
+  normalizeShelfSegments(shelf);
   if (!shelf.displayNumber) shelf.displayNumber = null;
   return shelf;
 }

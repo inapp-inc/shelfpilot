@@ -8,8 +8,11 @@
  */
 import { randomUUID } from "node:crypto";
 import {
+  entityInsideLayout,
   layoutBoundaryPolygon,
   rectFullyInsidePolygon,
+  shelfInsidePolygon,
+  overlapsAnyShelf,
 } from "./polygonContainment.js";
 import { assignDisplayNumbers, isDoubleSidedType } from "./shelfFaces.js";
 
@@ -86,7 +89,7 @@ export function packAislesAndShelves(layout, options = {}) {
   const defaultLevels = tmpl.defaultLevels;
   const gap = 0.1;
   const margin = 0.25;
-  const minAisleRun = Math.max(1.0, usable);
+  const minAisleRun = Math.max(0.8, minAisle);
 
   const xs = poly.map((p) => p.x);
   const ys = poly.map((p) => p.y);
@@ -133,6 +136,24 @@ export function packAislesAndShelves(layout, options = {}) {
   }
 
   function pushAisle(a) {
+    const layoutForCheck = { ...layout, polygon: poly, shape: poly?.length >= 3 ? "polygon" : layout?.shape };
+    const candidate = {
+      id: "aisle-check",
+      name: "Aisle",
+      path: [],
+      categoryId: null,
+      color: undefined,
+      violations: [],
+      ...a,
+    };
+    if (!entityInsideLayout(candidate, "aisle", layoutForCheck)) {
+      skippedOutsideCount += 1;
+      return;
+    }
+    if (overlapsAnyShelf(candidate, { ...layoutForCheck, shelves })) {
+      skippedOutsideCount += 1;
+      return;
+    }
     aisles.push({
       id: `aisle-${randomUUID().slice(0, 6)}`,
       name: `Aisle ${++aisleSeq}`,
@@ -144,6 +165,24 @@ export function packAislesAndShelves(layout, options = {}) {
     });
   }
 
+  function tentativeShelf(x, y, rotationDeg, widthM, depthM) {
+    const rot = ((Number(rotationDeg) || 0) % 360 + 360) % 360;
+    const run = rot === 90 || rot === 270 ? depthM : widthM;
+    const dep = rot === 90 || rot === 270 ? widthM : depthM;
+    return {
+      x,
+      y,
+      rotationDeg,
+      usableWidthMeters: run,
+      widthMeters: run,
+      depthMeters: dep,
+    };
+  }
+
+  function shelfFitsAt(x, y, rotationDeg, widthM, depthM) {
+    return shelfInsidePolygon(tentativeShelf(x, y, rotationDeg, widthM, depthM), poly);
+  }
+
   /** Pack shelves + interleaved aisles inside a sub-rectangle (still clipped to polygon). */
   function packRegion(x0, y0, x1, y1, regionOrient) {
     if (x1 - x0 < usable || y1 - y0 < depth) return;
@@ -152,7 +191,7 @@ export function packAislesAndShelves(layout, options = {}) {
       while (y + depth <= y1 - margin + 1e-9) {
         let x = x0 + margin;
         while (x + usable <= x1 - margin + 1e-9) {
-          if (rectFullyInsidePolygon(x, y, usable, depth, poly)) {
+          if (shelfFitsAt(x, y, 0, usable, depth)) {
             shelves.push(makeShelf(x, y, 0, usable, depth));
           } else {
             skippedOutsideCount += 1;
@@ -179,7 +218,7 @@ export function packAislesAndShelves(layout, options = {}) {
       while (x + depth <= x1 - margin + 1e-9) {
         let y = y0 + margin;
         while (y + usable <= y1 - margin + 1e-9) {
-          if (rectFullyInsidePolygon(x, y, depth, usable, poly)) {
+          if (shelfFitsAt(x, y, 90, depth, usable)) {
             shelves.push(makeShelf(x, y, 90, depth, usable));
           } else {
             skippedOutsideCount += 1;
@@ -246,6 +285,27 @@ export function packAislesAndShelves(layout, options = {}) {
   }
 
   const numbered = assignDisplayNumbers(shelves);
+  const layoutForCheck = { ...layout, polygon: poly, shape: poly?.length >= 3 ? "polygon" : layout?.shape };
+  const filteredShelves = [];
+  for (const s of numbered) {
+    if (!entityInsideLayout(s, "shelf", layoutForCheck)) {
+      skippedOutsideCount += 1;
+      continue;
+    }
+    filteredShelves.push(s);
+  }
+  const finalAisles = [];
+  for (const a of aisles) {
+    if (!entityInsideLayout(a, "aisle", layoutForCheck)) {
+      skippedOutsideCount += 1;
+      continue;
+    }
+    if (overlapsAnyShelf(a, { ...layoutForCheck, shelves: filteredShelves })) {
+      skippedOutsideCount += 1;
+      continue;
+    }
+    finalAisles.push(a);
+  }
 
   const durationMs = Number((performance.now() - started).toFixed(3));
   console.log(
@@ -261,10 +321,10 @@ export function packAislesAndShelves(layout, options = {}) {
     })
   );
   return {
-    aisles,
-    shelves: numbered,
-    aisleCount: aisles.length,
-    shelfCount: numbered.length,
+    aisles: finalAisles,
+    shelves: filteredShelves,
+    aisleCount: finalAisles.length,
+    shelfCount: filteredShelves.length,
     durationMs,
     orientation: orient,
     droppedOutsidePolygon: 0,

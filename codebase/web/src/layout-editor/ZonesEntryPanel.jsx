@@ -9,6 +9,7 @@ export default function ZonesEntryPanel({
   onDeleteZone,
   onPatchEntry,
   onDeleteEntry,
+  onSelectZone,
 }) {
   const zones = layout?.zones || [];
   const entries = layout?.entryPoints || [];
@@ -26,7 +27,16 @@ export default function ZonesEntryPanel({
           const meta = ZONE_TYPES[z.type] || ZONE_TYPES.special;
           const selected = selection?.kind === "zone" && selection.id === z.id;
           return (
-            <div key={z.id} className={`zone-card ${selected ? "selected" : ""}`}>
+            <div
+              key={z.id}
+              className={`zone-card ${selected ? "selected" : ""}`}
+              onClick={() => onSelectZone?.(z.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") onSelectZone?.(z.id);
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                 <span style={{ width: 12, height: 12, borderRadius: 3, background: z.color || meta.color }} />
                 <input

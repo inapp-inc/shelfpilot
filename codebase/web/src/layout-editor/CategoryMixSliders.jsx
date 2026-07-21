@@ -27,6 +27,8 @@ function rebalanceMix(rows, changedIndex, nextPercent) {
   return next;
 }
 
+import { FIXTURE_TYPES } from "../referenceCatalog.js";
+
 export default function CategoryMixSliders({ mix, onChange, disabled }) {
   const total = mix.reduce((s, r) => s + Number(r.percent || 0), 0);
   const valid = total === 100;
@@ -41,6 +43,24 @@ export default function CategoryMixSliders({ mix, onChange, disabled }) {
         <div key={row.categoryId} className="mix-row">
           <span className="mix-emoji">{row.emoji || "📦"}</span>
           <span className="mix-label">{row.label || row.categoryId}</span>
+          <select
+            value={row.fixtureType || "shelf"}
+            disabled={disabled}
+            onChange={(e) => {
+              const next = mix.map((r, i) =>
+                i === idx ? { ...r, fixtureType: e.target.value } : r
+              );
+              onChange(next);
+            }}
+            style={{ fontSize: 10, padding: "2px 4px", borderRadius: 6, border: "1px solid #e5e7eb", maxWidth: 72 }}
+            title="Fixture type"
+          >
+            {Object.entries(FIXTURE_TYPES).map(([key, t]) => (
+              <option key={key} value={key}>
+                {t.label}
+              </option>
+            ))}
+          </select>
           <input
             type="range"
             min="0"

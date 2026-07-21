@@ -276,14 +276,23 @@ function layoutToPayload(layout) {
   const n = normalizeLayout({ ...layout });
   return JSON.stringify({
     polygon: n.polygon || [],
+    storeEnvelope: n.storeEnvelope || null,
     aisles: n.aisles || [],
     shelves: n.shelves || [],
     fixtures: n.fixtures || [],
+    zones: n.zones || [],
+    entryPoints: n.entryPoints || [],
     mappings: n.mappings || [],
     aisleMappings: n.aisleMappings || [],
     shelfMappings: n.shelfMappings || [],
     validation: n.validation || { aisleViolations: [] },
     autoCalc: n.autoCalc || null,
+    reviewComment: n.reviewComment ?? null,
+    reviewedAt: n.reviewedAt ?? null,
+    reviewedBy: n.reviewedBy ?? null,
+    contentRevision: n.contentRevision ?? 0,
+    submittedRevision: n.submittedRevision ?? null,
+    lastSubmittedAt: n.lastSubmittedAt ?? null,
   });
 }
 

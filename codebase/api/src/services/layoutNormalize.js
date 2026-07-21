@@ -55,8 +55,30 @@ export function shelfToFixture(s) {
   };
 }
 
+function normalizeStoreEnvelope(layout) {
+  const w = Number(layout.widthMeters) || 10;
+  const d = Number(layout.depthMeters) || 8;
+  const raw = layout.storeEnvelope;
+  if (raw && typeof raw === "object") {
+    return {
+      x: Number(raw.x) || 0,
+      y: Number(raw.y) || 0,
+      widthMeters: Number(raw.widthMeters) || w,
+      depthMeters: Number(raw.depthMeters) || d,
+    };
+  }
+  return { x: 0, y: 0, widthMeters: w, depthMeters: d };
+}
+
 export function normalizeLayout(layout) {
   if (!layout) return layout;
+  layout.storeEnvelope = normalizeStoreEnvelope(layout);
+  layout.contentRevision = Number(layout.contentRevision) || 0;
+  layout.submittedRevision =
+    layout.submittedRevision != null ? Number(layout.submittedRevision) : null;
+  if (layout.reviewComment != null && typeof layout.reviewComment !== "string") {
+    layout.reviewComment = String(layout.reviewComment);
+  }
   const fixtures = layout.fixtures || [];
   let shelves = layout.shelves || [];
   if (!shelves.length && fixtures.length) {

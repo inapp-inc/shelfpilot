@@ -105,23 +105,54 @@ export function maxLengthInsideY(x, y, width, maxLen, polygon, step = 0.1) {
   return 0;
 }
 
-/** Floor-plan footprint in meters (accounts for 90° rotation). */
-export function shelfFloorFootprint(shelf) {
-  const x = Number(shelf.x) || 0;
-  const y = Number(shelf.y) || 0;
-  const rot = ((Number(shelf.rotationDeg) || 0) % 360 + 360) % 360;
+/** Local W×D in meters (unrotated shelf run × depth). */
+export function shelfLocalSize(shelf) {
   const usable = Number(shelf.usableWidthMeters ?? shelf.widthMeters) || 0;
   const depth = Number(shelf.depthMeters) || 0;
-  const widthM = Number(shelf.widthMeters) || usable;
-  if (rot === 90 || rot === 270) {
-    return { x, y, w: widthM, d: depth || usable };
-  }
-  return { x, y, w: usable || widthM, d: depth };
+  return { w: usable || 1.2, d: depth || 0.6 };
+}
+
+/** Rotated corner points in layout coordinates. */
+export function shelfRotatedCorners(shelf) {
+  const cx = Number(shelf.x) || 0;
+  const cy = Number(shelf.y) || 0;
+  const { w, d } = shelfLocalSize(shelf);
+  const rad = (((Number(shelf.rotationDeg) || 0) % 360) + 360) % 360 * (Math.PI / 180);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return [
+    [0, 0],
+    [w, 0],
+    [w, d],
+    [0, d],
+  ].map(([lx, ly]) => ({
+    x: cx + lx * cos - ly * sin,
+    y: cy + lx * sin + ly * cos,
+  }));
+}
+
+/** Floor-plan footprint in meters (supports arbitrary rotationDeg). */
+export function shelfFloorFootprint(shelf) {
+  const corners = shelfRotatedCorners(shelf);
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  return {
+    corners,
+    x: Math.min(...xs),
+    y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs),
+    d: Math.max(...ys) - Math.min(...ys),
+  };
 }
 
 export function shelfFootprint(shelf) {
   const { x, y, w, d } = shelfFloorFootprint(shelf);
   return { x, y, w, d };
+}
+
+export function shelfInsidePolygon(shelf, polygon) {
+  const corners = shelfRotatedCorners(shelf);
+  return corners.every((c) => pointInPolygon(c, polygon));
 }
 
 export function aisleFootprint(aisle, layout) {
@@ -153,6 +184,9 @@ export function entityInsideLayout(entity, kind, layout) {
   const poly = layoutBoundaryPolygon(layout);
   if (kind === "entryPoint") {
     return pointInPolygon({ x: Number(entity.x) || 0, y: Number(entity.y) || 0 }, poly);
+  }
+  if (kind === "shelf") {
+    return shelfInsidePolygon(entity, poly);
   }
   const fp =
     kind === "aisle"
@@ -192,4 +226,115 @@ export function assertInsideOrThrow(entity, kind, layout) {
   const err = new Error("containment_violation");
   err.code = "containment_violation";
   throw err;
+}
+
+function pointInAabb(px, py, rect, eps = 1e-6) {
+  return (
+    px >= rect.x - eps &&
+    px <= rect.x + rect.w + eps &&
+    py >= rect.y - eps &&
+    py <= rect.y + rect.d + eps
+  );
+}
+
+function pointInShelfLocal(lx, ly, w, d, eps = 1e-6) {
+  return lx >= -eps && lx <= w + eps && ly >= -eps && ly <= d + eps;
+}
+
+function worldToShelfLocal(px, py, shelf) {
+  const cx = Number(shelf.x) || 0;
+  const cy = Number(shelf.y) || 0;
+  const rad = -((((Number(shelf.rotationDeg) || 0) % 360) + 360) % 360) * (Math.PI / 180);
+  const dx = px - cx;
+  const dy = py - cy;
+  return {
+    x: dx * Math.cos(rad) - dy * Math.sin(rad),
+    y: dx * Math.sin(rad) + dy * Math.cos(rad),
+  };
+}
+
+function aabbOverlap(a, b, eps = 1e-6) {
+  return !(
+    a.x + a.w <= b.x + eps ||
+    b.x + b.w <= a.x + eps ||
+    a.y + a.d <= b.y + eps ||
+    b.y + b.d <= a.y + eps
+  );
+}
+
+/** True when a shelf OBB intersects an axis-aligned aisle corridor. */
+export function shelfOverlapsAisleRect(shelf, aisleRect) {
+  const { w, d } = shelfLocalSize(shelf);
+  const sf = shelfFloorFootprint(shelf);
+  if (!aabbOverlap(sf, aisleRect)) return false;
+
+  const corners = shelfRotatedCorners(shelf);
+  if (corners.some((c) => pointInAabb(c.x, c.y, aisleRect))) return true;
+
+  const aisleCorners = rectCorners(aisleRect.x, aisleRect.y, aisleRect.w, aisleRect.d);
+  if (
+    aisleCorners.some((c) => {
+      const local = worldToShelfLocal(c.x, c.y, shelf);
+      return pointInShelfLocal(local.x, local.y, w, d);
+    })
+  ) {
+    return true;
+  }
+
+  return aabbOverlap(sf, aisleRect);
+}
+
+export function aisleOverlapsShelf(aisle, shelf, layout) {
+  return shelfOverlapsAisleRect(shelf, aisleFootprint(aisle, layout));
+}
+
+export function overlapsAnyShelf(aisle, layout, ignoreShelfId) {
+  const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+  for (const s of shelves) {
+    if (ignoreShelfId && s.id === ignoreShelfId) continue;
+    if (aisleOverlapsShelf(aisle, s, layout)) return s;
+  }
+  return null;
+}
+
+export function overlapsAnyAisle(shelf, layout, ignoreAisleId) {
+  for (const a of layout.aisles || []) {
+    if (ignoreAisleId && a.id === ignoreAisleId) continue;
+    if (aisleOverlapsShelf(a, shelf, layout)) return a;
+  }
+  return null;
+}
+
+export function collectOverlapViolations(layout) {
+  const violations = [];
+  const seen = new Set();
+  for (const a of layout.aisles || []) {
+    const hit = overlapsAnyShelf(a, layout);
+    if (!hit) continue;
+    const key = [a.id, hit.id].sort().join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    violations.push({ kind: "aisle", id: a.id, otherKind: "shelf", otherId: hit.id });
+  }
+  return violations;
+}
+
+export function assertNoOverlapOrThrow(entity, kind, layout, { ignoreId } = {}) {
+  if (kind === "aisle") {
+    const hit = overlapsAnyShelf(entity, layout, ignoreId);
+    if (hit) {
+      const err = new Error("overlap_violation");
+      err.code = "overlap_violation";
+      throw err;
+    }
+    return;
+  }
+  if (kind === "shelf") {
+    const hit = overlapsAnyAisle(entity, layout, ignoreId);
+    if (hit) {
+      const err = new Error("overlap_violation");
+      err.code = "overlap_violation";
+      throw err;
+    }
+  }
 }

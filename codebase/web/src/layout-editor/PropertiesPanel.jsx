@@ -1,4 +1,6 @@
 /** Properties for aisle corridor vs shelf height/levels/usable width. */
+import { FIXTURE_TYPES } from "../referenceCatalog.js";
+
 export default function PropertiesPanel({
   selection,
   layout,
@@ -40,6 +42,13 @@ export default function PropertiesPanel({
           onChange={(e) => onPatchAisle(a.id, { widthMeters: Number(e.target.value) })}
           style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
         />
+        <div className="mono" style={{ fontSize: 11, marginTop: 6, color: "#6b7280" }}>
+          Run × width:{" "}
+          {(a.orientation === "vertical"
+            ? `${Number(a.widthMeters || 0).toFixed(1)}×${(a.lengthMeters ?? 0).toFixed(1)}`
+            : `${(a.lengthMeters ?? Math.max(2, layout.widthMeters * 0.35)).toFixed(1)}×${Number(a.widthMeters || 0).toFixed(1)}`)}{" "}
+          m
+        </div>
         <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
           Min for {verticalLabel}: <span className="mono">{minAisle} m</span>
         </div>
@@ -60,11 +69,26 @@ export default function PropertiesPanel({
   const s = (layout.shelves || layout.fixtures || []).find((x) => x.id === selection.id);
   if (!s) return null;
   const levels = s.levels || [];
+  const displayNum = s.displayNumber != null ? `#${s.displayNumber}` : "—";
+  const typeLabel = (FIXTURE_TYPES[s.type] || FIXTURE_TYPES.shelf)?.label || s.type || "Shelf";
 
   return (
     <div className="props-panel">
       <div className="section-label">Shelf</div>
-      <div style={{ fontSize: 14, fontWeight: 700 }}>{s.label || s.type}</div>
+      <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 4, display: "block" }}>
+        Name
+      </label>
+      <input
+        type="text"
+        disabled={editDisabled}
+        value={s.label || ""}
+        placeholder={`Shelf ${displayNum}`}
+        onChange={(e) => onPatchShelf(s.id, { label: e.target.value })}
+        style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb", fontWeight: 700 }}
+      />
+      <div className="mono" style={{ fontSize: 11, marginTop: 8, color: "#6b7280" }}>
+        {displayNum} · {typeLabel}
+      </div>
       <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
         Usable face width (m)
       </label>
@@ -106,6 +130,43 @@ export default function PropertiesPanel({
         onChange={(e) => onPatchShelf(s.id, { depthMeters: Number(e.target.value) })}
         style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
       />
+      <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
+        Rotation (°)
+      </label>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input
+          className="mono"
+          type="number"
+          min="0"
+          max="359"
+          step="1"
+          disabled={editDisabled}
+          value={Math.round(((Number(s.rotationDeg) || 0) % 360 + 360) % 360)}
+          onChange={(e) => onPatchShelf(s.id, { rotationDeg: Number(e.target.value) })}
+          style={{ flex: 1, padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
+        />
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ padding: "6px 8px", fontSize: 11 }}
+          disabled={editDisabled}
+          onClick={() => onPatchShelf(s.id, { rotationDeg: (((Number(s.rotationDeg) || 0) - 90) % 360 + 360) % 360 })}
+        >
+          −90°
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ padding: "6px 8px", fontSize: 11 }}
+          disabled={editDisabled}
+          onClick={() => onPatchShelf(s.id, { rotationDeg: ((Number(s.rotationDeg) || 0) + 90) % 360 })}
+        >
+          +90°
+        </button>
+      </div>
+      <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+        Drag the handle on canvas · Shift = 15° snap
+      </div>
       <div className="section-label" style={{ marginTop: 14 }}>
         Levels ({levels.length})
       </div>

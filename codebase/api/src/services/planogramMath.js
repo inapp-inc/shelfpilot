@@ -43,11 +43,14 @@ export function clampFacings(requested, maxFacings) {
   return Math.min(n, max);
 }
 
-export function previewFacings({ shelf, product, levelIndex = 0 }) {
+export function previewFacings({ shelf, product, levelIndex = 0, segmentId = null }) {
   const started = performance.now();
   const dims = productDimensions(product);
-  const usable =
-    Number(shelf?.usableWidthMeters ?? shelf?.widthMeters) || 0;
+  let usable = Number(shelf?.usableWidthMeters ?? shelf?.widthMeters) || 0;
+  if (segmentId && Array.isArray(shelf?.segments)) {
+    const seg = shelf.segments.find((s) => s.id === segmentId);
+    if (seg) usable = Number(seg.widthMeters) || usable;
+  }
   const maxFacings = computeMaxFacings(usable, dims.widthMeters);
   const suggestedLevels = computeSuggestedLevels(shelf?.heightMeters, dims.heightMeters);
   const durationMs = Number((performance.now() - started).toFixed(3));

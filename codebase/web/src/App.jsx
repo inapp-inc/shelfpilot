@@ -597,7 +597,6 @@ export default function App() {
               <DashboardPage
                 portfolio={portfolio}
                 layouts={layouts}
-                vertical={vertical}
                 token={token}
                 onOpenLayout={openLayout}
               />

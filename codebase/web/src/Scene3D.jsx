@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { pointInPolygon } from "./layout-editor/polygonCanvas.js";
 
 function productFacingColor(productId) {
   let hash = 0;
@@ -8,6 +9,56 @@ function productFacingColor(productId) {
   for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) | 0;
   const hue = Math.abs(hash) % 360;
   return new THREE.Color(`hsl(${hue}, 62%, 48%)`);
+}
+
+function insideFloor(x, z, layout) {
+  if (layout.shape === "polygon" && layout.polygon?.length >= 3) {
+    return pointInPolygon(x, z, layout.polygon);
+  }
+  const w = layout.widthMeters || 10;
+  const d = layout.depthMeters || 10;
+  return x >= 0.35 && x <= w - 0.35 && z >= 0.35 && z <= d - 0.35;
+}
+
+function clampOrbitTarget(target, layout) {
+  const w = layout.widthMeters || 10;
+  const d = layout.depthMeters || 10;
+  target.x = Math.max(0.5, Math.min(w - 0.5, target.x));
+  target.z = Math.max(0.5, Math.min(d - 0.5, target.z));
+  target.y = Math.max(0.2, Math.min(2.5, target.y));
+}
+
+function clampOrbitCamera(camera, target, layout, maxDim) {
+  const margin = maxDim * 0.12;
+  const w = layout.widthMeters || 10;
+  const d = layout.depthMeters || 10;
+  camera.position.x = Math.max(-margin, Math.min(w + margin, camera.position.x));
+  camera.position.z = Math.max(-margin, Math.min(d + margin, camera.position.z));
+  camera.position.y = Math.max(0.6, Math.min(maxDim * 1.8, camera.position.y));
+  const dist = camera.position.distanceTo(target);
+  if (dist < 1.5) {
+    camera.position.copy(target).add(
+      camera.position.clone().sub(target).normalize().multiplyScalar(1.5)
+    );
+  }
+}
+
+function buildWalkerAvatar() {
+  const avatar = new THREE.Group();
+  const shirt = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.75 });
+  const pants = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.65 });
+
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.72, 14), shirt);
+  torso.position.y = 0.92;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 14), skin);
+  head.position.y = 1.38;
+  const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.08, 0.82, 10), pants);
+  legL.position.set(-0.11, 0.41, 0);
+  const legR = legL.clone();
+  legR.position.x = 0.11;
+  avatar.add(torso, head, legL, legR);
+  return avatar;
 }
 
 /** Immersive Three.js: Orbit (zoom/pan) or Walk; shelves, levels, planogram facings. */
@@ -139,6 +190,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       const w = Number(f.usableWidthMeters ?? f.widthMeters) || 1.2;
       const d = Number(f.depthMeters) || 0.6;
       const h = Number(f.heightMeters) || 2;
+      const rot = (((Number(f.rotationDeg) || 0) % 360) + 360) % 360 * (Math.PI / 180);
       let baseColor = new THREE.Color("#A30A2A");
       try {
         baseColor = new THREE.Color(f.color || "#A30A2A");
@@ -146,11 +198,15 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
         /* keep */
       }
 
+      const group = new THREE.Group();
+      group.position.set(Number(f.x) || 0, 0, Number(f.y) || 0);
+      group.rotation.y = -rot;
+
       const frameGeo = new THREE.BoxGeometry(w, 0.08, d);
       const frameMat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.7 });
       const frame = new THREE.Mesh(frameGeo, frameMat);
-      frame.position.set(f.x + w / 2, 0.04, f.y + d / 2);
-      scene.add(frame);
+      frame.position.set(w / 2, 0.04, d / 2);
+      group.add(frame);
       disposables.push(frameGeo, frameMat);
 
       const levels =
@@ -166,8 +222,8 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
         const boardGeo = new THREE.BoxGeometry(w * 0.96, 0.04, d * 0.92);
         const boardMat = new THREE.MeshStandardMaterial({ color: 0xf3f0eb, roughness: 0.85 });
         const board = new THREE.Mesh(boardGeo, boardMat);
-        board.position.set(f.x + w / 2, y, f.y + d / 2);
-        scene.add(board);
+        board.position.set(w / 2, y, d / 2);
+        group.add(board);
         disposables.push(boardGeo, boardMat);
       }
 
@@ -184,23 +240,31 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
           const mat = new THREE.MeshStandardMaterial({ color: facingColor, roughness: 0.55 });
           if (imageUrl) applyTexture(mat, imageUrl, disposables);
           const mesh = new THREE.Mesh(geo, mat);
-          mesh.position.set(f.x + boxW * (i + 0.5) + (Number(p.positionX) || 0), y, f.y + d * 0.35);
-          scene.add(mesh);
+          mesh.position.set(boxW * (i + 0.5) + (Number(p.positionX) || 0), y, d * 0.35);
+          group.add(mesh);
           disposables.push(geo, mat);
           facingBudget += 1;
         }
       }
+
+      scene.add(group);
     }
 
     let controls = null;
     const keys = new Set();
     let yaw = 0;
-    let pitch = 0;
+    let pitch = 0.2;
     let pointerLocked = false;
     let cleanupWalk = null;
+    let cleanupOrbit = null;
+    let avatar = null;
+    let walker = { x: cx, z: Math.min(cz + 2, Math.max(0.5, (layout.depthMeters || 10) - 0.5)) };
+    let lastWalker = { ...walker };
 
     if (walkMode) {
-      camera.position.set(cx, 1.6, Math.min(cz + 2, layout.depthMeters - 0.5));
+      avatar = buildWalkerAvatar();
+      scene.add(avatar);
+
       camera.rotation.order = "YXZ";
       const onKey = (e) => {
         if (e.type === "keydown") keys.add(e.code);
@@ -208,11 +272,9 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       };
       const onMove = (e) => {
         if (!pointerLocked) return;
-        yaw -= e.movementX * 0.002;
-        pitch -= e.movementY * 0.002;
-        pitch = Math.max(-1.2, Math.min(1.2, pitch));
-        camera.rotation.y = yaw;
-        camera.rotation.x = pitch;
+        yaw -= e.movementX * 0.0022;
+        pitch -= e.movementY * 0.0016;
+        pitch = Math.max(-0.35, Math.min(0.65, pitch));
       };
       const onClick = () => {
         renderer.domElement.requestPointerLock?.();
@@ -236,13 +298,22 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       };
     } else {
       camera.position.set(cx + maxDim * 0.55, maxDim * 0.75, cz + maxDim * 0.55);
-      camera.lookAt(cx, 0, cz);
+      camera.lookAt(cx, 0.5, cz);
       controls = new OrbitControls(camera, renderer.domElement);
       controls.target.set(cx, 0.5, cz);
       controls.enableDamping = true;
-      controls.maxPolarAngle = Math.PI * 0.49;
+      controls.maxPolarAngle = Math.PI / 2.05;
+      controls.minPolarAngle = 0.12;
       controls.minDistance = 2;
-      controls.maxDistance = maxDim * 4;
+      controls.maxDistance = maxDim * 2.2;
+      controls.enablePan = true;
+      controls.screenSpacePanning = true;
+      const onOrbitChange = () => {
+        clampOrbitTarget(controls.target, layout);
+        clampOrbitCamera(camera, controls.target, layout, maxDim);
+      };
+      controls.addEventListener("change", onOrbitChange);
+      cleanupOrbit = () => controls.removeEventListener("change", onOrbitChange);
     }
 
     const clock = new THREE.Clock();
@@ -250,20 +321,45 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
     const animate = () => {
       frame = requestAnimationFrame(animate);
       const dt = clock.getDelta();
-      if (walkMode) {
-        const speed = (keys.has("ShiftLeft") ? 5 : 2.5) * dt;
-        const forward = new THREE.Vector3();
-        camera.getWorldDirection(forward);
-        forward.y = 0;
-        forward.normalize();
+      if (walkMode && avatar) {
+        const speed = (keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 2.2) * dt;
+        const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
         const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-        if (keys.has("KeyW") || keys.has("ArrowUp")) camera.position.addScaledVector(forward, speed);
-        if (keys.has("KeyS") || keys.has("ArrowDown")) camera.position.addScaledVector(forward, -speed);
-        if (keys.has("KeyA") || keys.has("ArrowLeft")) camera.position.addScaledVector(right, -speed);
-        if (keys.has("KeyD") || keys.has("ArrowRight")) camera.position.addScaledVector(right, speed);
-        camera.position.y = 1.6;
-        camera.position.x = Math.max(0.3, Math.min(layout.widthMeters - 0.3, camera.position.x));
-        camera.position.z = Math.max(0.3, Math.min(layout.depthMeters - 0.3, camera.position.z));
+        const next = { x: walker.x, z: walker.z };
+        if (keys.has("KeyW") || keys.has("ArrowUp")) {
+          next.x += forward.x * speed;
+          next.z += forward.z * speed;
+        }
+        if (keys.has("KeyS") || keys.has("ArrowDown")) {
+          next.x -= forward.x * speed;
+          next.z -= forward.z * speed;
+        }
+        if (keys.has("KeyA") || keys.has("ArrowLeft")) {
+          next.x -= right.x * speed;
+          next.z -= right.z * speed;
+        }
+        if (keys.has("KeyD") || keys.has("ArrowRight")) {
+          next.x += right.x * speed;
+          next.z += right.z * speed;
+        }
+        if (insideFloor(next.x, next.z, layout)) {
+          walker = next;
+          lastWalker = { ...walker };
+        } else {
+          walker = { ...lastWalker };
+        }
+
+        avatar.position.set(walker.x, 0, walker.z);
+        avatar.rotation.y = yaw;
+
+        const followDist = 3.4;
+        const camHeight = 1.85 + pitch * 1.2;
+        camera.position.set(
+          walker.x - Math.sin(yaw) * followDist,
+          camHeight,
+          walker.z - Math.cos(yaw) * followDist
+        );
+        camera.lookAt(walker.x, 1.25, walker.z);
       } else {
         controls?.update();
       }
@@ -274,6 +370,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
     return () => {
       cancelAnimationFrame(frame);
       cleanupWalk?.();
+      cleanupOrbit?.();
       controls?.dispose();
       for (const d of disposables) {
         try {
@@ -290,7 +387,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
   return (
     <div
       ref={ref}
-      style={{ width: "100%", height: "100%", minHeight: 420, borderRadius: 8, overflow: "hidden", cursor: walkMode ? "crosshair" : "grab" }}
+      style={{ width: "100%", height: "100%", minHeight: 420, borderRadius: 8, overflow: "hidden", cursor: walkMode ? "pointer" : "grab" }}
     />
   );
 }

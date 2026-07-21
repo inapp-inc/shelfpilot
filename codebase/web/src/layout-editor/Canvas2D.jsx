@@ -1,13 +1,45 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FIXTURE_TYPES, ZONE_TYPES } from "../referenceCatalog.js";
+import ShelfBadge from "./ShelfBadge.jsx";
 import {
+  entityFitsPolygon,
+  entityPlacementValid,
   fromStageCoords,
   layoutCanvasBounds,
   pointInPolygon,
+  shelfFitsPolygon,
+  shelfLocalMeters,
   toStageCoords,
 } from "./polygonCanvas.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
+
+const EDGE_HIT_PX = 8;
+
+function hitTestResizeEdge(e, el) {
+  const rect = el.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const onN = y <= EDGE_HIT_PX;
+  const onS = y >= rect.height - EDGE_HIT_PX;
+  const onW = x <= EDGE_HIT_PX;
+  const onE = x >= rect.width - EDGE_HIT_PX;
+  if (!onN && !onS && !onW && !onE) return null;
+  let dir = "";
+  if (onN) dir += "n";
+  if (onS) dir += "s";
+  if (onW) dir += "w";
+  if (onE) dir += "e";
+  return dir || null;
+}
+
+function edgeCursor(dir) {
+  if (dir === "n" || dir === "s") return "ns-resize";
+  if (dir === "e" || dir === "w") return "ew-resize";
+  if (dir === "nw" || dir === "se") return "nwse-resize";
+  if (dir === "ne" || dir === "sw") return "nesw-resize";
+  return "default";
+}
 
 const HANDLE_DIRS = [
   ["nw", { left: -5, top: -5, cursor: "nwse-resize" }],
@@ -48,70 +80,17 @@ function isPlacerTool(tool) {
 }
 
 function shelfDrawSize(shelf) {
-  const rot = ((Number(shelf.rotationDeg) || 0) % 360 + 360) % 360;
-  const usable = Number(shelf.usableWidthMeters ?? shelf.widthMeters) || 1.2;
-  const depth = Number(shelf.depthMeters) || 0.6;
-  const widthM = Number(shelf.widthMeters) || usable;
-  if (rot === 90 || rot === 270) {
-    return { w: widthM, d: depth || usable };
-  }
-  return { w: usable, d: depth };
+  return shelfLocalMeters(shelf);
 }
 
-function ShelfBadge({ shelf }) {
-  const num = shelf.displayNumber;
-  if (!num) return null;
+function normalizeDeg(deg) {
+  return ((Number(deg) || 0) % 360 + 360) % 360;
+}
 
-  if (shelf.doubleSided && shelf.faces?.length >= 2) {
-    const faceA = shelf.faces.find((f) => f.id === "A") || shelf.faces[0];
-    const faceB = shelf.faces.find((f) => f.id === "B") || shelf.faces[1];
-    return (
-      <div
-        style={{
-          display: "flex",
-          width: "100%",
-          height: "100%",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 10,
-          fontWeight: 700,
-          lineHeight: 1.2,
-        }}
-      >
-        <span
-          className="mono"
-          style={{
-            flex: 1,
-            textAlign: "center",
-            padding: "2px 0",
-            background: faceA?.color ? `${faceA.color}44` : "rgba(163,10,42,0.15)",
-            color: "#1f2933",
-            borderRight: "1px solid rgba(31,41,51,0.15)",
-          }}
-        >
-          {num}A
-        </span>
-        <span
-          className="mono"
-          style={{
-            flex: 1,
-            textAlign: "center",
-            padding: "2px 0",
-            background: faceB?.color ? `${faceB.color}44` : "rgba(14,165,233,0.15)",
-            color: "#1f2933",
-          }}
-        >
-          {num}B
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#1f2933" }}>
-      {num}
-    </span>
-  );
+function snapDeg(deg, shiftKey) {
+  const n = normalizeDeg(deg);
+  if (!shiftKey) return Math.round(n);
+  return Math.round(n / 15) * 15;
 }
 
 /**
@@ -130,17 +109,30 @@ export default function Canvas2D({
   onDropTool,
   onPlaceClick,
   onResize,
+  onRotateShelf,
+  onWheelZoom,
+  categories,
   draftPolygon,
   onDrawVertex,
+  onDraftPolygonChange,
+  onPolygonChange,
 }) {
+  const floorRef = useRef(null);
   const bounds = layoutCanvasBounds(layout);
   const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
   const outsideIds = new Set(
-    (layout.validation?.containmentViolations || []).filter((v) => v.kind === "shelf").map((v) => v.id)
+    (layout.validation?.containmentViolations || []).map((v) => `${v.kind}:${v.id}`)
   );
-  const visibleShelves = shelves.filter((s) => !outsideIds.has(s.id));
   const drawing = paletteTool === "draw";
+  const editingArea = paletteTool === "edit-area";
   const poly = bounds.polygon;
+  const envelope = bounds.storeEnvelope;
+  const hasBoundaries = Boolean(poly?.length >= 3 && envelope);
+
+  const visibleShelves = useMemo(() => {
+    if (!poly) return shelves;
+    return shelves.filter((s) => shelfFitsPolygon(s, poly));
+  }, [shelves, poly]);
 
   function layoutPointFromEvent(e) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -157,10 +149,18 @@ export default function Canvas2D({
   // ---- Resize gesture (zones + aisles) ----
   const [resize, setResize] = useState(null);
   const [resizePreview, setResizePreview] = useState(null);
+  const [rotate, setRotate] = useState(null);
+  const [rotatePreview, setRotatePreview] = useState(null);
+  const [vertexDrag, setVertexDrag] = useState(null);
+  const [draftDrag, setDraftDrag] = useState(null);
   const resizeRef = useRef(null);
   const previewRef = useRef(null);
+  const rotateRef = useRef(null);
+  const rotatePreviewRef = useRef(null);
   resizeRef.current = resize;
   previewRef.current = resizePreview;
+  rotateRef.current = rotate;
+  rotatePreviewRef.current = rotatePreview;
 
   function rectFits(x, y, w, h) {
     if (poly) {
@@ -224,6 +224,13 @@ export default function Canvas2D({
       w = Math.max(r.min.w, snap(w));
       h = Math.max(r.min.h, snap(h));
       if (!rectFits(x, y, w, h)) return;
+      if (r.kind === "aisle") {
+        const tentative =
+          r.orientation === "vertical"
+            ? { id: r.id, x, y, widthMeters: w, lengthMeters: h, orientation: "vertical" }
+            : { id: r.id, x, y, widthMeters: h, lengthMeters: w, orientation: "horizontal" };
+        if (!entityPlacementValid(tentative, "aisle", bounds, layout, { ignoreId: r.id })) return;
+      }
       const next = { id: r.id, x, y, w, h };
       previewRef.current = next;
       setResizePreview(next);
@@ -255,25 +262,110 @@ export default function Canvas2D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resize, scale]);
 
-  const showHandles = !editDisabled && !drawing;
+  useEffect(() => {
+    if (!rotate) return undefined;
+    const onMove = (e) => {
+      const r = rotateRef.current;
+      if (!r) return;
+      const angle = Math.atan2(e.clientY - r.cy, e.clientX - r.cx) * (180 / Math.PI);
+      const delta = angle - r.startAngle;
+      const next = snapDeg(r.origDeg + delta, e.shiftKey);
+      rotatePreviewRef.current = next;
+      setRotatePreview(next);
+    };
+    const onUp = (e) => {
+      const r = rotateRef.current;
+      const deg = rotatePreviewRef.current;
+      if (r && deg != null && onRotateShelf) onRotateShelf(r.id, deg);
+      setRotate(null);
+      setRotatePreview(null);
+      rotatePreviewRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotate]);
+
+  useEffect(() => {
+    if (!vertexDrag) return undefined;
+    const onMove = (e) => {
+      const rect = vertexDrag.rect;
+      const sx = snap((e.clientX - rect.left) / scale);
+      const sy = snap((e.clientY - rect.top) / scale);
+      const { x, y } = fromStageCoords(sx, sy, bounds);
+      const next = vertexDrag.vertices.map((p, i) =>
+        i === vertexDrag.index ? { x: Math.max(0, x), y: Math.max(0, y) } : p
+      );
+      setVertexDrag((v) => (v ? { ...v, preview: next } : v));
+    };
+    const onUp = () => {
+      const preview = vertexDrag.preview;
+      setVertexDrag(null);
+      if (preview?.length >= 3) onPolygonChange?.(preview);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vertexDrag, scale, bounds]);
+
+  useEffect(() => {
+    if (!draftDrag) return undefined;
+    const onMove = (e) => {
+      const rect = draftDrag.rect;
+      const sx = snap((e.clientX - rect.left) / scale);
+      const sy = snap((e.clientY - rect.top) / scale);
+      const { x, y } = fromStageCoords(sx, sy, bounds);
+      const next = draftDrag.vertices.map((p, i) =>
+        i === draftDrag.index ? { x: Math.max(0, x), y: Math.max(0, y) } : p
+      );
+      setDraftDrag((v) => (v ? { ...v, preview: next } : v));
+    };
+    const onUp = () => {
+      const preview = draftDrag.preview;
+      setDraftDrag(null);
+      if (preview?.length >= 1) onDraftPolygonChange?.(preview);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftDrag, scale, bounds]);
+
+  useEffect(() => {
+    const el = floorRef.current;
+    if (!el || !onWheelZoom) return undefined;
+    const onWheel = (e) => onWheelZoom(e);
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [onWheelZoom]);
+
+  const showHandles = !editDisabled && !drawing && !editingArea;
+  const editVertices = vertexDrag?.preview || poly;
+  const draftVertices = draftDrag?.preview || draftPolygon;
 
   return (
     <div
+      ref={floorRef}
       className="floor-plan floor-plan-strict"
       style={{
         width: bounds.width * scale,
         height: bounds.height * scale,
         backgroundSize: `${scale}px ${scale}px`,
-        border: poly ? "none" : undefined,
-        cursor: drawing || isPlacerTool(paletteTool) ? "crosshair" : "default",
-        clipPath: poly
-          ? `polygon(${poly
-              .map(
-                (p) =>
-                  `${((p.x - bounds.minX) / bounds.width) * 100}% ${((p.y - bounds.minY) / bounds.height) * 100}%`
-              )
-              .join(", ")})`
-          : undefined,
+        background: hasBoundaries ? "transparent" : undefined,
+        backgroundImage: hasBoundaries ? "none" : undefined,
+        border: hasBoundaries ? "none" : undefined,
+        cursor: drawing || editingArea || isPlacerTool(paletteTool) ? "crosshair" : "default",
       }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -294,6 +386,7 @@ export default function Canvas2D({
         // released just off it onto the floor (fixes "select then instantly deselect").
         if (e.target !== e.currentTarget) return;
         if (drawing) return;
+        if (editingArea) return;
         if (paletteTool === "select" || editDisabled) setSelection(null);
       }}
       onClick={(e) => {
@@ -313,30 +406,94 @@ export default function Canvas2D({
         onPlaceClick(paletteTool, x, y);
       }}
     >
-      {(poly || draftPolygon?.length) ? (
+      {hasBoundaries || draftPolygon?.length ? (
         <svg
           width={bounds.width * scale}
           height={bounds.height * scale}
-          style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+          className="store-envelope-layer"
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: editingArea ? "auto" : "none",
+            zIndex: 0,
+          }}
         >
-          {poly ? (
-            <polygon
-              points={poly
-                .map((p) => {
-                  const st = toStageCoords(p.x, p.y, bounds);
-                  return `${st.x * scale},${st.y * scale}`;
-                })
-                .join(" ")}
-              fill="rgba(163,10,42,0.05)"
-              stroke="#A30A2A"
-              strokeWidth="2"
-              strokeDasharray="7 5"
-            />
+          {hasBoundaries ? (
+            <>
+              <defs>
+                <pattern
+                  id={`fixture-grid-${layout.id}`}
+                  width={scale}
+                  height={scale}
+                  patternUnits="userSpaceOnUse"
+                >
+                  <path
+                    d={`M ${scale} 0 L 0 0 0 ${scale}`}
+                    fill="none"
+                    stroke="#e5e7eb"
+                    strokeWidth="1"
+                  />
+                </pattern>
+              </defs>
+              <rect
+                className="store-envelope-rect"
+                x={(envelope.x - bounds.minX) * scale}
+                y={(envelope.y - bounds.minY) * scale}
+                width={envelope.widthMeters * scale}
+                height={envelope.depthMeters * scale}
+              />
+              <polygon
+                className="fixture-zone-poly"
+                points={poly
+                  .map((p) => {
+                    const st = toStageCoords(p.x, p.y, bounds);
+                    return `${st.x * scale},${st.y * scale}`;
+                  })
+                  .join(" ")}
+              />
+              <polygon
+                className="fixture-zone-grid"
+                points={poly
+                  .map((p) => {
+                    const st = toStageCoords(p.x, p.y, bounds);
+                    return `${st.x * scale},${st.y * scale}`;
+                  })
+                  .join(" ")}
+                fill={`url(#fixture-grid-${layout.id})`}
+                stroke="none"
+              />
+            </>
           ) : null}
+          {editingArea && editVertices?.length
+            ? editVertices.map((p, i) => {
+                const st = toStageCoords(p.x, p.y, bounds);
+                return (
+                  <circle
+                    key={i}
+                    className="polygon-vertex-handle"
+                    cx={st.x * scale}
+                    cy={st.y * scale}
+                    r="6"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      const rect = e.currentTarget.closest(".floor-plan")?.getBoundingClientRect();
+                      if (!rect) return;
+                      setVertexDrag({
+                        index: i,
+                        vertices: editVertices.map((v) => ({ ...v })),
+                        preview: editVertices.map((v) => ({ ...v })),
+                        rect,
+                      });
+                    }}
+                  />
+                );
+              })
+            : null}
           {draftPolygon?.length ? (
             <>
               <polyline
-                points={draftPolygon
+                points={draftVertices
                   .map((p) => {
                     const st = toStageCoords(p.x, p.y, bounds);
                     return `${st.x * scale},${st.y * scale}`;
@@ -344,11 +501,31 @@ export default function Canvas2D({
                   .join(" ")}
                 fill="none"
                 stroke="#0ea5e9"
-                strokeWidth="2"
+                strokeWidth="3"
               />
-              {draftPolygon.map((p, i) => {
+              {draftVertices.map((p, i) => {
                 const st = toStageCoords(p.x, p.y, bounds);
-                return <circle key={i} cx={st.x * scale} cy={st.y * scale} r="4" fill="#0ea5e9" />;
+                return (
+                  <circle
+                    key={`draft-${i}`}
+                    className="polygon-vertex-handle draft-vertex-handle"
+                    cx={st.x * scale}
+                    cy={st.y * scale}
+                    r="7"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      const rect = e.currentTarget.closest(".floor-plan")?.getBoundingClientRect();
+                      if (!rect) return;
+                      setDraftDrag({
+                        index: i,
+                        vertices: draftVertices.map((v) => ({ ...v })),
+                        preview: draftVertices.map((v) => ({ ...v })),
+                        rect,
+                      });
+                    }}
+                  />
+                );
               })}
             </>
           ) : null}
@@ -368,7 +545,7 @@ export default function Canvas2D({
         return (
           <div
             key={z.id}
-            className="zone"
+            className={`zone ${selected ? "selected" : ""}`}
             style={{
               left: st.x * scale,
               top: st.y * scale,
@@ -377,15 +554,36 @@ export default function Canvas2D({
               background: `${color}22`,
               border: `1.5px dashed ${color}`,
               boxShadow: selected ? `0 0 0 3px ${color}55` : "none",
-              // Zones sit at the bottom; even when selected they stay under shelves so
-              // shelves overlapping a zone remain clickable. Resize grips lift themselves.
-              zIndex: selected ? 2 : 0,
-              cursor: editDisabled || drawing ? "default" : "pointer",
+              zIndex: selected ? 8 : 0,
+              cursor: editDisabled || drawing ? "default" : selected ? "move" : "pointer",
+            }}
+            onMouseMove={(e) => {
+              if (!selected || editDisabled || drawing || paletteTool !== "select") return;
+              const dir = hitTestResizeEdge(e, e.currentTarget);
+              e.currentTarget.style.cursor = dir ? edgeCursor(dir) : "move";
+            }}
+            onMouseLeave={(e) => {
+              if (selected && !editDisabled) e.currentTarget.style.cursor = "move";
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
               if (drawing) return;
               setSelection({ kind: "zone", id: z.id });
+              if (editDisabled || paletteTool !== "select") return;
+              const dir = hitTestResizeEdge(e, e.currentTarget);
+              if (dir && showHandles) {
+                startResize(
+                  {
+                    kind: "zone",
+                    id: z.id,
+                    orientation: null,
+                    orig: { x: z.x || 0, y: z.y || 0, w: z.widthMeters || 1, h: z.depthMeters || 1 },
+                    min: { w: 1, h: 1 },
+                  },
+                  dir,
+                  e
+                );
+              }
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -472,6 +670,9 @@ export default function Canvas2D({
           >
             {bad ? <span className="bang">!</span> : null}
             <span className="aisle-label mono">{a.name || "Aisle"}</span>
+            <span className="aisle-dim mono">
+              {wMeters.toFixed(1)}×{Number(a.widthMeters || 0).toFixed(1)} m
+            </span>
             {selected && showHandles ? (
               <ResizeHandles
                 onStart={(dir, e) =>
@@ -497,8 +698,10 @@ export default function Canvas2D({
         const live = dragPos && dragPos.id === f.id ? dragPos : f;
         const selected =
           (selection?.kind === "shelf" || selection?.kind === "fixture") && selection.id === f.id;
+        const outside = outsideIds.has(`shelf:${f.id}`);
         const { w, d } = shelfDrawSize(live);
         const st = toStageCoords(live.x, live.y, bounds);
+        const rot = rotatePreview != null && rotate?.id === f.id ? rotatePreview : normalizeDeg(live.rotationDeg);
         const zone = f.temperatureZone || "ambient";
         const zoneClass =
           zone === "chilled" ? "shelf-chilled" : zone === "frozen" ? "shelf-frozen" : "";
@@ -507,26 +710,36 @@ export default function Canvas2D({
           f.doubleSided && faceA?.color
             ? `${faceA.color}33`
             : f.color || (zone === "chilled" ? "rgba(14,165,233,0.18)" : zone === "frozen" ? "rgba(56,189,248,0.22)" : "rgba(163,10,42,0.12)");
+        const segments = f.segments || [];
+        const usable = w;
         return (
           <div
             key={f.id}
-            className={`fx ${zoneClass}`}
+            className={`fx ${zoneClass} ${outside ? "fx-violation" : ""}`}
             style={{
               left: st.x * scale,
               top: st.y * scale,
               width: w * scale,
               height: d * scale,
               background: fillColor,
-              borderColor: selected ? "#A30A2A" : zone === "chilled" ? "#0ea5e9" : zone === "frozen" ? "#38bdf8" : "#1f2933",
+              borderColor: outside
+                ? "#dc2626"
+                : selected
+                  ? "#A30A2A"
+                  : zone === "chilled"
+                    ? "#0ea5e9"
+                    : zone === "frozen"
+                      ? "#38bdf8"
+                      : "#1f2933",
               boxShadow: selected ? "0 0 0 3px rgba(163,10,42,0.25)" : "none",
               cursor: editDisabled || drawing || paletteTool !== "select" ? "pointer" : "grab",
-              // Shelves are the primary interactive layer — always above zones/aisles so
-              // they can be clicked/selected even where a zone or aisle overlaps them.
               zIndex: selected ? 6 : 5,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              overflow: "hidden",
+              overflow: selected ? "visible" : "hidden",
+              transform: `rotate(${rot}deg)`,
+              transformOrigin: "top left",
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
@@ -545,7 +758,59 @@ export default function Canvas2D({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <ShelfBadge shelf={f} />
+            {selected && segments.length > 1
+              ? segments.map((seg, idx) => {
+                  const leftPct = (seg.offsetMeters / usable) * 100;
+                  const widthPct = (seg.widthMeters / usable) * 100;
+                  return (
+                    <div
+                      key={seg.id}
+                      className={seg.fillMode === "partial" ? "segment-partial" : ""}
+                      style={{
+                        position: "absolute",
+                        left: `${leftPct}%`,
+                        top: 0,
+                        width: `${widthPct}%`,
+                        height: "100%",
+                        borderLeft: idx > 0 ? "1px dashed rgba(31,41,51,0.35)" : "none",
+                        pointerEvents: "none",
+                        background:
+                          seg.fillMode === "partial"
+                            ? "repeating-linear-gradient(135deg, rgba(148,163,184,0.12) 0, rgba(148,163,184,0.12) 4px, transparent 4px, transparent 8px)"
+                            : "transparent",
+                      }}
+                    />
+                  );
+                })
+              : null}
+            {selected ? (
+              <span className="fixture-dim mono">
+                {w.toFixed(1)}×{d.toFixed(1)} m
+              </span>
+            ) : null}
+            <ShelfBadge shelf={f} pixelWidth={w * scale} categories={categories} />
+            {selected && showHandles && onRotateShelf ? (
+              <div
+                className="rotate-handle"
+                title="Drag to rotate · Shift = 15° snap"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  const rect = e.currentTarget.parentElement.getBoundingClientRect();
+                  const cx = rect.left + rect.width / 2;
+                  const cy = rect.top + rect.height / 2;
+                  setRotatePreview(null);
+                  rotatePreviewRef.current = null;
+                  setRotate({
+                    id: f.id,
+                    origDeg: normalizeDeg(f.rotationDeg),
+                    startAngle: Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI),
+                    cx,
+                    cy,
+                  });
+                }}
+              />
+            ) : null}
           </div>
         );
       })}

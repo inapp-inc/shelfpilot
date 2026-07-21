@@ -4,9 +4,7 @@ import { api } from "../api.js";
 import DonutChart from "./charts/DonutChart.jsx";
 import BarChart from "./charts/BarChart.jsx";
 
-export default function DashboardPage({ portfolio, layouts, vertical, token, onOpenLayout }) {
-  const vMeta = VERTICALS[vertical] || VERTICALS.retail;
-
+export default function DashboardPage({ portfolio, layouts, token, onOpenLayout }) {
   const sorted = useMemo(
     () =>
       [...layouts].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
@@ -71,7 +69,6 @@ export default function DashboardPage({ portfolio, layouts, vertical, token, onO
         <h2 className="page-title">
           <span className="module-emoji">📊</span> Dashboard
         </h2>
-        <span className="catalog-vertical-badge">{vMeta.label}</span>
       </div>
 
       <div className="panel" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

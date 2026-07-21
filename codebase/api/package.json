@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test test/health.test.js test/shelfpilot.test.js test/planogram.test.js test/autogen.test.js test/merch-layers.test.js test/category-mix.test.js test/dual-face.test.js"
+    "test": "node --test test/health.test.js test/shelfpilot.test.js test/planogram.test.js test/autogen.test.js test/merch-layers.test.js test/category-mix.test.js test/dual-face.test.js test/client-feedback.test.js test/zones-aisles.test.js test/rotation-segments.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

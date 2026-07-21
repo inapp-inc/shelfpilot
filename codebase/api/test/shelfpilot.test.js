@@ -326,7 +326,7 @@ test("legacy fixtures synthesize shelves on GET; shelf planogram facings clamp",
     await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/aisles`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ name: "Main", widthMeters: 1.6, x: 0, y: 0 }),
+      body: JSON.stringify({ name: "Main", widthMeters: 1.6, x: 10, y: 8 }),
     });
     const aislePatched = await fetch(
       `http://127.0.0.1:${port}/layouts/${layout.id}/aisles/${(await (await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}`, { headers: { authorization: `Bearer ${token}` } })).json()).aisles[0].id}`,

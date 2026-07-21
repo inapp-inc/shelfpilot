@@ -26,6 +26,7 @@ export default function EditorSideRail({
   onDeleteZone,
   onPatchEntry,
   onDeleteEntry,
+  onSelectZone,
   onRefreshCatalog,
   toast,
 }) {
@@ -35,6 +36,7 @@ export default function EditorSideRail({
   useEffect(() => {
     if (selection?.kind === "zone" || selection?.kind === "entryPoint") setTab("zones");
     else if (selection?.kind === "aisle") setTab("props");
+    else if (selection?.kind === "shelf" || selection?.kind === "fixture") setTab("merch");
   }, [selection?.kind, selection?.id]);
 
   return (
@@ -50,7 +52,7 @@ export default function EditorSideRail({
           Zones
         </button>
       </div>
-      <div className="props-panel editor-rail-body">
+      <div className="editor-rail-body">
         {tab === "zones" ? (
           <ZonesEntryPanel
             layout={layout}
@@ -60,6 +62,7 @@ export default function EditorSideRail({
             onDeleteZone={onDeleteZone}
             onPatchEntry={onPatchEntry}
             onDeleteEntry={onDeleteEntry}
+            onSelectZone={onSelectZone}
           />
         ) : tab === "props" ? (
           <PropertiesPanel

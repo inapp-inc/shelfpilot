@@ -189,6 +189,75 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /layouts/{layoutId}/review/submit:
+    post:
+      tags: [Layouts]
+      operationId: submitLayoutForReview
+      description: Designer, Admin — submit draft/rejected or resubmit after edits.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Layout in review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /layouts/{layoutId}/review/approve:
+    post:
+      tags: [Layouts]
+      operationId: approveLayoutReview
+      description: Approver, Admin — approve layout in review.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Layout approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /layouts/{layoutId}/review/reject:
+    post:
+      tags: [Layouts]
+      operationId: rejectLayoutReview
+      description: Approver, Admin — reject with required comment.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        "200":
+          description: Layout rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /layouts/{layoutId}/aisles:
     post:
       tags: [Layouts]
@@ -1219,6 +1288,14 @@ components:
       properties:
         x: { type: number }
         y: { type: number }
+    StoreEnvelope:
+      type: object
+      properties:
+        x: { type: number, default: 0 }
+        y: { type: number, default: 0 }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+      description: Full store footprint (axis-aligned); distinct from fixture zone polygon.
     AisleInput:
       type: object
       required: [widthMeters]
@@ -1391,6 +1468,20 @@ components:
               minimum: 1
             doubleSided:
               type: boolean
+            segments:
+              type: array
+              items:
+                $ref: "#/components/schemas/ShelfSegment"
+    ShelfSegment:
+      type: object
+      required: [id, offsetMeters, widthMeters, fillMode]
+      properties:
+        id: { type: string }
+        offsetMeters: { type: number, minimum: 0 }
+        widthMeters: { type: number, minimum: 0.1 }
+        fillMode:
+          type: string
+          enum: [full, partial]
     PlanogramPlacementInput:
       type: object
       required: [productId]
@@ -1405,6 +1496,9 @@ components:
           enum: [A, B]
           default: A
           description: Target face on double-sided shelves
+        segmentId:
+          type: string
+          description: Optional shelf bay segment for facing capacity
     PlanogramPlacement:
       type: object
       required: [id, productId, levelIndex, facings, maxFacings]
@@ -1544,6 +1638,14 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Point"
+        storeEnvelope:
+          $ref: "#/components/schemas/StoreEnvelope"
+        reviewComment: { type: string, nullable: true }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        reviewedBy: { type: string, nullable: true }
+        contentRevision: { type: integer }
+        submittedRevision: { type: integer, nullable: true }
+        lastSubmittedAt: { type: string, format: date-time, nullable: true }
         aisles:
           type: array
           items: { $ref: "#/components/schemas/Aisle" }

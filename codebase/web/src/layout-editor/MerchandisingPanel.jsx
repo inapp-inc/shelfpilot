@@ -133,7 +133,7 @@ export default function MerchandisingPanel({
       ) : null}
 
       {kind === "shelf" && shelf?.doubleSided ? (
-        <div className="mode-toggle" style={{ marginBottom: 12 }}>
+        <div className="merch-face-toggle">
           <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
             Face A
           </button>

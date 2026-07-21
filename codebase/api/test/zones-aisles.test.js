@@ -5,9 +5,13 @@ import {
   aisleFootprint,
   entityInsideLayout,
   zoneFootprint,
+  aisleOverlapsShelf,
+  collectOverlapViolations,
+  overlapsAnyShelf,
 } from "../src/services/polygonContainment.js";
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../src/services/zones.js";
 import { normalizeLayout } from "../src/services/layoutNormalize.js";
+import { resetDbForTests, repo } from "../src/store/sqlite.js";
 
 const RECT = {
   widthMeters: 14,
@@ -76,6 +80,38 @@ test("vertical-run aisles stay inside a tall polygon", () => {
   }
 });
 
+test("packer keeps aisles off shelf footprints", () => {
+  const { aisles, shelves } = packAislesAndShelves(RECT, { minAisleWidthMeters: 1.2 });
+  const layout = { ...RECT, aisles, shelves };
+  assert.equal(collectOverlapViolations(layout).length, 0);
+  for (const a of aisles) {
+    assert.equal(overlapsAnyShelf(a, layout), null);
+  }
+});
+
+test("aisle overlapping a shelf is detected", () => {
+  const shelf = {
+    id: "shf-1",
+    x: 2,
+    y: 2,
+    usableWidthMeters: 1.2,
+    widthMeters: 1.2,
+    depthMeters: 0.6,
+    rotationDeg: 0,
+  };
+  const aisle = {
+    id: "aisle-1",
+    x: 2,
+    y: 2,
+    widthMeters: 1.2,
+    lengthMeters: 4,
+    orientation: "horizontal",
+  };
+  const layout = { ...RECT, shelves: [shelf], aisles: [aisle] };
+  assert.ok(aisleOverlapsShelf(aisle, shelf, layout));
+  assert.equal(collectOverlapViolations(layout).length, 1);
+});
+
 test("minimum aisle width is clamped to a walkable value", () => {
   const { aisles } = packAislesAndShelves(RECT, { minAisleWidthMeters: 0.3 });
   for (const a of aisles) {
@@ -124,4 +160,26 @@ test("normalizeLayout defaults aisle orientation and keeps zones/entry", () => {
   assert.equal(layout.zones[0].type, "special");
   assert.equal(layout.zones[0].name, "Clearance");
   assert.equal(layout.entryPoints.length, 1);
+});
+
+test("saveLayout persists zones and entry points in payload", () => {
+  resetDbForTests();
+  const zone = normalizeZone({ id: "zone-offer-1", type: "offer", x: 2, y: 2, widthMeters: 3, depthMeters: 3 });
+  const entry = normalizeEntryPoint({ id: "entry-1", x: 0, y: 6, widthMeters: 1.8 });
+  const layout = normalizeLayout({
+    id: "layout-zones-test",
+    name: "Zone test",
+    vertical: "retail",
+    status: "draft",
+    ...RECT,
+    zones: [zone],
+    entryPoints: [entry],
+  });
+  repo.saveLayout(layout);
+  const loaded = repo.getLayout("layout-zones-test");
+  assert.equal(loaded.zones.length, 1);
+  assert.equal(loaded.zones[0].id, "zone-offer-1");
+  assert.equal(loaded.zones[0].type, "offer");
+  assert.equal(loaded.entryPoints.length, 1);
+  assert.equal(loaded.entryPoints[0].id, "entry-1");
 });

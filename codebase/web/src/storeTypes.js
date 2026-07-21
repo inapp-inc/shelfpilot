@@ -73,6 +73,24 @@ export function mixForVertical(vertical) {
   return mixForStoreType(st?.id || "supermarket");
 }
 
+const PRODUCE_PATTERNS = /fresh|produce|veg|fruit|hm-fresh/i;
+const GROCERY_PATTERNS = /grocery|dry.?goods|hm-grocery|cv-grocery/i;
+
+export function defaultFixtureTypeForCategory(categoryId, categoryName) {
+  const hay = `${categoryId || ""} ${categoryName || ""}`;
+  if (PRODUCE_PATTERNS.test(hay)) return "storage";
+  if (GROCERY_PATTERNS.test(hay)) return "gondola";
+  return "shelf";
+}
+
+export function withFixtureTypeDefaults(rows, categories) {
+  const byId = Object.fromEntries((categories || []).map((c) => [c.id, c]));
+  return (rows || []).map((row) => ({
+    ...row,
+    fixtureType: row.fixtureType || defaultFixtureTypeForCategory(row.categoryId, byId[row.categoryId]?.name),
+  }));
+}
+
 /**
  * Build a category mix from the ACTUAL loaded catalog (top-level categories),
  * so autogenerate assigns real category ids that have products — otherwise the
@@ -97,6 +115,7 @@ export function mixFromCategories(categories) {
       percent: base,
       temperatureZone,
       color: c.color,
+      fixtureType: defaultFixtureTypeForCategory(c.id, c.name),
     };
   });
   let drift = 100 - base * n;

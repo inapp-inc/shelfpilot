@@ -10,6 +10,7 @@ export default function Palette({
   onApplyArea,
   onClearDraft,
   onOpenGenerate,
+  hasAppliedPolygon,
 }) {
   return (
     <div className="palette">
@@ -60,6 +61,17 @@ export default function Palette({
           </button>
         </div>
       ) : null}
+      <button
+        type="button"
+        className={`tool-btn ${paletteTool === "edit-area" ? "active" : ""}`}
+        disabled={editDisabled || !hasAppliedPolygon}
+        onClick={() => setPaletteTool("edit-area")}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Edit area</div>
+        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
+          drag vertices · reshape
+        </div>
+      </button>
       <button
         type="button"
         className="tool-btn"
