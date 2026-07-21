@@ -1,0 +1,44 @@
+# ShelfPilot — production Docker Compose (single container UI + API)
+# Run from the unpacked package folder:
+#   bash deploy.sh
+# or:
+#   docker compose up -d --build
+#
+# App (on host):  http://127.0.0.1:${HOST_PORT:-4520}/shelfpilot
+# Public URL:     http://foundry.inapp.com/shelfpilot  (nginx proxies /shelfpilot/ here)
+
+services:
+  shelfpilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shelfpilot:${SHELFPILOT_VERSION:-latest}
+    container_name: shelfpilot
+    restart: unless-stopped
+    ports:
+      # Host port is configurable; container always listens on 4520.
+      - "${HOST_PORT:-4520}:4520"
+    environment:
+      NODE_ENV: production
+      PORT: "4520"
+      BASE_PATH: ${BASE_PATH:-/shelfpilot}
+      WEB_DIST: /app/web/dist
+      SQLITE_PATH: /data/shelfpilot.db
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://foundry.inapp.com}
+    volumes:
+      - shelfpilot_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const p=process.env.PORT||4520;const b=process.env.BASE_PATH||'';fetch('http://127.0.0.1:'+p+b+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  shelfpilot_data:

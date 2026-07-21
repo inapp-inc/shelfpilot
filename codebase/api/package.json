@@ -1,0 +1,21 @@
+{
+  "name": "@shelfpilot/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/health.test.js test/shelfpilot.test.js test/planogram.test.js test/autogen.test.js test/merch-layers.test.js test/category-mix.test.js test/dual-face.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

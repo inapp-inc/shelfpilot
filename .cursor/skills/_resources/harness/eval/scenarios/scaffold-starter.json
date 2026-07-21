@@ -1,0 +1,16 @@
+{
+  "id": "scaffold-starter",
+  "title": "Scaffold starter has Docker, lockfile, eslint, API, OpenAPI stub; no competing zip",
+  "probe": "scaffold-starter-files",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": [
+      "hasDockerfile",
+      "hasLockfile",
+      "hasEslint",
+      "hasApi",
+      "hasOpenApiStub",
+      "noFunctionalSpecZip"
+    ]
+  }
+}

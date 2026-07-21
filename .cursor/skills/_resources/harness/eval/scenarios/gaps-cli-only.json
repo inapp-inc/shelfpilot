@@ -1,0 +1,15 @@
+{
+  "id": "gaps-cli-only",
+  "title": "Requirements uses JSON status+reviewer gate without portal",
+  "probe": "gaps-no-portal",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": [
+      "noPortal",
+      "statusCompleteGate",
+      "projectDirIsRepoRoot",
+      "hasReviewedBy",
+      "hasReviewedAt"
+    ]
+  }
+}

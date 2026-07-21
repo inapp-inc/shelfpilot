@@ -1,0 +1,175 @@
+import { Router } from "express";
+import { randomUUID } from "node:crypto";
+import { repo, audit } from "../store/sqlite.js";
+import { authRequired, requireRoles } from "../middleware/auth.js";
+
+export const catalogRouter = Router();
+
+catalogRouter.get("/categories", authRequired, (req, res) => {
+  const items = repo.listCategories(req.query.vertical || null);
+  res.json({ items });
+});
+
+catalogRouter.post("/categories", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
+  const cat = {
+    id: req.body?.id || `cat-${randomUUID().slice(0, 6)}`,
+    name: req.body?.name || "Category",
+    vertical: String(req.body?.vertical || "retail").toLowerCase(),
+    parentId: req.body?.parentId || null,
+    color: req.body?.color || "#A30A2A",
+  };
+  repo.upsertCategory(cat);
+  audit(req.user.email, "category.create", cat.id);
+  res.status(201).json(cat);
+});
+
+catalogRouter.patch(
+  "/categories/:categoryId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const existing = repo.listCategories().find((c) => c.id === req.params.categoryId);
+    if (!existing) return res.status(404).json({ error: "not_found" });
+    const patch = req.body || {};
+    if (patch.name != null) existing.name = String(patch.name);
+    if (patch.color != null) existing.color = String(patch.color);
+    if (patch.parentId !== undefined) {
+      existing.parentId = patch.parentId && patch.parentId !== existing.id ? String(patch.parentId) : null;
+    }
+    if (patch.vertical != null) existing.vertical = String(patch.vertical).toLowerCase();
+    repo.upsertCategory(existing);
+    audit(req.user.email, "category.update", existing.id);
+    res.json(existing);
+  }
+);
+
+catalogRouter.get("/products", authRequired, (req, res) => {
+  let items = repo.listProducts(req.query.categoryId || null);
+  if (req.query.vertical) {
+    const cats = new Set(
+      repo.listCategories(req.query.vertical).map((c) => c.id)
+    );
+    items = items.filter((p) => cats.has(p.categoryId));
+  }
+  res.json({ items });
+});
+
+catalogRouter.post("/products", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
+  if (!req.body?.categoryId) {
+    return res.status(400).json({ error: "missing_fields" });
+  }
+  const attrs = { ...(req.body?.attributes || {}) };
+  if (req.body?.widthMeters != null) attrs.widthMeters = Number(req.body.widthMeters);
+  if (req.body?.heightMeters != null) attrs.heightMeters = Number(req.body.heightMeters);
+  if (req.body?.imageUrl != null) attrs.imageUrl = String(req.body.imageUrl);
+  const product = {
+    id: req.body?.id || `prd-${randomUUID().slice(0, 6)}`,
+    name: req.body?.name || "Product",
+    sku: req.body?.sku || "",
+    categoryId: req.body.categoryId,
+    attributes: attrs,
+  };
+  repo.upsertProduct(product);
+  audit(req.user.email, "product.create", product.id);
+  res.status(201).json(product);
+});
+
+catalogRouter.patch(
+  "/products/:productId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const existing = repo.listProducts().find((p) => p.id === req.params.productId);
+    if (!existing) return res.status(404).json({ error: "not_found" });
+    const patch = req.body || {};
+    if (patch.name != null) existing.name = String(patch.name);
+    if (patch.sku != null) existing.sku = String(patch.sku);
+    if (patch.categoryId != null) existing.categoryId = String(patch.categoryId);
+    if (patch.attributes != null && typeof patch.attributes === "object") {
+      existing.attributes = { ...(existing.attributes || {}), ...patch.attributes };
+    }
+    if (patch.widthMeters != null) {
+      existing.attributes = { ...(existing.attributes || {}), widthMeters: Number(patch.widthMeters) };
+    }
+    if (patch.heightMeters != null) {
+      existing.attributes = { ...(existing.attributes || {}), heightMeters: Number(patch.heightMeters) };
+    }
+    if (patch.imageUrl !== undefined) {
+      existing.attributes = { ...(existing.attributes || {}), imageUrl: patch.imageUrl ? String(patch.imageUrl) : "" };
+    }
+    if (!existing.categoryId) return res.status(400).json({ error: "missing_fields" });
+    repo.upsertProduct(existing);
+    audit(req.user.email, "product.update", existing.id);
+    res.json(existing);
+  }
+);
+
+catalogRouter.post("/catalog/import", authRequired, requireRoles("Admin", "Designer"), (req, res) => {
+  const categories = Array.isArray(req.body?.categories) ? req.body.categories : [];
+  const products = Array.isArray(req.body?.products) ? req.body.products : [];
+  const categoryIds = new Set();
+
+  for (const c of categories) {
+    if (!c.name && !c.id) continue;
+    const cat = {
+      id: c.id || `cat-${randomUUID().slice(0, 6)}`,
+      name: c.name || c.id,
+      vertical: String(c.vertical || "retail").toLowerCase(),
+      parentId: c.parentId || null,
+      color: c.color || "#A30A2A",
+    };
+    repo.upsertCategory(cat);
+    categoryIds.add(cat.id);
+  }
+
+  const allCategories = repo.listCategories();
+  const existingCatIds = new Set(allCategories.map((c) => c.id));
+
+  let importedProducts = 0;
+  for (const p of products) {
+    if (!p.categoryId) continue;
+    if (!existingCatIds.has(p.categoryId) && !categoryIds.has(p.categoryId)) {
+      const stub = {
+        id: p.categoryId,
+        name: p.categoryName || p.categoryId,
+        vertical: String(p.vertical || categories[0]?.vertical || "retail").toLowerCase(),
+        parentId: null,
+        color: "#A30A2A",
+      };
+      repo.upsertCategory(stub);
+      categoryIds.add(stub.id);
+      existingCatIds.add(stub.id);
+    }
+    if (!p.name && !p.sku) continue;
+    repo.upsertProduct({
+      id: p.id || `prd-${randomUUID().slice(0, 6)}`,
+      name: p.name || p.sku,
+      sku: p.sku || "",
+      categoryId: p.categoryId,
+      attributes: p.attributes || {},
+    });
+    importedProducts += 1;
+  }
+
+  const verticals = [
+    ...new Set([
+      ...categories.map((c) => String(c.vertical || "retail").toLowerCase()),
+      ...products.map((p) => String(p.vertical || "").toLowerCase()).filter(Boolean),
+    ]),
+  ];
+
+  audit(req.user.email, "catalog.import", `cats=${categoryIds.size},prds=${importedProducts}`);
+  res.json({
+    importedCategories: categoryIds.size,
+    importedProducts,
+    verticals,
+  });
+});
+
+catalogRouter.get("/catalog/export", authRequired, (req, res) => {
+  const vertical = req.query.vertical || null;
+  const categories = repo.listCategories(vertical);
+  const catIds = new Set(categories.map((c) => c.id));
+  const products = repo.listProducts().filter((p) => !vertical || catIds.has(p.categoryId));
+  res.json({ categories, products });
+});

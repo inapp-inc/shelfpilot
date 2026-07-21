@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Build / packaging output
+dist/
+dist-package/
+.package/
+coverage/
+*.tsbuildinfo
+
+# Runtime data
+data/
+*.db
+*.db-*
+logs/
+*.log
+*.pid
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+.idea/
+*.iml
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.turbo/
+*.lcov

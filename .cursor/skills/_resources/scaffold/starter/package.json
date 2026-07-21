@@ -1,0 +1,26 @@
+{
+  "name": "platform-scaffold",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ADR-0001/ADR-0003 aligned starter — clone then diverge",
+  "type": "module",
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "start": "npm run start -w api",
+    "dev": "npm run dev -w api",
+    "lint": "eslint api/src web/src --max-warnings=0",
+    "format": "prettier --write \"**/*.{js,jsx,json,md,yml,yaml}\"",
+    "test": "npm run test -w api",
+    "openapi:check": "node scripts/check-openapi.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "eslint": "^9.16.0",
+    "prettier": "^3.4.2"
+  }
+}

@@ -1,0 +1,24 @@
+ShelfPilot UI — Figma Make prompt (max ~4950 chars)
+
+Product: ShelfPilot — Graphical Store Layout Design by Foundry (InApp). Vertical-agnostic 2D/3D store layout planner for Retail, Pharmacy, Beauty, Apparel via configuration only.
+
+Brand:
+- App name ShelfPilot as hero wordmark; crimson rounded-square logo #A30A2A with white icon
+- Primary #A30A2A; gradient #C4183A → #A30A2A
+- Background #F0F0F0; ink #1f2933; muted #6b7280 / #9aa1ab
+- Type: Plus Jakarta Sans (UI), DM Mono (measurements)
+- Footer/sidebar: “Built by the Foundry”
+- Do not use purple gradients, cream+terracotta newspaper looks, or generic Inter/Roboto
+
+Screens to design (desktop-first, responsive):
+1) Login — email, password, role select (Designer|Approver|Viewer|Admin), logo, Foundry footer
+2) Shell — left sidebar with logo, nav: Dashboard, Layout Editor, Products & Categories, Analytics, Admin & Config; top bar vertical selector (Retail/Pharmacy/Beauty/Apparel)
+3) Dashboard — project cards with status chips draft/in review/approved; filters; CTA “New layout” opening 3-step wizard (store info → dimensions/shape → review)
+4) Layout Editor — scaled 2D canvas; fixture palette (shelf/rack/gondola/storage); aisle tools; auto-calc readout; category color mapping; toggle 2D|3D; measurements in DM Mono
+5) Products & Categories — tree + product table; import/export
+6) Analytics — utilization, allocation, capacity, version compare charts
+7) Admin — tabs Users & Roles, Store Master, Approval Workflow, Configuration, Audit Log
+
+Composition rules: one job per section; brand-first on login; no card clutter in hero; real store-layout visual anchor on editor; motion subtle for canvas pan/zoom and tab switches.
+
+Output: high-fidelity desktop frames for all screens with ShelfPilot crimson system applied.

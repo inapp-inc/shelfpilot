@@ -1,0 +1,1 @@
+# Prefer FastAPI for real capability services; this stub needs no deps.

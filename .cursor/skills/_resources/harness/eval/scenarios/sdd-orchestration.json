@@ -1,0 +1,15 @@
+{
+  "id": "sdd-orchestration",
+  "title": "SDD orders architecture before SEED and invokes engineering/review/handover",
+  "probe": "sdd-orchestration",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": [
+      "architectureBeforeSeed",
+      "invokesSecurity",
+      "invokesSeedReview",
+      "invokesHandover",
+      "canonicalOpenApi"
+    ]
+  }
+}

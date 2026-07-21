@@ -1,0 +1,15 @@
+{
+  "id": "platform-fit",
+  "title": "Architecture encodes platform-fit, container scaffold, Docs/openapi, ADR-0001 numbering",
+  "probe": "platform-fit-gate",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": [
+      "hasPlatformFitGate",
+      "mentionsAdr0017",
+      "hasContainerScaffold",
+      "canonicalOpenApi",
+      "adrNumbering"
+    ]
+  }
+}

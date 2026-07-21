@@ -1,0 +1,9 @@
+{
+  "id": "sprint-mode",
+  "title": "SDD encodes Sprint Mode compress / non-compress / N/A rules",
+  "probe": "sprint-mode-section",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": ["hasSprintMode", "owaspDoesNotCompress", "naRequired"]
+  }
+}

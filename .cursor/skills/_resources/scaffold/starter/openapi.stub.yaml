@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Scaffold API
+  version: 0.1.0
+  description: Baseline contract — replace paths/schemas during design. Canonical path after clone is Docs/openapi.yaml.
+servers:
+  - url: http://localhost:3000
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      operationId: getHealth
+      parameters:
+        - in: header
+          name: x-correlation-id
+          schema:
+            type: string
+          required: false
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, service]
+                properties:
+                  ok:
+                    type: boolean
+                  service:
+                    type: string
+                  correlationId:
+                    type: string

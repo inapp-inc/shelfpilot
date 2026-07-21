@@ -1,0 +1,9 @@
+{
+  "id": "coding-stack-confirm",
+  "title": "Coding requires ADR-0001 stack confirmation",
+  "probe": "coding-stack-confirm",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": ["hasStackConfirm", "refsAdr0001"]
+  }
+}

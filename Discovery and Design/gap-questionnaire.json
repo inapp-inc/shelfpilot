@@ -1,0 +1,196 @@
+{
+  "title": "Gaps Questionnaire: ShelfPilot",
+  "version": "1.0",
+  "date": "2026-07-14",
+  "status": "Complete",
+  "reviewedBy": "Foundry SDD (project.md)",
+  "reviewedAt": "2026-07-14",
+  "sourceDocs": [
+    "project.md"
+  ],
+  "sections": [
+    {
+      "id": "functional",
+      "title": "Functional gaps",
+      "prefix": "F",
+      "rows": [
+        {
+          "id": "F1",
+          "question": "Which user roles must be supported in v1?",
+          "answer": "Designer, Approver, Viewer, Admin (email/password sign-in with role selection). Maps to BR-09.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "F2",
+          "question": "What screens constitute the UI + mock API MVP?",
+          "answer": "Login, Dashboard (portfolio + status filters + 3-step new-store wizard), Layout Editor (M1/M2/M4), Products & Categories (M3), Analytics (M5), Admin & Config (M6 tabs: Users & Roles, Store Master, Approval Workflow, Configuration, Audit Log).",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "F3",
+          "question": "What layout editor capabilities are in scope for MVP?",
+          "answer": "Scaled canvas (rectangular + irregular/polygon), fixture palette with custom measurements, aisle min-width/accessibility validation, auto-calc fixture count on dimension change, category-to-shelf mapping with color coding, interactive 2D and 3D (Three.js) views.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "F4",
+          "question": "How are verticals supported without code changes?",
+          "answer": "Global + vertical-specific configuration for UoM, fixture/category templates, compliance rules. Target verticals: General Retail, Pharmacy/Pharma, Beauty & Cosmetics, Apparel & Footwear. Top-bar vertical selector.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "F5",
+          "question": "What analytics are required for MVP?",
+          "answer": "Space utilization, category allocation, shelf capacity, and layout version comparison (BR-08). Mock data acceptable in UI + mock API phase.",
+          "owner": "Product",
+          "confidence": "H"
+        }
+      ]
+    },
+    {
+      "id": "data",
+      "title": "Data and domain gaps",
+      "prefix": "D",
+      "rows": [
+        {
+          "id": "D1",
+          "question": "What are the core domain entities?",
+          "answer": "User, Role, Store, Layout (versioned), Zone, Aisle, Fixture, Category, Product, CategoryMapping, VerticalConfig, AuditEvent, ApprovalWorkflow.",
+          "owner": "Architecture",
+          "confidence": "H"
+        },
+        {
+          "id": "D2",
+          "question": "What persistence model for UI + mock API phase?",
+          "answer": "Assume: Express mock API with in-memory / JSON seed store for prototype; MongoDB schema designed for Day-1 platform-fit but may be stubbed until SEED-00. Documented as assumption A-D2.",
+          "owner": "Architecture",
+          "confidence": "M"
+        },
+        {
+          "id": "D3",
+          "question": "Are store dimensions provided at creation?",
+          "answer": "Yes — length/width/height or floor-plan polygon boundaries available at layout creation (project.md §7).",
+          "owner": "Product",
+          "confidence": "H"
+        }
+      ]
+    },
+    {
+      "id": "integration",
+      "title": "Integration and API gaps",
+      "prefix": "I",
+      "rows": [
+        {
+          "id": "I1",
+          "question": "External system integrations in MVP?",
+          "answer": "None. Out of scope: POS, real-time inventory, procurement, structural engineering, foot-traffic sensors.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "I2",
+          "question": "Auth mechanism for UI + mock API phase?",
+          "answer": "Mock email/password + role selection; session/token issued by API. No external IdP in this phase. Assumption A-I2.",
+          "owner": "Security",
+          "confidence": "H"
+        },
+        {
+          "id": "I3",
+          "question": "Canonical API contract location?",
+          "answer": "Docs/openapi.yaml — edit before changing API shapes.",
+          "owner": "Architecture",
+          "confidence": "H"
+        }
+      ]
+    },
+    {
+      "id": "nonfunctional",
+      "title": "Non-functional and constraints",
+      "prefix": "N",
+      "rows": [
+        {
+          "id": "N1",
+          "question": "3D performance constraints?",
+          "answer": "Must perform on standard business hardware; no specialized GPU. Three.js for interactive 3D.",
+          "owner": "Engineering",
+          "confidence": "H"
+        },
+        {
+          "id": "N2",
+          "question": "Platform / stack constraints?",
+          "answer": "ADR-0001 MERN + Python modular platform as-is (no ADR-0017 exception for MVP). React web, Express API, Mongo (or mock), Python for auto-calc/analytics capability services as needed.",
+          "owner": "Architecture",
+          "confidence": "H"
+        },
+        {
+          "id": "N3",
+          "question": "Multi-tenancy Day-1?",
+          "answer": "Single-tenant prototype org for UI+mock API; design APIs with tenantId optional header for future isolation (ADR-0006). Assumption A-N3.",
+          "owner": "Architecture",
+          "confidence": "M"
+        },
+        {
+          "id": "N4",
+          "question": "Branding constraints?",
+          "answer": "ShelfPilot brand: primary #A30A2A, gradient #C4183A→#A30A2A, neutrals #F0F0F0/#1f2933, Plus Jakarta Sans + DM Mono, Built by the Foundry attribution.",
+          "owner": "Design",
+          "confidence": "H"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "title": "Scope and out-of-scope",
+      "prefix": "S",
+      "rows": [
+        {
+          "id": "S1",
+          "question": "What is in scope for this delivery?",
+          "answer": "Store setup & canvas, fixtures, aisle validation, category/product management, 2D/3D rendering, auto-calculation, analytics & reporting, administration, system configuration — UI + mock API phase.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "S2",
+          "question": "What is explicitly out of scope?",
+          "answer": "POS integration, real-time inventory/stock, physical fixture procurement, architectural/structural engineering, foot-traffic sensor hardware.",
+          "owner": "Product",
+          "confidence": "H"
+        },
+        {
+          "id": "S3",
+          "question": "Missing source docs referenced by project.md?",
+          "answer": "BRD/FRD still deferred. UI visual SoT now present: ui/ShelfPilot.dc.html + ui/brand.md. React app must match this reference.",
+          "owner": "Product",
+          "confidence": "H"
+        }
+      ]
+    },
+    {
+      "id": "decisions",
+      "title": "Open decisions",
+      "prefix": "O",
+      "isDecisions": true,
+      "rows": [
+        {
+          "id": "O1",
+          "decision": "Mock API persistence: in-memory vs Mongo for prototype",
+          "options": "In-memory+JSON seed (faster MVP) | Mongo from Day-1",
+          "owner": "Architecture",
+          "due": "2026-07-14"
+        },
+        {
+          "id": "O2",
+          "decision": "Auto-calc location: Node service vs Python capability service",
+          "options": "Node in Express for MVP | Python microservice from SEED-05",
+          "owner": "Architecture",
+          "due": "2026-07-14"
+        }
+      ]
+    }
+  ]
+}

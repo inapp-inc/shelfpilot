@@ -1,0 +1,9 @@
+{
+  "id": "bootstrap-exemption",
+  "title": "SEED unit bootstrap exemption references scaffold and runs after architecture",
+  "probe": "bootstrap-exemption",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": ["hasBootstrapExemption", "referencesScaffold", "afterArchitecture"]
+  }
+}

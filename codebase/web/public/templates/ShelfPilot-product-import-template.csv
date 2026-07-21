@@ -1,0 +1,4 @@
+type,name,sku,categoryId,vertical,parentId,color,widthMeters,heightMeters
+category,cat-example,Example Category,,pharmacy,,#A30A2A,,
+product,,Example Product A,SKU-001,cat-example,,,0.2,0.25
+product,,Example Product B,SKU-002,cat-example,,,0.15,0.2

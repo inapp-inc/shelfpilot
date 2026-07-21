@@ -1,0 +1,45 @@
+# ShelfPilot — local Docker profile (SQLite, no Mongo)
+# Recommended rebuild after ANY source change (from ./codebase):
+#   npm run docker:rebuild        (Windows/macOS/Linux — sets a fresh CACHEBUST + force-recreates)
+# Manual equivalent:
+#   $env:CACHEBUST=(Get-Date -Format yyyyMMddHHmmss); docker compose build; docker compose up -d --force-recreate
+# The CACHEBUST build arg (defaults to a fresh value from the rebuild scripts) makes the
+# source + build layers rebuild every time, so changes always reflect — no --no-cache needed.
+# App:  http://localhost:8080
+# API:  http://localhost:3001/health  (host 3001 → container 3000; avoids clash with local npm API on 3000)
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CACHEBUST: ${CACHEBUST:-dev}
+    ports:
+      - "3001:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SQLITE_PATH: /data/shelfpilot.db
+    volumes:
+      - shelfpilot_data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        CACHEBUST: ${CACHEBUST:-dev}
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  shelfpilot_data:

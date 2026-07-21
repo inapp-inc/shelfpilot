@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #F0F0F0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    ::selection { background: rgba(163,10,42,0.18); }
+    input, select, button { font-family: 'Plus Jakarta Sans', sans-serif; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes crossfade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    a { color: #A30A2A; }
+    a:hover { color: #C4183A; }
+  </style>
+</helmet>
+
+<div style="min-height:100vh; width:100%; background: radial-gradient(1200px 600px at 15% -10%, rgba(196,24,58,0.07), transparent), radial-gradient(900px 500px at 100% 10%, rgba(163,10,42,0.05), transparent), #F0F0F0; font-family:'Plus Jakarta Sans',sans-serif; color:#1f2933; position:relative;">
+
+  <sc-if value="{{showLogin}}" hint-placeholder-val="{{true}}">
+    <div style="min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; position:relative; animation:crossfade 0.4s ease;">
+      <div style="width:100%; max-width:420px; display:flex; flex-direction:column; align-items:center; gap:28px;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:14px;">
+          <div style="width:64px; height:64px; border-radius:18px; background:linear-gradient(135deg,#C4183A,#A30A2A); display:flex; align-items:center; justify-content:center; box-shadow:0 10px 30px rgba(163,10,42,0.28);">
+            <div style="width:30px; height:22px; display:flex; flex-direction:column; gap:3px;">
+              <div style="height:4px; background:#fff; border-radius:2px;"></div>
+              <div style="height:4px; background:#fff; border-radius:2px; width:70%;"></div>
+              <div style="height:4px; background:#fff; border-radius:2px;"></div>
+              <div style="height:4px; background:#fff; border-radius:2px; width:70%;"></div>
+            </div>
+          </div>
+          <div style="font-size:40px; font-weight:800; letter-spacing:-0.02em; color:#1f2933;">ShelfPilot</div>
+          <div style="font-size:16px; color:#6b7280; text-align:center;">Design store layouts in 2D and 3D</div>
+        </div>
+
+        <div style="width:100%; background:#fff; border:1px solid #e5e7eb; border-radius:20px; padding:32px; display:flex; flex-direction:column; gap:16px; box-shadow:0 20px 50px rgba(31,41,51,0.06);">
+          <sc-if value="{{loginError}}" hint-placeholder-val="{{false}}">
+            <div style="background:oklch(0.95 0.03 15); border:1px solid oklch(0.85 0.06 15); color:#A30A2A; font-size:13px; padding:10px 12px; border-radius:10px;">{{loginError}}</div>
+          </sc-if>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <label style="font-size:13px; font-weight:600; color:#1f2933;">Email</label>
+            <input type="email" value="{{loginEmail}}" onChange="{{onLoginEmailChange}}" placeholder="you@shelfpilot.local" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px; outline:none; background:#fbfbfb;" style-focus="border-color:#A30A2A; background:#fff;"/>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <label style="font-size:13px; font-weight:600; color:#1f2933;">Password</label>
+            <input type="password" value="{{loginPassword}}" onChange="{{onLoginPasswordChange}}" placeholder="••••••••" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px; outline:none; background:#fbfbfb;" style-focus="border-color:#A30A2A; background:#fff;"/>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <label style="font-size:13px; font-weight:600; color:#1f2933;">Role</label>
+            <select value="{{loginRole}}" onChange="{{onLoginRoleChange}}" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px; outline:none; background:#fbfbfb;">
+              <option value="Designer">Designer</option>
+              <option value="Approver">Approver</option>
+              <option value="Viewer">Viewer</option>
+              <option value="Admin">Admin</option>
+            </select>
+          </div>
+          <button onClick="{{onLoginSubmit}}" style="margin-top:6px; padding:13px; border:none; border-radius:10px; background:linear-gradient(135deg,#C4183A,#A30A2A); color:#fff; font-weight:700; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px; box-shadow:0 8px 20px rgba(163,10,42,0.3);" style-hover="filter:brightness(1.06);">
+            <sc-if value="{{loginLoading}}" hint-placeholder-val="{{false}}">
+              <div style="width:16px; height:16px; border-radius:50%; border:2px solid rgba(255,255,255,0.4); border-top-color:#fff; animation:spin 0.7s linear infinite;"></div>
+            </sc-if>
+            <span>{{loginButtonLabel}}</span>
+          </button>
+        </div>
+        <div style="font-size:12px; color:#9aa1ab;">Built by the Foundry</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{authed}}" hint-placeholder-val="{{false}}">
+    <div style="display:flex; min-height:100vh; animation:crossfade 0.35s ease;">
+      <div style="width:232px; flex-shrink:0; background:linear-gradient(180deg,#1f2933,#2a3440); display:flex; flex-direction:column; padding:20px 14px; gap:4px;">
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 8px 20px 8px;">
+          <div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#C4183A,#A30A2A); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <div style="width:16px; height:12px; display:flex; flex-direction:column; gap:2px;">
+              <div style="height:2px; background:#fff; border-radius:1px;"></div>
+              <div style="height:2px; background:#fff; border-radius:1px; width:70%;"></div>
+              <div style="height:2px; background:#fff; border-radius:1px;"></div>
+            </div>
+          </div>
+          <div style="color:#fff; font-weight:800; font-size:17px; letter-spacing:-0.01em;">ShelfPilot</div>
+        </div>
+
+        <sc-for list="{{navItems}}" as="item" hint-placeholder-count="5">
+          <div onClick="{{item.onClick}}" style="display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:10px; cursor:pointer; color:rgba(255,255,255,0.68); font-size:14px; font-weight:600;" style-hover="background:rgba(255,255,255,0.06); color:#fff;">
+            <div style="width:8px; height:8px; border-radius:2px; background:{{item.dotColor}}; flex-shrink:0;"></div>
+            <span>{{item.label}}</span>
+          </div>
+        </sc-for>
+
+        <div style="flex:1;"></div>
+        <div style="padding:14px 8px 6px 8px; border-top:1px solid rgba(255,255,255,0.08); color:rgba(255,255,255,0.4); font-size:12px;">Built by the Foundry</div>
+      </div>
+
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div style="height:64px; flex-shrink:0; background:#fff; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; justify-content:space-between; padding:0 28px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <sc-for list="{{verticalOptions}}" as="v" hint-placeholder-count="4">
+              <div onClick="{{v.onClick}}" style="padding:7px 14px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; background:{{v.bg}}; color:{{v.color}}; border:1px solid {{v.border}};">{{v.label}}</div>
+            </sc-for>
+          </div>
+          <div style="display:flex; align-items:center; gap:16px;">
+            <div style="display:flex; align-items:center; gap:9px;">
+              <div style="width:30px; height:30px; border-radius:50%; background:#f0f0f0; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; color:#1f2933; border:1px solid #e5e7eb;">{{user.initials}}</div>
+              <div style="display:flex; flex-direction:column; line-height:1.2;">
+                <span style="font-size:13px; font-weight:600; color:#1f2933;">{{user.name}}</span>
+                <span style="font-size:11px; color:#9aa1ab;">{{user.role}}</span>
+              </div>
+            </div>
+            <button onClick="{{onSignOut}}" style="padding:8px 14px; border-radius:9px; border:1px solid #e5e7eb; background:#fff; color:#1f2933; font-size:13px; font-weight:600; cursor:pointer;" style-hover="background:#f7f7f7;">Sign out</button>
+          </div>
+        </div>
+
+        <div style="flex:1; overflow:auto; padding:28px 32px;">
+
+          <sc-if value="{{isDashboard}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; gap:20px; animation:crossfade 0.3s ease;" data-screen-label="Dashboard">
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div style="font-size:24px; font-weight:800; color:#1f2933;">Store layouts</div>
+                <button onClick="{{onOpenWizard}}" style="padding:11px 18px; border:none; border-radius:10px; background:linear-gradient(135deg,#C4183A,#A30A2A); color:#fff; font-weight:700; font-size:14px; cursor:pointer; box-shadow:0 6px 16px rgba(163,10,42,0.25);" style-hover="filter:brightness(1.06);">+ New layout</button>
+              </div>
+
+              <div style="display:flex; gap:8px;">
+                <sc-for list="{{dashboardFilters}}" as="f" hint-placeholder-count="5">
+                  <div onClick="{{f.onClick}}" style="padding:8px 15px; border-radius:9px; font-size:13px; font-weight:600; cursor:pointer; background:{{f.bg}}; color:{{f.color}}; border:1px solid {{f.border}};">{{f.label}}</div>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{dashboardEmpty}}" hint-placeholder-val="{{false}}">
+                <div style="border:1.5px dashed #e5e7eb; border-radius:16px; padding:60px 20px; display:flex; flex-direction:column; align-items:center; gap:12px; background:#fff;">
+                  <div style="font-size:15px; font-weight:700; color:#1f2933;">No layouts match this filter</div>
+                  <div style="font-size:13px; color:#6b7280;">Try another status, or start a new layout.</div>
+                </div>
+              </sc-if>
+
+              <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px;">
+                <sc-for list="{{projectCards}}" as="p" hint-placeholder-count="3">
+                  <div onClick="{{p.onClick}}" style="background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; display:flex; flex-direction:column; gap:14px; cursor:pointer; transition:box-shadow 0.15s, transform 0.15s;" style-hover="box-shadow:0 10px 26px rgba(31,41,51,0.08); transform:translateY(-2px);">
+                    <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+                      <div style="font-size:16px; font-weight:700; color:#1f2933; line-height:1.3;">{{p.name}}</div>
+                      <div style="padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; background:{{p.statusBg}}; color:{{p.statusColor}}; white-space:nowrap; margin-left:8px;">{{p.statusLabel}}</div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <div style="width:7px; height:7px; border-radius:50%; background:{{p.verticalColor}};"></div>
+                      <div style="font-size:12px; color:#6b7280; font-weight:600;">{{p.verticalLabel}}</div>
+                    </div>
+                    <div style="height:1px; background:#f0f0f0;"></div>
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                      <div style="font-family:'DM Mono',monospace; font-size:11px; color:#9aa1ab;">{{p.dimsLabel}}</div>
+                      <div style="font-size:11px; color:#9aa1ab;">Updated {{p.updatedLabel}}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{isEditor}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; gap:16px; height:100%; animation:crossfade 0.3s ease;" data-screen-label="Layout Editor">
+              <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+                <div style="display:flex; align-items:center; gap:14px;">
+                  <button onClick="{{onBackToDashboard}}" style="border:none; background:none; cursor:pointer; color:#6b7280; font-size:13px; font-weight:600;" style-hover="color:#1f2933;">← Layouts</button>
+                  <div style="font-size:19px; font-weight:800; color:#1f2933;">{{editorProjectName}}</div>
+                  <div style="padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; background:{{editorStatusBg}}; color:{{editorStatusColor}};">{{editorStatusLabel}}</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <sc-if value="{{showApproveButtons}}" hint-placeholder-val="{{false}}">
+                    <button onClick="{{onReject}}" style="padding:9px 14px; border-radius:9px; border:1px solid #e5e7eb; background:#fff; color:#A30A2A; font-size:13px; font-weight:700; cursor:pointer;">Reject</button>
+                    <button onClick="{{onApprove}}" style="padding:9px 14px; border-radius:9px; border:none; background:oklch(0.5 0.12 150); color:#fff; font-size:13px; font-weight:700; cursor:pointer;">Approve</button>
+                  </sc-if>
+                  <div style="display:flex; background:#fff; border:1px solid #e5e7eb; border-radius:9px; overflow:hidden;">
+                    <div onClick="{{onSet2D}}" style="padding:9px 16px; font-size:13px; font-weight:700; cursor:pointer; background:{{modeBg2d}}; color:{{modeColor2d}};">2D</div>
+                    <div onClick="{{onSet3D}}" style="padding:9px 16px; font-size:13px; font-weight:700; cursor:pointer; background:{{modeBg3d}}; color:{{modeColor3d}};">3D</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="display:flex; gap:16px; flex:1; min-height:560px;">
+                <div style="width:168px; flex-shrink:0; background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:6px;">
+                  <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase; letter-spacing:0.04em; padding:2px 4px 6px;">Fixtures</div>
+                  <sc-for list="{{paletteTools}}" as="t" hint-placeholder-count="6">
+                    <div onClick="{{t.onClick}}" title="{{t.title}}" style="display:flex; flex-direction:column; gap:2px; padding:9px 10px; border-radius:9px; cursor:pointer; background:{{t.bg}}; border:1px solid {{t.border}};">
+                      <div style="font-size:13px; font-weight:700; color:{{t.color}};">{{t.label}}</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:10.5px; color:{{t.subColor}};">{{t.dims}}</div>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="flex:1; display:flex; flex-direction:column; gap:10px; min-width:0;">
+                  <div style="display:flex; align-items:center; justify-content:space-between; background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:10px 16px;">
+                    <div style="font-family:'DM Mono',monospace; font-size:13px; color:#1f2933; font-weight:500;">{{floorDimsLabel}}</div>
+                    <div style="display:flex; align-items:center; gap:14px;">
+                      <div style="font-size:12px; color:#6b7280;">Max fixtures</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:16px; font-weight:700; color:#A30A2A;">{{autoCalcMax}}</div>
+                      <div style="display:flex; align-items:center; gap:4px; margin-left:10px;">
+                        <button onClick="{{onZoomOut}}" style="width:26px; height:26px; border-radius:7px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:700; color:#1f2933;">–</button>
+                        <div style="font-family:'DM Mono',monospace; font-size:11px; color:#9aa1ab; width:36px; text-align:center;">{{zoomLabel}}</div>
+                        <button onClick="{{onZoomIn}}" style="width:26px; height:26px; border-radius:7px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:700; color:#1f2933;">+</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <sc-if value="{{hasViolations}}" hint-placeholder-val="{{false}}">
+                    <div style="display:flex; flex-direction:column; gap:6px;">
+                      <sc-for list="{{violationList}}" as="v" hint-placeholder-count="1">
+                        <div style="display:flex; align-items:center; gap:9px; background:oklch(0.95 0.03 15); border:1px solid oklch(0.85 0.07 15); color:#A30A2A; font-size:12.5px; font-weight:600; padding:9px 13px; border-radius:9px;">
+                          <div style="width:16px; height:16px; border-radius:50%; background:#A30A2A; color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; flex-shrink:0;">!</div>
+                          <span>{{v.text}}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+
+                  <div style="flex:1; background:#e9e5e0; border-radius:14px; overflow:auto; display:flex; align-items:center; justify-content:center; padding:24px; min-height:420px;">
+                    <sc-if value="{{is2D}}" hint-placeholder-val="{{true}}">
+                      <div onClick="{{onCanvasClick}}" style="position:relative; width:{{canvasPx}}px; height:{{canvasPy}}px; background:#fbfaf8; border:3px solid #A30A2A; background-image:linear-gradient(#e5e7eb 1px, transparent 1px), linear-gradient(90deg, #e5e7eb 1px, transparent 1px); background-size:{{gridPx}}px {{gridPx}}px; cursor:{{canvasCursor}}; flex-shrink:0;">
+                        <sc-for list="{{canvasFixtures}}" as="f" hint-placeholder-count="2">
+                          <div onClick="{{f.onClick}}" style="position:absolute; left:{{f.left}}px; top:{{f.top}}px; width:{{f.width}}px; height:{{f.height}}px; background:{{f.bg}}; border:2px solid {{f.border}}; border-radius:4px; display:flex; align-items:center; justify-content:center; text-align:center; padding:2px; cursor:pointer;">
+                            <span style="font-size:10.5px; font-weight:700; color:{{f.textColor}}; font-family:'DM Mono',monospace; line-height:1.3;">{{f.label}}</span>
+                          </div>
+                        </sc-for>
+                        <sc-for list="{{canvasAisles}}" as="a" hint-placeholder-count="1">
+                          <div onClick="{{a.onClick}}" style="position:absolute; left:{{a.left}}px; top:{{a.top}}px; width:{{a.width}}px; height:{{a.height}}px; background:{{a.bg}}; border:2px dashed {{a.border}}; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+                            <sc-if value="{{a.violation}}" hint-placeholder-val="{{false}}">
+                              <div style="width:16px; height:16px; border-radius:50%; background:#A30A2A; color:#fff; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800;">!</div>
+                            </sc-if>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{is3D}}" hint-placeholder-val="{{false}}">
+                      <div ref="{{canvas3dRef}}" style="width:100%; height:100%; min-height:420px; border-radius:8px; overflow:hidden;"></div>
+                    </sc-if>
+                  </div>
+                </div>
+
+                <div style="width:260px; flex-shrink:0; display:flex; flex-direction:column; gap:14px;">
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:12px;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase; letter-spacing:0.04em;">Properties</div>
+                    <sc-if value="{{hasSelection}}" hint-placeholder-val="{{false}}">
+                      <div style="display:flex; flex-direction:column; gap:10px;">
+                        <div style="font-size:14px; font-weight:700; color:#1f2933;">{{selection.title}}</div>
+                        <div style="display:flex; gap:8px;">
+                          <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+                            <label style="font-size:11px; color:#9aa1ab; font-weight:600;">Width (m)</label>
+                            <input type="number" step="0.1" value="{{selection.w}}" onChange="{{selection.onWidthChange}}" disabled="{{editDisabled}}" style="padding:8px 9px; border:1px solid #e5e7eb; border-radius:8px; font-family:'DM Mono',monospace; font-size:13px;"/>
+                          </div>
+                          <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+                            <label style="font-size:11px; color:#9aa1ab; font-weight:600;">Depth (m)</label>
+                            <input type="number" step="0.1" value="{{selection.d}}" onChange="{{selection.onDepthChange}}" disabled="{{editDisabled}}" style="padding:8px 9px; border:1px solid #e5e7eb; border-radius:8px; font-family:'DM Mono',monospace; font-size:13px;"/>
+                          </div>
+                        </div>
+                        <sc-if value="{{selection.isFixture}}" hint-placeholder-val="{{false}}">
+                          <div style="display:flex; flex-direction:column; gap:4px;">
+                            <label style="font-size:11px; color:#9aa1ab; font-weight:600;">Category</label>
+                            <select value="{{selection.categoryId}}" onChange="{{selection.onCategoryChange}}" disabled="{{editDisabled}}" style="padding:8px 9px; border:1px solid #e5e7eb; border-radius:8px; font-size:13px;">
+                              <option value="">Unmapped</option>
+                              <sc-for list="{{editorCategoryOptions}}" as="c" hint-placeholder-count="4">
+                                <option value="{{c.id}}">{{c.name}}</option>
+                              </sc-for>
+                            </select>
+                          </div>
+                        </sc-if>
+                        <sc-if value="{{selection.isAisle}}" hint-placeholder-val="{{false}}">
+                          <div style="font-size:12px; color:#6b7280;">Min aisle for {{editorVerticalLabel}}: <span style="font-family:'DM Mono',monospace; color:#1f2933;">{{editorMinAisle}}</span></div>
+                        </sc-if>
+                        <button onClick="{{selection.onDelete}}" disabled="{{editDisabled}}" style="padding:9px; border-radius:8px; border:1px solid #e5e7eb; background:#fff; color:#A30A2A; font-size:12.5px; font-weight:700; cursor:pointer;">Delete</button>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{hasSelection}}" hint-placeholder-val="{{true}}">
+                    </sc-if>
+                    <div style="font-size:12.5px; color:#9aa1ab; font-style:italic;" data-empty-hint="true">
+                      <sc-if value="{{noSelectionHint}}" hint-placeholder-val="{{true}}">Select a fixture or aisle to edit its measurements.</sc-if>
+                    </div>
+                  </div>
+
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:8px;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase; letter-spacing:0.04em;">Category legend</div>
+                    <sc-for list="{{editorCategoryOptions}}" as="c" hint-placeholder-count="4">
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <div style="width:10px; height:10px; border-radius:3px; background:{{c.color}};"></div>
+                        <div style="font-size:12.5px; color:#1f2933;">{{c.name}}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{isProducts}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; gap:20px; animation:crossfade 0.3s ease;" data-screen-label="Products &amp; Categories">
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div style="font-size:24px; font-weight:800; color:#1f2933;">Products &amp; Categories · {{productsVerticalLabel}}</div>
+                <div style="display:flex; gap:8px;">
+                  <button onClick="{{onImport}}" style="padding:9px 14px; border-radius:9px; border:1px solid #e5e7eb; background:#fff; color:#1f2933; font-size:13px; font-weight:600; cursor:pointer;">Import</button>
+                  <button onClick="{{onExport}}" style="padding:9px 14px; border-radius:9px; border:1px solid #e5e7eb; background:#fff; color:#1f2933; font-size:13px; font-weight:600; cursor:pointer;">Export</button>
+                  <button onClick="{{onAddProduct}}" style="padding:9px 14px; border-radius:9px; border:none; background:linear-gradient(135deg,#C4183A,#A30A2A); color:#fff; font-size:13px; font-weight:700; cursor:pointer;">+ Add product</button>
+                </div>
+              </div>
+              <div style="display:flex; gap:16px; align-items:flex-start;">
+                <div style="width:250px; flex-shrink:0; background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:2px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between; padding:2px 4px 8px;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase; letter-spacing:0.04em;">Categories</div>
+                    <button onClick="{{onAddCategory}}" style="border:none; background:none; color:#A30A2A; font-size:12px; font-weight:700; cursor:pointer;">+ Add</button>
+                  </div>
+                  <sc-for list="{{treeRows}}" as="row" hint-placeholder-count="4">
+                    <div style="display:flex; align-items:center; gap:6px; padding:7px 8px; padding-left:{{row.indentPx}}px; border-radius:8px; cursor:pointer; background:{{row.bg}};" onClick="{{row.onSelect}}">
+                      <div onClick="{{row.onToggle}}" style="width:14px; height:14px; display:flex; align-items:center; justify-content:center; font-size:10px; color:#9aa1ab; flex-shrink:0;">{{row.caret}}</div>
+                      <div style="width:9px; height:9px; border-radius:3px; background:{{row.color}}; flex-shrink:0;"></div>
+                      <div style="font-size:13px; color:#1f2933; font-weight:{{row.weight}};">{{row.name}}</div>
+                    </div>
+                  </sc-for>
+                  <sc-if value="{{hasCategoryFilter}}" hint-placeholder-val="{{false}}">
+                    <button onClick="{{onClearFilter}}" style="margin-top:8px; border:none; background:none; color:#6b7280; font-size:12px; font-weight:600; cursor:pointer; text-align:left;">Clear filter ×</button>
+                  </sc-if>
+                </div>
+
+                <div style="flex:1; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden;">
+                  <div style="display:grid; grid-template-columns:2fr 1fr 1.3fr 1.2fr; padding:12px 18px; border-bottom:1px solid #e5e7eb; background:#fafafa;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Name</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">SKU</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Category</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Attribute</div>
+                  </div>
+                  <sc-for list="{{productRows}}" as="pr" hint-placeholder-count="5">
+                    <div style="display:grid; grid-template-columns:2fr 1fr 1.3fr 1.2fr; padding:12px 18px; border-bottom:1px solid #f0f0f0; align-items:center;" style-hover="background:#fafafa;">
+                      <div style="font-size:13.5px; color:#1f2933; font-weight:600;">{{pr.name}}</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:#6b7280;">{{pr.sku}}</div>
+                      <div style="display:flex; align-items:center; gap:7px;">
+                        <div style="width:8px; height:8px; border-radius:3px; background:{{pr.color}};"></div>
+                        <div style="font-size:12.5px; color:#1f2933;">{{pr.category}}</div>
+                      </div>
+                      <div style="font-size:12.5px; color:#9aa1ab;">{{pr.attr}}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{isAnalytics}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; gap:20px; animation:crossfade 0.3s ease;" data-screen-label="Analytics">
+              <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+                <div style="font-size:24px; font-weight:800; color:#1f2933;">Analytics</div>
+                <select value="{{analyticsProjectId}}" onChange="{{onAnalyticsProjectChange}}" style="padding:9px 13px; border:1px solid #e5e7eb; border-radius:9px; font-size:13px; background:#fff;">
+                  <sc-for list="{{analyticsProjectOptions}}" as="op" hint-placeholder-count="3">
+                    <option value="{{op.id}}">{{op.name}}</option>
+                  </sc-for>
+                </select>
+              </div>
+
+              <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px;">
+                <sc-for list="{{kpis}}" as="k" hint-placeholder-count="4">
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:6px;">
+                    <div style="font-size:12px; color:#6b7280; font-weight:600;">{{k.label}}</div>
+                    <div style="font-family:'DM Mono',monospace; font-size:26px; font-weight:700; color:#1f2933;">{{k.value}}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="display:grid; grid-template-columns:1.1fr 1fr; gap:16px; align-items:start;">
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px;">
+                  <div style="font-size:14px; font-weight:700; color:#1f2933;">Category allocation</div>
+                  <sc-for list="{{allocationRows}}" as="al" hint-placeholder-count="4">
+                    <div style="display:flex; flex-direction:column; gap:5px;">
+                      <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <div style="display:flex; align-items:center; gap:7px;">
+                          <div style="width:9px; height:9px; border-radius:3px; background:{{al.color}};"></div>
+                          <div style="font-size:13px; color:#1f2933; font-weight:600;">{{al.name}}</div>
+                        </div>
+                        <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:#6b7280;">{{al.count}} fixtures</div>
+                      </div>
+                      <div style="height:7px; background:#f0f0f0; border-radius:4px; overflow:hidden;">
+                        <div style="height:100%; width:{{al.pct}}%; background:{{al.color}};"></div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px;">
+                  <div style="font-size:14px; font-weight:700; color:#1f2933;">Version comparison</div>
+                  <div style="display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center;">
+                    <div style="font-size:12.5px; font-weight:700; color:#6b7280;">{{comparison.aLabel}}</div>
+                    <div></div>
+                    <div style="font-size:12.5px; font-weight:700; color:#A30A2A; text-align:right;">{{comparison.bLabel}}</div>
+                  </div>
+                  <sc-for list="{{comparison.rows}}" as="cr" hint-placeholder-count="3">
+                    <div style="display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; padding:8px 0; border-top:1px solid #f0f0f0;">
+                      <div style="font-family:'DM Mono',monospace; font-size:13px; color:#1f2933;">{{cr.aVal}}</div>
+                      <div style="font-size:11px; color:{{cr.deltaColor}}; font-weight:700; white-space:nowrap;">{{cr.delta}}</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:13px; color:#1f2933; text-align:right;">{{cr.bVal}}</div>
+                    </div>
+                  </sc-for>
+                  <div style="font-size:11px; color:#9aa1ab;">{{comparison.metricLabel}}</div>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{isAdmin}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; gap:18px; animation:crossfade 0.3s ease;" data-screen-label="Admin & Config">
+              <div style="font-size:24px; font-weight:800; color:#1f2933;">Admin &amp; Config</div>
+              <div style="display:flex; gap:6px; border-bottom:1px solid #e5e7eb;">
+                <sc-for list="{{adminTabs}}" as="t" hint-placeholder-count="5">
+                  <div onClick="{{t.onClick}}" style="padding:11px 16px; font-size:13.5px; font-weight:700; cursor:pointer; color:{{t.color}}; border-bottom:2px solid {{t.border}}; margin-bottom:-1px;">{{t.label}}</div>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{isTabUsers}}" hint-placeholder-val="{{true}}">
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden;">
+                  <div style="display:grid; grid-template-columns:1.5fr 2fr 1fr; padding:12px 18px; border-bottom:1px solid #e5e7eb; background:#fafafa;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Name</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Email</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Role</div>
+                  </div>
+                  <sc-for list="{{userRows}}" as="u" hint-placeholder-count="4">
+                    <div style="display:grid; grid-template-columns:1.5fr 2fr 1fr; padding:12px 18px; border-bottom:1px solid #f0f0f0; align-items:center;">
+                      <div style="font-size:13.5px; font-weight:600; color:#1f2933;">{{u.name}}</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:#6b7280;">{{u.email}}</div>
+                      <select value="{{u.role}}" onChange="{{u.onRoleChange}}" disabled="{{adminEditDisabled}}" style="padding:6px 8px; border:1px solid #e5e7eb; border-radius:7px; font-size:12.5px;">
+                        <option value="Designer">Designer</option>
+                        <option value="Approver">Approver</option>
+                        <option value="Viewer">Viewer</option>
+                        <option value="Admin">Admin</option>
+                      </select>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{isTabStores}}" hint-placeholder-val="{{false}}">
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden;">
+                  <div style="display:grid; grid-template-columns:2fr 1fr 2fr; padding:12px 18px; border-bottom:1px solid #e5e7eb; background:#fafafa;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Store</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Vertical</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Address</div>
+                  </div>
+                  <sc-for list="{{storeRows}}" as="s" hint-placeholder-count="3">
+                    <div style="display:grid; grid-template-columns:2fr 1fr 2fr; padding:12px 18px; border-bottom:1px solid #f0f0f0; align-items:center;">
+                      <div style="font-size:13.5px; font-weight:600; color:#1f2933;">{{s.name}}</div>
+                      <div style="font-size:12.5px; color:#6b7280;">{{s.vertical}}</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:#6b7280;">{{s.address}}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{isTabApproval}}" hint-placeholder-val="{{false}}">
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:20px; display:flex; flex-direction:column; gap:16px; max-width:520px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div>
+                      <div style="font-size:14px; font-weight:700; color:#1f2933;">Approval workflow enabled</div>
+                      <div style="font-size:12.5px; color:#6b7280;">Layouts require Approver sign-off before publishing</div>
+                    </div>
+                    <div onClick="{{onToggleApproval}}" disabled="{{adminEditDisabled}}" style="width:42px; height:24px; border-radius:20px; background:{{approvalToggleBg}}; position:relative; cursor:pointer; flex-shrink:0;">
+                      <div style="width:18px; height:18px; border-radius:50%; background:#fff; position:absolute; top:3px; left:{{approvalToggleLeft}}px; transition:left 0.15s;"></div>
+                    </div>
+                  </div>
+                  <div style="height:1px; background:#f0f0f0;"></div>
+                  <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Approvers</div>
+                  <sc-for list="{{approversList}}" as="ap" hint-placeholder-count="2">
+                    <div style="display:flex; align-items:center; gap:9px; font-size:13.5px; color:#1f2933; font-weight:600;">
+                      <div style="width:8px; height:8px; border-radius:50%; background:oklch(0.5 0.12 150);"></div>
+                      {{ap.name}}
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{isTabConfig}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex; flex-direction:column; gap:16px;">
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:20px; display:flex; flex-direction:column; gap:14px;">
+                    <div style="font-size:14px; font-weight:700; color:#1f2933;">{{configVerticalLabel}} configuration</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+                      <div style="display:flex; flex-direction:column; gap:5px;">
+                        <label style="font-size:12px; color:#6b7280; font-weight:600;">Units</label>
+                        <select value="{{configUnits}}" onChange="{{onConfigUnitsChange}}" disabled="{{adminEditDisabled}}" style="padding:9px 11px; border:1px solid #e5e7eb; border-radius:9px; font-size:13px;">
+                          <option value="metric">Metric (m)</option>
+                          <option value="imperial">Imperial (ft)</option>
+                        </select>
+                      </div>
+                      <div style="display:flex; flex-direction:column; gap:5px;">
+                        <label style="font-size:12px; color:#6b7280; font-weight:600;">Min aisle width</label>
+                        <input type="number" step="0.1" value="{{configMinAisle}}" onChange="{{onConfigMinAisleChange}}" disabled="{{adminEditDisabled}}" style="padding:9px 11px; border:1px solid #e5e7eb; border-radius:9px; font-family:'DM Mono',monospace; font-size:13px;"/>
+                      </div>
+                    </div>
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                      <div style="font-size:13px; font-weight:600; color:#1f2933;">Approval workflow required</div>
+                      <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:{{configApprovalColor}};">{{configApprovalLabel}}</div>
+                    </div>
+                  </div>
+
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden;">
+                    <div style="padding:14px 18px; border-bottom:1px solid #e5e7eb; font-size:13px; font-weight:700; color:#1f2933;">Fixture templates</div>
+                    <div style="display:grid; grid-template-columns:1.3fr 1fr; padding:10px 18px; background:#fafafa; border-bottom:1px solid #e5e7eb;">
+                      <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Type</div>
+                      <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Default W×D</div>
+                    </div>
+                    <sc-for list="{{fixtureTemplateRows}}" as="ft" hint-placeholder-count="4">
+                      <div style="display:grid; grid-template-columns:1.3fr 1fr; padding:11px 18px; border-bottom:1px solid #f0f0f0; align-items:center;">
+                        <div style="font-size:13px; font-weight:600; color:#1f2933;">{{ft.label}}</div>
+                        <div style="font-family:'DM Mono',monospace; font-size:12.5px; color:#6b7280;">{{ft.dims}}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:10px;">
+                    <div style="font-size:13px; font-weight:700; color:#1f2933;">Compliance rules</div>
+                    <sc-for list="{{complianceRules}}" as="cr" hint-placeholder-count="2">
+                      <div style="display:flex; align-items:flex-start; gap:8px; font-size:13px; color:#1f2933;">
+                        <div style="width:5px; height:5px; border-radius:50%; background:#A30A2A; margin-top:7px; flex-shrink:0;"></div>
+                        {{cr.text}}
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{isTabAudit}}" hint-placeholder-val="{{false}}">
+                <div style="background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden;">
+                  <div style="display:grid; grid-template-columns:1.2fr 1fr 1.3fr 2fr; padding:12px 18px; border-bottom:1px solid #e5e7eb; background:#fafafa;">
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Timestamp</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Actor</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Action</div>
+                    <div style="font-size:11px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Detail</div>
+                  </div>
+                  <sc-for list="{{auditRows}}" as="a" hint-placeholder-count="5">
+                    <div style="display:grid; grid-template-columns:1.2fr 1fr 1.3fr 2fr; padding:11px 18px; border-bottom:1px solid #f0f0f0; align-items:center; font-family:'DM Mono',monospace;">
+                      <div style="font-size:11.5px; color:#9aa1ab;">{{a.ts}}</div>
+                      <div style="font-size:12px; color:#1f2933;">{{a.actor}}</div>
+                      <div style="font-size:12px; color:#1f2933;">{{a.action}}</div>
+                      <div style="font-size:11.5px; color:#6b7280;">{{a.detail}}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{wizardOpen}}" hint-placeholder-val="{{false}}">
+    <div style="position:fixed; inset:0; background:rgba(31,41,51,0.45); display:flex; align-items:center; justify-content:center; z-index:50;">
+      <div style="width:480px; background:#fff; border-radius:18px; padding:28px; display:flex; flex-direction:column; gap:20px; box-shadow:0 30px 70px rgba(0,0,0,0.25);">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div style="font-size:18px; font-weight:800; color:#1f2933;">New layout</div>
+          <button onClick="{{onWizardCancel}}" style="border:none; background:none; font-size:20px; color:#9aa1ab; cursor:pointer; line-height:1;">×</button>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <sc-for list="{{wizardSteps}}" as="ws" hint-placeholder-count="3">
+            <div style="flex:1; height:4px; border-radius:3px; background:{{ws.color}};"></div>
+          </sc-for>
+        </div>
+
+        <sc-if value="{{wizardStep0}}" hint-placeholder-val="{{true}}">
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div style="font-size:13px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Step 1 · Store info</div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <label style="font-size:13px; font-weight:600; color:#1f2933;">Layout name</label>
+              <input type="text" value="{{wizardName}}" onChange="{{onWizardNameChange}}" placeholder="e.g. Riverside Pharmacy #7" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px;"/>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <label style="font-size:13px; font-weight:600; color:#1f2933;">Vertical</label>
+              <select value="{{wizardVertical}}" onChange="{{onWizardVerticalChange}}" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px;">
+                <option value="retail">Retail</option>
+                <option value="pharmacy">Pharmacy</option>
+                <option value="beauty">Beauty</option>
+                <option value="apparel">Apparel</option>
+              </select>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{wizardStep1}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div style="font-size:13px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Step 2 · Dimensions</div>
+            <div style="display:flex; gap:10px;">
+              <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                <label style="font-size:13px; font-weight:600; color:#1f2933;">Width (m)</label>
+                <input type="number" step="0.5" value="{{wizardWidth}}" onChange="{{onWizardWidthChange}}" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-family:'DM Mono',monospace; font-size:14px;"/>
+              </div>
+              <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                <label style="font-size:13px; font-weight:600; color:#1f2933;">Depth (m)</label>
+                <input type="number" step="0.5" value="{{wizardDepth}}" onChange="{{onWizardDepthChange}}" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-family:'DM Mono',monospace; font-size:14px;"/>
+              </div>
+              <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                <label style="font-size:13px; font-weight:600; color:#1f2933;">Height (m)</label>
+                <input type="number" step="0.5" value="{{wizardHeight}}" onChange="{{onWizardHeightChange}}" style="padding:11px 13px; border:1px solid #e5e7eb; border-radius:10px; font-family:'DM Mono',monospace; font-size:14px;"/>
+              </div>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <div onClick="{{onWizardShapeRect}}" style="flex:1; text-align:center; padding:9px; border-radius:9px; font-size:13px; font-weight:600; cursor:pointer; background:{{shapeRectBg}}; color:{{shapeRectColor}}; border:1px solid #e5e7eb;">Rectangle</div>
+              <div onClick="{{onWizardShapeIrregular}}" style="flex:1; text-align:center; padding:9px; border-radius:9px; font-size:13px; font-weight:600; cursor:pointer; background:{{shapeIrregularBg}}; color:{{shapeIrregularColor}}; border:1px solid #e5e7eb;">Irregular</div>
+            </div>
+            <sc-if value="{{isIrregularShape}}" hint-placeholder-val="{{false}}">
+              <div style="font-size:12px; color:#9aa1ab; font-style:italic;">Irregular polygon boundaries can be sculpted from the canvas after creation.</div>
+            </sc-if>
+            <div style="background:#F0F0F0; border-radius:10px; padding:12px 14px; display:flex; align-items:center; justify-content:space-between;">
+              <span style="font-size:12.5px; color:#6b7280;">Estimated max fixtures</span>
+              <span style="font-family:'DM Mono',monospace; font-size:15px; font-weight:700; color:#A30A2A;">{{wizardMaxFixtures}}</span>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{wizardStep2}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            <div style="font-size:13px; font-weight:700; color:#9aa1ab; text-transform:uppercase;">Step 3 · Review</div>
+            <div style="display:flex; flex-direction:column; gap:9px; background:#F0F0F0; border-radius:12px; padding:16px;">
+              <div style="display:flex; justify-content:space-between; font-size:13.5px;"><span style="color:#6b7280;">Name</span><span style="font-weight:700; color:#1f2933;">{{wizardName}}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:13.5px;"><span style="color:#6b7280;">Vertical</span><span style="font-weight:700; color:#1f2933;">{{wizardVerticalLabel}}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:13.5px;"><span style="color:#6b7280;">Dimensions</span><span style="font-family:'DM Mono',monospace; font-weight:700; color:#1f2933;">{{wizardDimsLabel}}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:13.5px;"><span style="color:#6b7280;">Max fixtures</span><span style="font-family:'DM Mono',monospace; font-weight:700; color:#A30A2A;">{{wizardMaxFixtures}}</span></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <div style="display:flex; justify-content:space-between; margin-top:4px;">
+          <button onClick="{{onWizardBack}}" disabled="{{wizardBackDisabled}}" style="padding:10px 16px; border-radius:9px; border:1px solid #e5e7eb; background:#fff; color:#1f2933; font-size:13.5px; font-weight:600; cursor:pointer; opacity:{{wizardBackOpacity}};">Back</button>
+          <sc-if value="{{wizardIsLastStep}}" hint-placeholder-val="{{false}}">
+            <button onClick="{{onWizardCreate}}" style="padding:10px 20px; border-radius:9px; border:none; background:linear-gradient(135deg,#C4183A,#A30A2A); color:#fff; font-size:13.5px; font-weight:700; cursor:pointer;">Create layout</button>
+          </sc-if>
+          <sc-if value="{{wizardIsLastStep}}" hint-placeholder-val="{{true}}">
+          </sc-if>
+          <div style="display:{{wizardNextDisplay}};">
+            <button onClick="{{onWizardNext}}" disabled="{{wizardNextDisabled}}" style="padding:10px 20px; border-radius:9px; border:none; background:linear-gradient(135deg,#C4183A,#A30A2A); color:#fff; font-size:13.5px; font-weight:700; cursor:pointer; opacity:{{wizardNextOpacity}};">Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <div style="position:fixed; bottom:24px; right:24px; display:flex; flex-direction:column; gap:8px; z-index:60;">
+    <sc-for list="{{toasts}}" as="t" hint-placeholder-count="0">
+      <div style="background:#1f2933; color:#fff; padding:12px 18px; border-radius:10px; font-size:13px; font-weight:600; box-shadow:0 10px 30px rgba(0,0,0,0.25); animation:crossfade 0.2s ease;">{{t.text}}</div>
+    </sc-for>
+  </div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const VERTICALS = {
+  retail: { label: 'Retail', minAisle: 1.2, categories: [
+    { id: 'electronics', name: 'Electronics', color: 'oklch(0.7 0.15 250)' },
+    { id: 'home', name: 'Home Goods', color: 'oklch(0.7 0.15 140)' },
+    { id: 'grocery', name: 'Grocery', color: 'oklch(0.75 0.14 90)' },
+    { id: 'seasonal', name: 'Seasonal', color: 'oklch(0.7 0.15 40)' },
+  ], compliance: ['Fire exit lanes must remain \u2265 1.2m clear', 'Max shelf height 2.1m on aisle-facing units'] },
+  pharmacy: { label: 'Pharmacy', minAisle: 1.5, categories: [
+    { id: 'otc', name: 'OTC Medicines', color: '#0ea5e9', children: [
+      { id: 'painrelief', name: 'Pain Relief', color: '#38bdf8' },
+      { id: 'coldflu', name: 'Cold & Flu', color: '#38bdf8' },
+      { id: 'firstaid', name: 'First Aid', color: '#38bdf8' },
+    ] },
+    { id: 'rx', name: 'Prescription', color: 'oklch(0.68 0.16 300)' },
+    { id: 'personal', name: 'Personal Care', color: 'oklch(0.7 0.15 140)' },
+    { id: 'vitamins', name: 'Vitamins', color: 'oklch(0.76 0.14 90)' },
+  ], compliance: ['ADA aisle clearance \u2265 1.5m throughout', 'Rx counter sightline must stay unobstructed'] },
+  beauty: { label: 'Beauty', minAisle: 1.3, categories: [
+    { id: 'skincare', name: 'Skincare', color: 'oklch(0.72 0.13 20)' },
+    { id: 'makeup', name: 'Makeup', color: 'oklch(0.68 0.16 340)' },
+    { id: 'fragrance', name: 'Fragrance', color: 'oklch(0.7 0.15 280)' },
+    { id: 'haircare', name: 'Haircare', color: 'oklch(0.72 0.13 60)' },
+  ], compliance: ['Fragrance testing stations require ventilation', 'Sample station aisle \u2265 1.3m'] },
+  apparel: { label: 'Apparel', minAisle: 1.4, categories: [
+    { id: 'womens', name: 'Womenswear', color: 'oklch(0.68 0.16 340)' },
+    { id: 'mens', name: 'Menswear', color: 'oklch(0.6 0.1 240)' },
+    { id: 'accessories', name: 'Accessories', color: 'oklch(0.75 0.13 90)' },
+    { id: 'footwear', name: 'Footwear', color: 'oklch(0.65 0.12 40)' },
+  ], compliance: ['Fitting room ADA clearance \u2265 1.4m', 'Max garment rack height 1.8m'] },
+};
+
+const FIXTURE_TYPES = {
+  shelf: { label: 'Shelf', w: 1.2, d: 0.6 },
+  rack: { label: 'Rack', w: 1.0, d: 0.5 },
+  gondola: { label: 'Gondola', w: 1.8, d: 0.9 },
+  storage: { label: 'Storage', w: 2.0, d: 1.0 },
+};
+
+const STATUS_META = {
+  draft: { label: 'Draft', bg: '#eef0f2', color: '#6b7280' },
+  in_review: { label: 'In review', bg: 'oklch(0.95 0.05 85)', color: 'oklch(0.42 0.12 75)' },
+  approved: { label: 'Approved', bg: 'oklch(0.94 0.05 150)', color: 'oklch(0.4 0.12 150)' },
+  rejected: { label: 'Rejected', bg: 'oklch(0.95 0.03 15)', color: '#A30A2A' },
+};
+
+const USERS = {
+  Designer: { name: 'Dana Designer', email: 'designer@shelfpilot.local', initials: 'DD' },
+  Approver: { name: 'Pat Approver', email: 'approver@shelfpilot.local', initials: 'PA' },
+  Viewer: { name: 'Val Viewer', email: 'viewer@shelfpilot.local', initials: 'VV' },
+  Admin: { name: 'Alex Admin', email: 'admin@shelfpilot.local', initials: 'AA' },
+};
+
+const PRODUCTS = {
+  retail: [
+    { name: '4K Living Room TV', sku: 'RT-1001', categoryId: 'electronics', attr: '55"' },
+    { name: 'Nonstick Cookware Set', sku: 'RT-1002', categoryId: 'home', attr: '10-pc' },
+    { name: 'Organic Coffee Beans', sku: 'RT-1003', categoryId: 'grocery', attr: '340g' },
+    { name: 'LED String Lights', sku: 'RT-1004', categoryId: 'seasonal', attr: '10m' },
+    { name: 'Bluetooth Speaker', sku: 'RT-1005', categoryId: 'electronics', attr: 'Compact' },
+  ],
+  pharmacy: [
+    { name: 'Ibuprofen 200mg', sku: 'PH-2001', categoryId: 'painrelief', attr: '100ct' },
+    { name: 'Amoxicillin 500mg', sku: 'PH-2002', categoryId: 'rx', attr: 'Rx only' },
+    { name: 'Multivitamin Gummies', sku: 'PH-2003', categoryId: 'vitamins', attr: '60ct' },
+    { name: 'Hand Sanitizer', sku: 'PH-2004', categoryId: 'personal', attr: '250ml' },
+    { name: 'Cold & Flu Relief', sku: 'PH-2005', categoryId: 'coldflu', attr: '24ct' },
+  ],
+  beauty: [
+    { name: 'Hydrating Serum', sku: 'BE-3001', categoryId: 'skincare', attr: '30ml' },
+    { name: 'Matte Lipstick', sku: 'BE-3002', categoryId: 'makeup', attr: 'Shade 12' },
+    { name: 'Eau de Parfum', sku: 'BE-3003', categoryId: 'fragrance', attr: '50ml' },
+    { name: 'Argan Oil Shampoo', sku: 'BE-3004', categoryId: 'haircare', attr: '400ml' },
+    { name: 'Setting Powder', sku: 'BE-3005', categoryId: 'makeup', attr: 'Translucent' },
+  ],
+  apparel: [
+    { name: 'Wool Overcoat', sku: 'AP-4001', categoryId: 'womens', attr: 'M' },
+    { name: 'Oxford Shirt', sku: 'AP-4002', categoryId: 'mens', attr: 'L' },
+    { name: 'Leather Belt', sku: 'AP-4003', categoryId: 'accessories', attr: '34"' },
+    { name: 'Running Sneakers', sku: 'AP-4004', categoryId: 'footwear', attr: '9US' },
+    { name: 'Silk Scarf', sku: 'AP-4005', categoryId: 'accessories', attr: 'One size' },
+  ],
+};
+
+let uid = 100;
+function nextId(prefix) { uid += 1; return prefix + uid; }
+
+function fixtureColor(fx, vertical) {
+  if (fx.categoryId) {
+    const cat = findCategory(vertical, fx.categoryId);
+    if (cat) return cat.color;
+  }
+  return 'rgba(163,10,42,0.12)';
+}
+function findCategory(vertical, id) {
+  const list = VERTICALS[vertical].categories;
+  for (const c of list) {
+    if (c.id === id) return c;
+    if (c.children) { const f = c.children.find(x => x.id === id); if (f) return f; }
+  }
+  return null;
+}
+function flatCategories(vertical) {
+  const out = [];
+  VERTICALS[vertical].categories.forEach(c => { out.push(c); if (c.children) c.children.forEach(ch => out.push(ch)); });
+  return out;
+}
+function computeMaxFixtures(w, d) {
+  const area = Math.max(0, w * d);
+  return Math.max(0, Math.floor((area * 0.5) / 1.05));
+}
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.canvas3dRef = React.createRef();
+    this._three = null;
+
+    const layouts = {
+      l1: { width: 20, depth: 12, fixtures: [
+        { id: 'f1', type: 'gondola', x: 2, y: 2, w: 1.8, d: 0.9, categoryId: 'otc' },
+        { id: 'f2', type: 'shelf', x: 6, y: 2, w: 1.2, d: 0.6, categoryId: null },
+        { id: 'f3', type: 'rack', x: 9, y: 4, w: 1.0, d: 0.5, categoryId: 'rx' },
+      ], aisles: [
+        { id: 'a1', x: 2, y: 4.4, w: 6, d: 0.8 },
+      ] },
+      l2: { width: 18, depth: 10, fixtures: [
+        { id: 'f4', type: 'shelf', x: 2, y: 2, w: 1.2, d: 0.6, categoryId: 'womens' },
+      ], aisles: [] },
+      l3: { width: 24, depth: 14, fixtures: [
+        { id: 'f5', type: 'gondola', x: 3, y: 3, w: 1.8, d: 0.9, categoryId: 'electronics' },
+        { id: 'f6', type: 'storage', x: 8, y: 3, w: 2.0, d: 1.0, categoryId: 'home' },
+        { id: 'f7', type: 'shelf', x: 12, y: 6, w: 1.2, d: 0.6, categoryId: 'grocery' },
+      ], aisles: [ { id: 'a2', x: 3, y: 6, w: 8, d: 1.4 } ] },
+    };
+
+    this.state = {
+      authed: false,
+      loginEmail: '', loginPassword: '', loginRole: 'Designer', loginError: '', loginLoading: false,
+      user: null,
+      vertical: 'pharmacy',
+      screen: 'dashboard',
+      dashboardFilter: 'all',
+      projects: [
+        { id: 'p1', name: 'Downtown Pharmacy #12', vertical: 'pharmacy', status: 'in_review', updatedAt: '2026-07-10', layoutId: 'l1' },
+        { id: 'p2', name: 'Flagship Apparel Atrium', vertical: 'apparel', status: 'draft', updatedAt: '2026-07-08', layoutId: 'l2' },
+        { id: 'p3', name: 'Central Retail Pilot', vertical: 'retail', status: 'approved', updatedAt: '2026-06-30', layoutId: 'l3' },
+      ],
+      layouts,
+      activeProjectId: 'p1',
+      selectedId: null,
+      selectedKind: null,
+      editorMode: '2d',
+      paletteTool: 'select',
+      zoom: 1,
+      wizardOpen: false, wizardStep: 0,
+      wizardName: '', wizardVertical: 'pharmacy', wizardWidth: 20, wizardDepth: 12, wizardHeight: 3, wizardShape: 'rectangle',
+      productsCategoryFilter: null,
+      expandedCategories: { otc: true },
+      analyticsProjectId: 'p1',
+      adminTab: 'users',
+      users: [
+        { id: 'u1', ...USERS.Designer, role: 'Designer' },
+        { id: 'u2', ...USERS.Approver, role: 'Approver' },
+        { id: 'u3', ...USERS.Viewer, role: 'Viewer' },
+        { id: 'u4', ...USERS.Admin, role: 'Admin' },
+      ],
+      approvalEnabled: true,
+      configOverrides: {},
+      toasts: [],
+    };
+  }
+
+  pushToast(text) {
+    const id = nextId('t');
+    this.setState(s => ({ toasts: [...s.toasts, { id, text }] }));
+    setTimeout(() => this.setState(s => ({ toasts: s.toasts.filter(t => t.id !== id) })), 2600);
+  }
+
+  componentDidUpdate() {
+    if (this.state.screen === 'editor' && this.state.editorMode === '3d' && this.canvas3dRef.current) {
+      this.render3D();
+    }
+  }
+  componentWillUnmount() { this.teardown3D(); }
+
+  teardown3D() {
+    if (this._three && this._three.raf) cancelAnimationFrame(this._three.raf);
+    this._three = null;
+  }
+
+  render3D() {
+    const container = this.canvas3dRef.current;
+    if (!container || !window.THREE) return;
+    this.teardown3D();
+    container.innerHTML = '';
+    const THREE = window.THREE;
+    const w = container.clientWidth || 600, h = container.clientHeight || 420;
+    const layout = this.activeLayout();
+    const vertical = this.activeProject() ? this.activeProject().vertical : this.state.vertical;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#e9e5e0');
+    const camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 200);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(w, h);
+    container.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(10, 20, 10);
+    scene.add(dir);
+
+    const cx = layout.width / 2, cz = layout.depth / 2;
+    const floorGeo = new THREE.PlaneGeometry(layout.width, layout.depth);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0xfbfaf8 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(cx, 0, cz);
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(Math.max(layout.width, layout.depth), Math.max(layout.width, layout.depth), 0xd8d8d8, 0xe5e7eb);
+    grid.position.set(cx, 0.01, cz);
+    scene.add(grid);
+
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xA30A2A });
+    const wallH = 0.18;
+    const mkWall = (x, z, sx, sz) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(sx, wallH, sz), wallMat);
+      m.position.set(x, wallH / 2, z);
+      scene.add(m);
+    };
+    mkWall(cx, 0.05, layout.width, 0.1);
+    mkWall(cx, layout.depth - 0.05, layout.width, 0.1);
+    mkWall(0.05, cz, 0.1, layout.depth);
+    mkWall(layout.width - 0.05, cz, 0.1, layout.depth);
+
+    layout.fixtures.forEach(fx => {
+      const cat = fx.categoryId ? findCategory(vertical, fx.categoryId) : null;
+      const colorStr = cat ? cat.color : '#c98999';
+      const tmpDiv = document.createElement('div');
+      tmpDiv.style.color = colorStr;
+      document.body.appendChild(tmpDiv);
+      const resolved = getComputedStyle(tmpDiv).color;
+      document.body.removeChild(tmpDiv);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(fx.w, 1.1, fx.d), new THREE.MeshStandardMaterial({ color: resolved }));
+      mesh.position.set(fx.x + fx.w / 2, 0.55, fx.y + fx.d / 2);
+      scene.add(mesh);
+    });
+
+    const minAisle = VERTICALS[vertical].minAisle;
+    layout.aisles.forEach(a => {
+      const violation = Math.min(a.w, a.d) < minAisle;
+      const mat = new THREE.MeshStandardMaterial({ color: violation ? 0xA30A2A : 0x4caf7d, transparent: true, opacity: 0.35 });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(a.w, a.d), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(a.x + a.w / 2, 0.03, a.y + a.d / 2);
+      scene.add(mesh);
+    });
+
+    const radius = Math.max(layout.width, layout.depth) * 1.15;
+    let angle = -0.6;
+    camera.position.set(cx + radius * Math.cos(angle), radius * 0.6, cz + radius * Math.sin(angle));
+    camera.lookAt(cx, 0, cz);
+
+    this._three = { renderer, scene, camera };
+    const animate = () => {
+      angle += 0.0025;
+      camera.position.set(cx + radius * Math.cos(angle), radius * 0.6, cz + radius * Math.sin(angle));
+      camera.lookAt(cx, 0, cz);
+      renderer.render(scene, camera);
+      this._three.raf = requestAnimationFrame(animate);
+    };
+    animate();
+  }
+
+  activeProject() { return this.state.projects.find(p => p.id === this.state.activeProjectId) || null; }
+  activeLayout() { const p = this.activeProject(); return p ? this.state.layouts[p.layoutId] : { width: 0, depth: 0, fixtures: [], aisles: [] }; }
+
+  onLogin() {
+    if (!this.state.loginEmail || !this.state.loginPassword) {
+      this.setState({ loginError: 'Enter an email and password to continue.' });
+      return;
+    }
+    this.setState({ loginLoading: true, loginError: '' });
+    setTimeout(() => {
+      const u = USERS[this.state.loginRole];
+      this.setState({ authed: true, loginLoading: false, user: { name: u.name, email: this.state.loginEmail, role: this.state.loginRole, initials: u.initials } });
+    }, 650);
+  }
+
+  updateFixtureField(id, field, value) {
+    const p = this.activeProject(); if (!p) return;
+    this.setState(s => {
+      const layouts = { ...s.layouts };
+      const l = { ...layouts[p.layoutId] };
+      l.fixtures = l.fixtures.map(f => f.id === id ? { ...f, [field]: value } : f);
+      layouts[p.layoutId] = l;
+      return { layouts };
+    });
+  }
+  updateAisleField(id, field, value) {
+    const p = this.activeProject(); if (!p) return;
+    this.setState(s => {
+      const layouts = { ...s.layouts };
+      const l = { ...layouts[p.layoutId] };
+      l.aisles = l.aisles.map(a => a.id === id ? { ...a, [field]: value } : a);
+      layouts[p.layoutId] = l;
+      return { layouts };
+    });
+  }
+
+  canvasClick(e) {
+    if (this.state.editorMode !== '2d') return;
+    if (this.props ) {}
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = 36 * this.state.zoom;
+    const mx = (e.clientX - rect.left) / px;
+    const my = (e.clientY - rect.top) / px;
+    const tool = this.state.paletteTool;
+    const p = this.activeProject(); if (!p) return;
+    if (this.state.user && this.state.user.role === 'Viewer') { this.pushToast('Viewers have read-only access'); return; }
+    if (tool === 'select') { this.setState({ selectedId: null, selectedKind: null }); return; }
+    if (tool === 'aisle') {
+      const id = nextId('a');
+      this.setState(s => {
+        const layouts = { ...s.layouts };
+        const l = { ...layouts[p.layoutId] };
+        l.aisles = [...l.aisles, { id, x: Math.round(mx * 2) / 2, y: Math.round(my * 2) / 2, w: 3, d: 0.8 }];
+        layouts[p.layoutId] = l;
+        return { layouts, selectedId: id, selectedKind: 'aisle', paletteTool: 'select' };
+      });
+      return;
+    }
+    const def = FIXTURE_TYPES[tool]; if (!def) return;
+    const id = nextId('f');
+    this.setState(s => {
+      const layouts = { ...s.layouts };
+      const l = { ...layouts[p.layoutId] };
+      l.fixtures = [...l.fixtures, { id, type: tool, x: Math.round(mx * 2) / 2, y: Math.round(my * 2) / 2, w: def.w, d: def.d, categoryId: null }];
+      layouts[p.layoutId] = l;
+      return { layouts, selectedId: id, selectedKind: 'fixture', paletteTool: 'select' };
+    });
+  }
+
+  renderVals() {
+    const s = this.state;
+    const role = s.user ? s.user.role : 'Designer';
+    const isViewer = role === 'Viewer';
+    const project = this.activeProject();
+    const layout = this.activeLayout();
+    const vertical = project ? project.vertical : s.vertical;
+    const vmeta = VERTICALS[vertical];
+
+    const filters = [
+      { id: 'all', label: 'All' }, { id: 'draft', label: 'Draft' }, { id: 'in_review', label: 'In review' },
+      { id: 'approved', label: 'Approved' }, { id: 'rejected', label: 'Rejected' },
+    ];
+    const dashboardFilters = filters.map(f => ({
+      id: f.id, label: f.label,
+      bg: s.dashboardFilter === f.id ? '#1f2933' : '#fff',
+      color: s.dashboardFilter === f.id ? '#fff' : '#6b7280',
+      border: s.dashboardFilter === f.id ? '#1f2933' : '#e5e7eb',
+      onClick: () => this.setState({ dashboardFilter: f.id }),
+    }));
+
+    const filteredProjects = s.projects.filter(p => s.dashboardFilter === 'all' || p.status === s.dashboardFilter);
+    const projectCards = filteredProjects.map(p => {
+      const l = s.layouts[p.layoutId];
+      const meta = STATUS_META[p.status];
+      return {
+        id: p.id, name: p.name,
+        verticalLabel: VERTICALS[p.vertical].label,
+        verticalColor: VERTICALS[p.vertical].categories[0].color,
+        statusLabel: meta.label, statusBg: meta.bg, statusColor: meta.color,
+        dimsLabel: l.width.toFixed(1) + ' m \u00d7 ' + l.depth.toFixed(1) + ' m',
+        updatedLabel: p.updatedAt,
+        onClick: () => this.setState({ activeProjectId: p.id, screen: 'editor', selectedId: null, selectedKind: null }),
+      };
+    });
+
+    const navDefs = [
+      { key: 'dashboard', label: 'Dashboard' },
+      { key: 'editor', label: 'Layout Editor' },
+      { key: 'products', label: 'Products & Categories' },
+      { key: 'analytics', label: 'Analytics' },
+      { key: 'admin', label: 'Admin & Config' },
+    ];
+    const navItems = navDefs.map(n => ({
+      label: n.label,
+      dotColor: s.screen === n.key ? '#C4183A' : 'rgba(255,255,255,0.25)',
+      onClick: () => this.setState({ screen: n.key }),
+    }));
+
+    const verticalOptions = ['retail', 'pharmacy', 'beauty', 'apparel'].map(v => ({
+      label: VERTICALS[v].label,
+      bg: s.vertical === v ? '#A30A2A' : '#fff',
+      color: s.vertical === v ? '#fff' : '#6b7280',
+      border: s.vertical === v ? '#A30A2A' : '#e5e7eb',
+      onClick: () => this.setState({ vertical: v }),
+    }));
+
+    // Editor computed
+    const canvasFixtures = layout.fixtures.map(f => {
+      const px = 36 * s.zoom;
+      const selected = s.selectedKind === 'fixture' && s.selectedId === f.id;
+      const cat = f.categoryId ? findCategory(vertical, f.categoryId) : null;
+      return {
+        id: f.id,
+        left: f.x * px, top: f.y * px, width: f.w * px, height: f.d * px,
+        bg: cat ? cat.color : 'rgba(163,10,42,0.14)',
+        border: selected ? '#1f2933' : (cat ? cat.color : '#A30A2A'),
+        textColor: cat ? '#fff' : '#A30A2A',
+        label: FIXTURE_TYPES[f.type].label + '\n' + f.w.toFixed(1) + '\u00d7' + f.d.toFixed(1),
+        onClick: (e) => { e.stopPropagation(); this.setState({ selectedId: f.id, selectedKind: 'fixture' }); },
+      };
+    });
+    const canvasAisles = layout.aisles.map(a => {
+      const px = 36 * s.zoom;
+      const violation = Math.min(a.w, a.d) < vmeta.minAisle;
+      const selected = s.selectedKind === 'aisle' && s.selectedId === a.id;
+      return {
+        id: a.id,
+        left: a.x * px, top: a.y * px, width: a.w * px, height: a.d * px,
+        bg: violation ? 'rgba(163,10,42,0.12)' : 'rgba(76,175,125,0.14)',
+        border: selected ? '#1f2933' : (violation ? '#A30A2A' : '#4caf7d'),
+        violation,
+        onClick: (e) => { e.stopPropagation(); this.setState({ selectedId: a.id, selectedKind: 'aisle' }); },
+      };
+    });
+    const violationList = layout.aisles.filter(a => Math.min(a.w, a.d) < vmeta.minAisle).map(a => ({
+      id: a.id, text: 'Aisle is ' + Math.min(a.w, a.d).toFixed(1) + 'm \u2014 below the ' + vmeta.minAisle.toFixed(1) + 'm minimum for ' + vmeta.label,
+    }));
+
+    const paletteToolDefs = [
+      { id: 'select', label: 'Select / Move', dims: 'Pointer' },
+      { id: 'shelf', label: 'Shelf', dims: '1.2\u00d70.6 m' },
+      { id: 'rack', label: 'Rack', dims: '1.0\u00d70.5 m' },
+      { id: 'gondola', label: 'Gondola', dims: '1.8\u00d70.9 m' },
+      { id: 'storage', label: 'Storage', dims: '2.0\u00d71.0 m' },
+      { id: 'aisle', label: 'Aisle', dims: 'Draws path' },
+    ];
+    const paletteTools = paletteToolDefs.map(t => ({
+      label: t.label, dims: t.dims,
+      title: isViewer ? 'Viewers have read-only access' : t.label,
+      bg: s.paletteTool === t.id ? '#1f2933' : '#fbfbfb',
+      border: s.paletteTool === t.id ? '#1f2933' : '#e5e7eb',
+      color: s.paletteTool === t.id ? '#fff' : '#1f2933',
+      subColor: s.paletteTool === t.id ? 'rgba(255,255,255,0.6)' : '#9aa1ab',
+      onClick: () => { if (isViewer) { this.pushToast('Viewers have read-only access'); return; } this.setState({ paletteTool: t.id }); },
+    }));
+
+    let selection = null;
+    if (s.selectedKind === 'fixture') {
+      const f = layout.fixtures.find(x => x.id === s.selectedId);
+      if (f) selection = {
+        title: FIXTURE_TYPES[f.type].label, w: f.w, d: f.d, categoryId: f.categoryId || '', isFixture: true, isAisle: false,
+        onWidthChange: (e) => this.updateFixtureField(f.id, 'w', parseFloat(e.target.value) || 0),
+        onDepthChange: (e) => this.updateFixtureField(f.id, 'd', parseFloat(e.target.value) || 0),
+        onCategoryChange: (e) => this.updateFixtureField(f.id, 'categoryId', e.target.value || null),
+        onDelete: () => { this.setState(st => { const layouts = { ...st.layouts }; const l = { ...layouts[project.layoutId] }; l.fixtures = l.fixtures.filter(x => x.id !== f.id); layouts[project.layoutId] = l; return { layouts, selectedId: null, selectedKind: null }; }); },
+      };
+    } else if (s.selectedKind === 'aisle') {
+      const a = layout.aisles.find(x => x.id === s.selectedId);
+      if (a) selection = {
+        title: 'Aisle', w: a.w, d: a.d, isFixture: false, isAisle: true,
+        onWidthChange: (e) => this.updateAisleField(a.id, 'w', parseFloat(e.target.value) || 0),
+        onDepthChange: (e) => this.updateAisleField(a.id, 'd', parseFloat(e.target.value) || 0),
+        onDelete: () => { this.setState(st => { const layouts = { ...st.layouts }; const l = { ...layouts[project.layoutId] }; l.aisles = l.aisles.filter(x => x.id !== a.id); layouts[project.layoutId] = l; return { layouts, selectedId: null, selectedKind: null }; }); },
+      };
+    }
+
+    const editorCategoryOptions = flatCategories(vertical);
+
+    // Wizard
+    const wizardMaxFixtures = computeMaxFixtures(s.wizardWidth, s.wizardDepth);
+    const wizardSteps = [0, 1, 2].map(i => ({ color: i <= s.wizardStep ? '#A30A2A' : '#e5e7eb' }));
+
+    // Products screen
+    const catTree = VERTICALS[s.vertical].categories;
+    const treeRows = [];
+    catTree.forEach(c => {
+      const expanded = !!s.expandedCategories[c.id];
+      treeRows.push({
+        indentPx: 4, name: c.name, color: c.color,
+        caret: c.children ? (expanded ? '\u25be' : '\u25b8') : ' ',
+        weight: s.productsCategoryFilter === c.id ? '800' : '600',
+        bg: s.productsCategoryFilter === c.id ? '#F0F0F0' : 'transparent',
+        onToggle: (e) => { e.stopPropagation(); if (c.children) this.setState(st => ({ expandedCategories: { ...st.expandedCategories, [c.id]: !expanded } })); },
+        onSelect: () => this.setState({ productsCategoryFilter: c.id }),
+      });
+      if (c.children && expanded) {
+        c.children.forEach(ch => treeRows.push({
+          indentPx: 26, name: ch.name, color: ch.color, caret: ' ',
+          weight: s.productsCategoryFilter === ch.id ? '800' : '500',
+          bg: s.productsCategoryFilter === ch.id ? '#F0F0F0' : 'transparent',
+          onToggle: () => {},
+          onSelect: () => this.setState({ productsCategoryFilter: ch.id }),
+        }));
+      }
+    });
+    const productList = (PRODUCTS[s.vertical] || []).filter(p => !s.productsCategoryFilter || p.categoryId === s.productsCategoryFilter);
+    const productRows = productList.map(p => {
+      const cat = findCategory(s.vertical, p.categoryId);
+      return { name: p.name, sku: p.sku, category: cat ? cat.name : 'Unmapped', color: cat ? cat.color : '#e5e7eb', attr: p.attr };
+    });
+
+    // Analytics
+    const analyticsProject = s.projects.find(p => p.id === s.analyticsProjectId) || project;
+    const analyticsLayout = analyticsProject ? s.layouts[analyticsProject.layoutId] : { width: 0, depth: 0, fixtures: [], aisles: [] };
+    const footprint = analyticsLayout.width * analyticsLayout.depth;
+    const fixtureArea = analyticsLayout.fixtures.reduce((a, f) => a + f.w * f.d, 0);
+    const utilization = footprint > 0 ? Math.round((fixtureArea / footprint) * 100) : 0;
+    const capacity = computeMaxFixtures(analyticsLayout.width, analyticsLayout.depth);
+    const kpis = [
+      { label: 'Space utilization', value: utilization + '%' },
+      { label: 'Fixture count', value: String(analyticsLayout.fixtures.length) },
+      { label: 'Capacity (max fixtures)', value: String(capacity) },
+      { label: 'Footprint', value: footprint.toFixed(0) + ' m\u00b2' },
+    ];
+    const allocMap = {};
+    analyticsLayout.fixtures.forEach(f => {
+      const key = f.categoryId || 'unmapped';
+      allocMap[key] = (allocMap[key] || 0) + 1;
+    });
+    const totalFx = analyticsLayout.fixtures.length || 1;
+    const allocationRows = Object.keys(allocMap).map(key => {
+      const cat = key === 'unmapped' ? null : findCategory(analyticsProject.vertical, key);
+      return { name: cat ? cat.name : 'Unmapped', color: cat ? cat.color : '#e5e7eb', count: allocMap[key], pct: Math.round((allocMap[key] / totalFx) * 100) };
+    });
+    const baselineUtil = Math.max(0, utilization - 8);
+    const baselineCount = Math.max(0, analyticsLayout.fixtures.length - 1);
+    const baselineCapacity = Math.max(0, capacity - 2);
+    const deltaStr = (a, b, suffix) => { const d = b - a; const sign = d > 0 ? '+' : ''; return sign + d + (suffix || ''); };
+    const comparison = {
+      aLabel: 'Last approved', bLabel: 'Current draft',
+      rows: [
+        { aVal: baselineUtil + '%', bVal: utilization + '%', delta: deltaStr(baselineUtil, utilization, '%'), deltaColor: utilization >= baselineUtil ? 'oklch(0.5 0.12 150)' : '#A30A2A' },
+        { aVal: String(baselineCount), bVal: String(analyticsLayout.fixtures.length), delta: deltaStr(baselineCount, analyticsLayout.fixtures.length), deltaColor: analyticsLayout.fixtures.length >= baselineCount ? 'oklch(0.5 0.12 150)' : '#A30A2A' },
+        { aVal: String(baselineCapacity), bVal: String(capacity), delta: deltaStr(baselineCapacity, capacity), deltaColor: capacity >= baselineCapacity ? 'oklch(0.5 0.12 150)' : '#A30A2A' },
+      ],
+      metricLabel: 'Utilization \u00b7 Fixture count \u00b7 Capacity',
+    };
+    const analyticsProjectOptions = s.projects.map(p => ({ id: p.id, name: p.name }));
+
+    // Admin
+    const adminTabDefs = [
+      { id: 'users', label: 'Users & Roles' }, { id: 'stores', label: 'Store Master' },
+      { id: 'approval', label: 'Approval Workflow' }, { id: 'config', label: 'Configuration' }, { id: 'audit', label: 'Audit Log' },
+    ];
+    const adminTabs = adminTabDefs.map(t => ({
+      label: t.label,
+      color: s.adminTab === t.id ? '#A30A2A' : '#6b7280',
+      border: s.adminTab === t.id ? '#A30A2A' : 'transparent',
+      onClick: () => this.setState({ adminTab: t.id }),
+    }));
+    const userRows = s.users.map(u => ({
+      name: u.name, email: u.email, role: u.role,
+      onRoleChange: (e) => { const val = e.target.value; this.setState(st => ({ users: st.users.map(x => x.id === u.id ? { ...x, role: val } : x) })); },
+    }));
+    const storeRows = s.projects.map(p => ({ name: p.name, vertical: VERTICALS[p.vertical].label, address: p.id === 'p1' ? '412 Market St' : p.id === 'p2' ? '88 Fifth Ave' : '2200 Commerce Blvd' }));
+    const approversList = s.users.filter(u => u.role === 'Approver' || u.role === 'Admin').map(u => ({ name: u.name }));
+    const configOverride = s.configOverrides[s.vertical] || {};
+    const configMinAisle = configOverride.minAisle != null ? configOverride.minAisle : VERTICALS[s.vertical].minAisle;
+    const configUnits = configOverride.units || 'metric';
+    const fixtureTemplateRows = Object.keys(FIXTURE_TYPES).map(k => ({ label: FIXTURE_TYPES[k].label, dims: FIXTURE_TYPES[k].w.toFixed(1) + '\u00d7' + FIXTURE_TYPES[k].d.toFixed(1) + ' m' }));
+    const complianceRules = VERTICALS[s.vertical].compliance.map(t => ({ text: t }));
+    const auditRows = [
+      { ts: '2026-07-13 09:14', actor: 'alex@shelfpilot.local', action: 'config.update', detail: 'Pharmacy min aisle set to 1.5m' },
+      { ts: '2026-07-12 16:02', actor: 'pat@shelfpilot.local', action: 'layout.approve', detail: 'Central Retail Pilot approved' },
+      { ts: '2026-07-11 11:47', actor: 'dana@shelfpilot.local', action: 'layout.edit', detail: 'Added gondola to Downtown Pharmacy #12' },
+      { ts: '2026-07-10 08:30', actor: 'dana@shelfpilot.local', action: 'layout.create', detail: 'Created Downtown Pharmacy #12' },
+      { ts: '2026-07-08 14:22', actor: 'dana@shelfpilot.local', action: 'layout.create', detail: 'Created Flagship Apparel Atrium' },
+    ];
+
+    const adminEditDisabled = role !== 'Admin';
+    const editDisabled = isViewer;
+
+    return {
+      showLogin: !s.authed,
+      authed: s.authed,
+      loginEmail: s.loginEmail, loginPassword: s.loginPassword, loginRole: s.loginRole, loginError: s.loginError, loginLoading: s.loginLoading,
+      loginButtonLabel: s.loginLoading ? 'Signing in\u2026' : 'Sign in',
+      onLoginEmailChange: (e) => this.setState({ loginEmail: e.target.value }),
+      onLoginPasswordChange: (e) => this.setState({ loginPassword: e.target.value }),
+      onLoginRoleChange: (e) => this.setState({ loginRole: e.target.value }),
+      onLoginSubmit: () => this.onLogin(),
+
+      user: s.user || { name: '', role: '', initials: '' },
+      navItems, verticalOptions,
+      onSignOut: () => this.setState({ authed: false, loginEmail: '', loginPassword: '' }),
+
+      isDashboard: s.screen === 'dashboard', isEditor: s.screen === 'editor', isProducts: s.screen === 'products',
+      isAnalytics: s.screen === 'analytics', isAdmin: s.screen === 'admin',
+
+      dashboardFilters, projectCards, dashboardEmpty: projectCards.length === 0,
+      onOpenWizard: () => this.setState({ wizardOpen: true, wizardStep: 0, wizardName: '', wizardVertical: s.vertical, wizardWidth: 20, wizardDepth: 12, wizardHeight: 3, wizardShape: 'rectangle' }),
+
+      editorProjectName: project ? project.name : '',
+      editorStatusLabel: project ? STATUS_META[project.status].label : '',
+      editorStatusBg: project ? STATUS_META[project.status].bg : '#eee',
+      editorStatusColor: project ? STATUS_META[project.status].color : '#666',
+      showApproveButtons: role === 'Approver' && project && project.status === 'in_review',
+      onApprove: () => { this.setState(st => ({ projects: st.projects.map(p => p.id === project.id ? { ...p, status: 'approved' } : p) })); this.pushToast('Layout approved'); },
+      onReject: () => { this.setState(st => ({ projects: st.projects.map(p => p.id === project.id ? { ...p, status: 'rejected' } : p) })); this.pushToast('Layout rejected'); },
+      onBackToDashboard: () => this.setState({ screen: 'dashboard' }),
+      onSet2D: () => this.setState({ editorMode: '2d' }),
+      onSet3D: () => this.setState({ editorMode: '3d' }),
+      modeBg2d: s.editorMode === '2d' ? '#1f2933' : '#fff', modeColor2d: s.editorMode === '2d' ? '#fff' : '#6b7280',
+      modeBg3d: s.editorMode === '3d' ? '#1f2933' : '#fff', modeColor3d: s.editorMode === '3d' ? '#fff' : '#6b7280',
+      is2D: s.editorMode === '2d', is3D: s.editorMode === '3d',
+      canvas3dRef: this.canvas3dRef,
+      paletteTools,
+      floorDimsLabel: layout.width.toFixed(1) + ' m \u00d7 ' + layout.depth.toFixed(1) + ' m',
+      autoCalcMax: computeMaxFixtures(layout.width, layout.depth),
+      zoomLabel: Math.round(s.zoom * 100) + '%',
+      onZoomIn: () => this.setState(st => ({ zoom: Math.min(1.6, st.zoom + 0.15) })),
+      onZoomOut: () => this.setState(st => ({ zoom: Math.max(0.6, st.zoom - 0.15) })),
+      hasViolations: violationList.length > 0, violationList,
+      canvasPx: layout.width * 36 * s.zoom, canvasPy: layout.depth * 36 * s.zoom, gridPx: 36 * s.zoom,
+      canvasCursor: s.paletteTool === 'select' ? 'default' : 'crosshair',
+      canvasFixtures, canvasAisles,
+      onCanvasClick: (e) => this.canvasClick(e),
+      hasSelection: !!selection, selection: selection || {}, editDisabled,
+      noSelectionHint: !selection,
+      editorCategoryOptions, editorVerticalLabel: vmeta.label, editorMinAisle: vmeta.minAisle.toFixed(1) + ' m',
+
+      productsVerticalLabel: VERTICALS[s.vertical].label,
+      treeRows, hasCategoryFilter: !!s.productsCategoryFilter,
+      onClearFilter: () => this.setState({ productsCategoryFilter: null }),
+      productRows,
+      onAddCategory: () => this.pushToast('Category added'),
+      onAddProduct: () => this.pushToast('Product added'),
+      onImport: () => this.pushToast('Import started'),
+      onExport: () => this.pushToast('Export ready for download'),
+
+      analyticsProjectId: s.analyticsProjectId, analyticsProjectOptions,
+      onAnalyticsProjectChange: (e) => this.setState({ analyticsProjectId: e.target.value }),
+      kpis, allocationRows, comparison,
+
+      adminTabs, isTabUsers: s.adminTab === 'users', isTabStores: s.adminTab === 'stores', isTabApproval: s.adminTab === 'approval', isTabConfig: s.adminTab === 'config', isTabAudit: s.adminTab === 'audit',
+      userRows, storeRows, approversList, adminEditDisabled,
+      approvalToggleBg: s.approvalEnabled ? '#A30A2A' : '#e5e7eb', approvalToggleLeft: s.approvalEnabled ? 21 : 3,
+      onToggleApproval: () => { if (role !== 'Admin') { this.pushToast('Admin role required'); return; } this.setState(st => ({ approvalEnabled: !st.approvalEnabled })); },
+      configVerticalLabel: VERTICALS[s.vertical].label, configUnits, configMinAisle,
+      onConfigUnitsChange: (e) => { if (role !== 'Admin') return; const val = e.target.value; this.setState(st => ({ configOverrides: { ...st.configOverrides, [s.vertical]: { ...(st.configOverrides[s.vertical] || {}), units: val } } })); },
+      onConfigMinAisleChange: (e) => { if (role !== 'Admin') return; const val = parseFloat(e.target.value) || 0; this.setState(st => ({ configOverrides: { ...st.configOverrides, [s.vertical]: { ...(st.configOverrides[s.vertical] || {}), minAisle: val } } })); },
+      configApprovalLabel: s.approvalEnabled ? 'Enabled' : 'Disabled', configApprovalColor: s.approvalEnabled ? 'oklch(0.5 0.12 150)' : '#9aa1ab',
+      fixtureTemplateRows, complianceRules, auditRows,
+
+      wizardOpen: s.wizardOpen, wizardSteps,
+      wizardStep0: s.wizardStep === 0, wizardStep1: s.wizardStep === 1, wizardStep2: s.wizardStep === 2,
+      wizardName: s.wizardName, wizardVertical: s.wizardVertical, wizardVerticalLabel: VERTICALS[s.wizardVertical].label,
+      wizardWidth: s.wizardWidth, wizardDepth: s.wizardDepth, wizardHeight: s.wizardHeight,
+      wizardDimsLabel: s.wizardWidth.toFixed(1) + ' m \u00d7 ' + s.wizardDepth.toFixed(1) + ' m \u00d7 ' + s.wizardHeight.toFixed(1) + ' m',
+      wizardMaxFixtures,
+      shapeRectBg: s.wizardShape === 'rectangle' ? '#1f2933' : '#fff', shapeRectColor: s.wizardShape === 'rectangle' ? '#fff' : '#6b7280',
+      shapeIrregularBg: s.wizardShape === 'irregular' ? '#1f2933' : '#fff', shapeIrregularColor: s.wizardShape === 'irregular' ? '#fff' : '#6b7280',
+      isIrregularShape: s.wizardShape === 'irregular',
+      onWizardNameChange: (e) => this.setState({ wizardName: e.target.value }),
+      onWizardVerticalChange: (e) => this.setState({ wizardVertical: e.target.value }),
+      onWizardWidthChange: (e) => this.setState({ wizardWidth: parseFloat(e.target.value) || 0 }),
+      onWizardDepthChange: (e) => this.setState({ wizardDepth: parseFloat(e.target.value) || 0 }),
+      onWizardHeightChange: (e) => this.setState({ wizardHeight: parseFloat(e.target.value) || 0 }),
+      onWizardShapeRect: () => this.setState({ wizardShape: 'rectangle' }),
+      onWizardShapeIrregular: () => this.setState({ wizardShape: 'irregular' }),
+      onWizardCancel: () => this.setState({ wizardOpen: false }),
+      onWizardBack: () => this.setState(st => ({ wizardStep: Math.max(0, st.wizardStep - 1) })),
+      wizardBackDisabled: s.wizardStep === 0, wizardBackOpacity: s.wizardStep === 0 ? 0.4 : 1,
+      onWizardNext: () => this.setState(st => ({ wizardStep: Math.min(2, st.wizardStep + 1) })),
+      wizardNextDisabled: (s.wizardStep === 0 && !s.wizardName.trim()) || (s.wizardStep === 1 && (!(s.wizardWidth > 0) || !(s.wizardDepth > 0))),
+      wizardNextOpacity: ((s.wizardStep === 0 && !s.wizardName.trim()) || (s.wizardStep === 1 && (!(s.wizardWidth > 0) || !(s.wizardDepth > 0)))) ? 0.5 : 1,
+      wizardIsLastStep: s.wizardStep === 2, wizardNextDisplay: s.wizardStep === 2 ? 'none' : 'block',
+      onWizardCreate: () => {
+        const pid = nextId('p'); const lid = nextId('l');
+        this.setState(st => ({
+          projects: [...st.projects, { id: pid, name: st.wizardName, vertical: st.wizardVertical, status: 'draft', updatedAt: new Date().toISOString().slice(0, 10), layoutId: lid }],
+          layouts: { ...st.layouts, [lid]: { width: st.wizardWidth, depth: st.wizardDepth, fixtures: [], aisles: [] } },
+          activeProjectId: pid, screen: 'editor', wizardOpen: false, selectedId: null, selectedKind: null,
+        }));
+        this.pushToast('Layout created');
+      },
+
+      toasts: s.toasts,
+    };
+  }
+}
+
+</script>
+</body>
+</html>

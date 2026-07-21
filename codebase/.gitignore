@@ -1,0 +1,12 @@
+node_modules/
+.env
+dist/
+coverage/
+data/
+*.db
+*.db-*
+# Production packaging output
+dist-package/
+.package/
+logs/
+*.pid

@@ -1,0 +1,1702 @@
+openapi: 3.0.3
+info:
+  title: ShelfPilot API
+  version: 0.7.0
+  description: |
+    UI + mock API contract for ShelfPilot store layout design (demo stack).
+    Auth is mock email/password with role selection. Persistence is SQLite.
+    v0.3 adds shelves, separate aisle/shelf mapping, and dimension-based planogram
+    (change: layout-editor-planogram).
+    v0.4 adds polygon containment, rules-based autogenerate, and category-gated planogram
+    (change: layout-autogen-walkthrough).
+    v0.5 adds product PATCH, polygon-tight packer, multi-level planogram UX
+    (change: merch-layers-polygon-fix).
+    v0.6 adds portfolio analytics, smart category-mix autogenerate, temperatureZone on shelves
+    (change: module-reframe-smart-autogen).
+    v0.7 adds dual-face shelves (faces A/B), displayNumber, strict polygon fixture zone,
+    and faceId on planogram writes (change: dual-face-numbered-shelves-strict-polygon).
+servers:
+  - url: http://localhost:3000
+  - url: http://localhost:3001
+    description: Docker Compose host-mapped API port
+tags:
+  - name: Health
+  - name: Auth
+  - name: Layouts
+  - name: Planogram
+  - name: Catalog
+  - name: Analytics
+  - name: Admin
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Liveness check
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, service]
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  correlationId: { type: string }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Mock email/password login with role selection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke current bearer session
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204":
+          description: Session revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /layouts:
+    get:
+      tags: [Layouts]
+      operationId: listLayouts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/LayoutStatus"
+      responses:
+        "200":
+          description: Layout portfolio
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LayoutSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Layouts]
+      operationId: createLayout
+      description: Roles — Designer, Admin
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLayoutRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /layouts/{layoutId}:
+    get:
+      tags: [Layouts]
+      operationId: getLayout
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Layout detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Layouts]
+      operationId: updateLayout
+      description: |
+        Geometry/name — Designer, Admin.
+        status=in_review — Designer, Admin.
+        status=approved|rejected — Approver, Admin (when approvalWorkflowEnabled).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLayoutRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/aisles:
+    post:
+      tags: [Layouts]
+      operationId: addAisle
+      description: Roles — Designer, Admin. `id` optional (server-generated).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AisleInput"
+      responses:
+        "201":
+          description: Aisle added with validation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/zones:
+    post:
+      tags: [Layouts]
+      operationId: addZone
+      description: Roles — Designer, Admin. Create a special zone (hot/offer/special). Footprint must fit inside the polygon.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Zone"
+      responses:
+        "201":
+          description: Zone created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          description: containment_violation
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/zones/{zoneId}:
+    patch:
+      tags: [Layouts]
+      operationId: updateZone
+      description: Roles — Designer, Admin. Rename/recolor/retype/move/resize a zone.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: zoneId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Zone"
+      responses:
+        "200":
+          description: Zone updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          description: containment_violation
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Layouts]
+      operationId: deleteZone
+      description: Roles — Designer, Admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: zoneId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zone deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/entry-points:
+    post:
+      tags: [Layouts]
+      operationId: addEntryPoint
+      description: Roles — Designer, Admin. Mark a store entrance. Position must be inside the polygon.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryPoint"
+      responses:
+        "201":
+          description: Entry point created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          description: containment_violation
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/entry-points/{entryId}:
+    patch:
+      tags: [Layouts]
+      operationId: updateEntryPoint
+      description: Roles — Designer, Admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: entryId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntryPoint"
+      responses:
+        "200":
+          description: Entry point updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          description: containment_violation
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Layouts]
+      operationId: deleteEntryPoint
+      description: Roles — Designer, Admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: entryId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Entry point deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/fixtures:
+    post:
+      tags: [Layouts]
+      operationId: addFixture
+      description: Roles — Designer, Admin. `id` optional.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FixtureInput"
+      responses:
+        "201":
+          description: Fixture placed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/fixtures/{fixtureId}:
+    patch:
+      tags: [Layouts]
+      operationId: updateFixture
+      description: Roles — Designer, Admin. Persist drag/snap position and dimensions. Prefer shelves endpoints for new clients.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: fixtureId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FixturePatch"
+      responses:
+        "200":
+          description: Fixture updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/aisles/{aisleId}:
+    patch:
+      tags: [Layouts]
+      operationId: updateAisle
+      description: Roles — Designer, Admin. Move/configure aisle corridor space independently of shelves.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: aisleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AislePatch"
+      responses:
+        "200":
+          description: Aisle updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/shelves:
+    post:
+      tags: [Layouts]
+      operationId: addShelf
+      description: Roles — Designer, Admin. Place a merchandising shelf (preferred over fixtures).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShelfInput"
+      responses:
+        "201":
+          description: Shelf placed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/shelves/{shelfId}:
+    patch:
+      tags: [Layouts]
+      operationId: updateShelf
+      description: Roles — Designer, Admin. Move, resize, set levels, aisle ownership, category.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: shelfId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShelfPatch"
+      responses:
+        "200":
+          description: Shelf updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/shelves/{shelfId}/planogram:
+    post:
+      tags: [Planogram]
+      operationId: addPlanogramPlacement
+      description: |
+        Roles — Designer, Admin. Add product to shelf face/level.
+        maxFacings = floor(usableWidthMeters / productWidthMeters); facings clamped to max.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: shelfId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanogramPlacementInput"
+      responses:
+        "201":
+          description: Placement added; layout returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/shelves/{shelfId}/planogram/{placementId}:
+    delete:
+      tags: [Planogram]
+      operationId: deletePlanogramPlacement
+      description: Roles — Designer, Admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+        - name: shelfId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: placementId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Placement removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/planogram/preview:
+    post:
+      tags: [Planogram]
+      operationId: previewPlanogramFacings
+      description: Compute maxFacings and suggestedLevels without persisting.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shelfId, productId]
+              properties:
+                shelfId: { type: string }
+                productId: { type: string }
+                levelIndex: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Facing preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanogramPreview"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/autogenerate:
+    post:
+      tags: [Layouts]
+      operationId: autogenerateAislesShelves
+      description: |
+        Rules-based packer (no LLM). Places maximum compliant shelves with min aisle clearance,
+        strictly inside the layout polygon/rectangle. Roles — Designer, Admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutogenerateRequest"
+      responses:
+        "200":
+          description: Layout with generated aisles and shelves
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutogenerateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/mappings:
+    post:
+      tags: [Layouts]
+      operationId: addMapping
+      description: Roles — Designer, Admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryMapping"
+      responses:
+        "201":
+          description: Mapping created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/auto-calc:
+    post:
+      tags: [Layouts]
+      operationId: runAutoCalc
+      description: Roles — Designer, Admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Recalculated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutoCalcResult"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/versions:
+    get:
+      tags: [Layouts]
+      operationId: listLayoutVersions
+      description: Demo snapshots (when LAYOUT_VERSIONING enabled). Empty array when disabled.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LayoutVersion"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /categories:
+    get:
+      tags: [Catalog]
+      operationId: listCategories
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: vertical
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Category tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Category"
+    post:
+      tags: [Catalog]
+      operationId: createCategory
+      description: Roles — Designer, Admin. `id` optional.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CategoryInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Category"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /products:
+    get:
+      tags: [Catalog]
+      operationId: listProducts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: categoryId
+          in: query
+          schema: { type: string }
+        - name: vertical
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Products
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+    post:
+      tags: [Catalog]
+      operationId: createProduct
+      description: Roles — Designer, Admin. `id` optional.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /products/{productId}:
+    patch:
+      tags: [Catalog]
+      operationId: updateProduct
+      description: Roles — Designer, Admin. Update name, sku, categoryId, attributes.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductPatch"
+      responses:
+        "200":
+          description: Updated product
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /catalog/import:
+    post:
+      tags: [Catalog]
+      operationId: importCatalog
+      description: Roles — Admin, Designer
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                categories:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/CategoryInput"
+                products:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/ProductInput"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  importedCategories: { type: integer }
+                  importedProducts: { type: integer }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /catalog/export:
+    get:
+      tags: [Catalog]
+      operationId: exportCatalog
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: vertical
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Catalog JSON export
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Category"
+                  products:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Product"
+
+  /analytics/portfolio:
+    get:
+      tags: [Analytics]
+      operationId: getPortfolioAnalytics
+      description: Aggregate KPIs across layouts (optional vertical filter).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: vertical
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Portfolio analytics summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioAnalytics"
+
+  /analytics/layouts/{layoutId}/summary:
+    get:
+      tags: [Analytics]
+      operationId: getLayoutAnalytics
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /analytics/compare:
+    post:
+      tags: [Analytics]
+      operationId: compareLayouts
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layoutIdA, layoutIdB]
+              properties:
+                layoutIdA: { type: string }
+                layoutIdB: { type: string }
+                versionIdA: { type: string }
+                versionIdB: { type: string }
+      responses:
+        "200":
+          description: Comparison
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsCompare"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/config:
+    get:
+      tags: [Admin]
+      operationId: getConfig
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: vertical
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Vertical/global config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerticalConfig"
+    put:
+      tags: [Admin]
+      operationId: putConfig
+      description: Roles — Admin only
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerticalConfig"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerticalConfig"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      operationId: listUsers
+      description: Roles — Admin
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      operationId: createUser
+      description: Roles — Admin. Demo plaintext passwords only.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/users/{userId}:
+    patch:
+      tags: [Admin]
+      operationId: updateUser
+      description: Roles — Admin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/audit:
+    get:
+      tags: [Admin]
+      operationId: listAudit
+      description: Roles — Admin, Approver
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Opaque session token from POST /auth/login. Expires when AUTH_SESSION_TTL > 0.
+  parameters:
+    CorrelationId:
+      in: header
+      name: x-correlation-id
+      schema: { type: string }
+      required: false
+    LayoutId:
+      name: layoutId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Role:
+      type: string
+      enum: [Designer, Approver, Viewer, Admin]
+    LayoutStatus:
+      type: string
+      enum: [draft, in_review, approved, rejected]
+    LoginRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+    LoginResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+    CreateUserRequest:
+      type: object
+      required: [email, name, role, password]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        password: { type: string }
+    UpdateUserRequest:
+      type: object
+      properties:
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        password: { type: string }
+    LayoutSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vertical: { type: string }
+        status: { $ref: "#/components/schemas/LayoutStatus" }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        updatedAt: { type: string, format: date-time }
+    CreateLayoutRequest:
+      type: object
+      required: [name, vertical, widthMeters, depthMeters]
+      properties:
+        name: { type: string }
+        vertical: { type: string }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        shape:
+          type: string
+          enum: [rectangle, polygon]
+          default: rectangle
+        polygon:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+    UpdateLayoutRequest:
+      type: object
+      properties:
+        name: { type: string }
+        status: { $ref: "#/components/schemas/LayoutStatus" }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        shape: { type: string }
+        polygon:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+    Point:
+      type: object
+      properties:
+        x: { type: number }
+        y: { type: number }
+    AisleInput:
+      type: object
+      required: [widthMeters]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        widthMeters: { type: number, description: Corridor / aisle spacing width }
+        lengthMeters: { type: number, description: Run length of the aisle }
+        orientation:
+          type: string
+          enum: [horizontal, vertical]
+          default: horizontal
+          description: Run direction; determines footprint (horizontal=length along X, vertical=length along Y)
+        x: { type: number }
+        y: { type: number }
+        path:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+        categoryId: { type: string, description: Optional circulation category }
+        color: { type: string }
+    Zone:
+      type: object
+      required: [id, type, x, y, widthMeters, depthMeters]
+      description: Special merchandising overlay (hot / offer / custom). Does not affect fixture packing.
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [hot, offer, special]
+          default: special
+        name: { type: string, description: Optional user-defined label (e.g. Clearance, Seasonal) }
+        color: { type: string }
+        x: { type: number }
+        y: { type: number }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+    EntryPoint:
+      type: object
+      required: [id, x, y]
+      description: Store entrance marker (traffic-flow metadata; does not affect packing).
+      properties:
+        id: { type: string }
+        name: { type: string }
+        x: { type: number }
+        y: { type: number }
+        widthMeters: { type: number, default: 1.8 }
+    AislePatch:
+      type: object
+      properties:
+        name: { type: string }
+        widthMeters: { type: number }
+        x: { type: number }
+        y: { type: number }
+        path:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+        categoryId: { type: string }
+        color: { type: string }
+    Aisle:
+      allOf:
+        - $ref: "#/components/schemas/AisleInput"
+        - type: object
+          required: [id, widthMeters]
+          properties:
+            violations:
+              type: array
+              items: { type: string }
+    ShelfLevel:
+      type: object
+      required: [levelIndex]
+      properties:
+        levelIndex: { type: integer }
+        heightFromFloorMeters: { type: number }
+        clearanceMeters: { type: number }
+    ShelfFace:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          enum: [A, B]
+        categoryId: { type: string }
+        color: { type: string }
+        planogram:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanogramPlacement"
+    ShelfInput:
+      type: object
+      required: [usableWidthMeters, depthMeters, x, y]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [shelf, rack, gondola, storage]
+          default: shelf
+        label: { type: string }
+        usableWidthMeters: { type: number, description: Face width available for facings }
+        widthMeters: { type: number, description: Alias of usableWidthMeters for canvas footprint }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        x: { type: number }
+        y: { type: number }
+        rotationDeg: { type: number }
+        aisleId: { type: string, description: Optional owning aisle }
+        categoryId: { type: string }
+        color: { type: string }
+        temperatureZone:
+          type: string
+          enum: [ambient, chilled, frozen]
+          default: ambient
+        levels:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShelfLevel"
+        displayNumber:
+          type: integer
+          minimum: 1
+        doubleSided:
+          type: boolean
+          default: false
+        faces:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShelfFace"
+    ShelfPatch:
+      type: object
+      properties:
+        label: { type: string }
+        usableWidthMeters: { type: number }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        x: { type: number }
+        y: { type: number }
+        rotationDeg: { type: number }
+        aisleId: { type: string }
+        categoryId: { type: string }
+        color: { type: string }
+        faceId:
+          type: string
+          enum: [A, B]
+          default: A
+        temperatureZone:
+          type: string
+          enum: [ambient, chilled, frozen]
+          default: ambient
+        levels:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShelfLevel"
+    Shelf:
+      allOf:
+        - $ref: "#/components/schemas/ShelfInput"
+        - type: object
+          required: [id, usableWidthMeters, depthMeters, x, y]
+          properties:
+            planogram:
+              type: array
+              items:
+                $ref: "#/components/schemas/PlanogramPlacement"
+            faces:
+              type: array
+              items:
+                $ref: "#/components/schemas/ShelfFace"
+            displayNumber:
+              type: integer
+              minimum: 1
+            doubleSided:
+              type: boolean
+    PlanogramPlacementInput:
+      type: object
+      required: [productId]
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        levelIndex: { type: integer, default: 0 }
+        facings: { type: integer, description: Requested facings; clamped to maxFacings }
+        positionX: { type: number, description: Offset along shelf face in meters }
+        faceId:
+          type: string
+          enum: [A, B]
+          default: A
+          description: Target face on double-sided shelves
+    PlanogramPlacement:
+      type: object
+      required: [id, productId, levelIndex, facings, maxFacings]
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        levelIndex: { type: integer }
+        facings: { type: integer }
+        maxFacings: { type: integer }
+        positionX: { type: number }
+    PlanogramPreview:
+      type: object
+      required: [shelfId, productId, maxFacings]
+      properties:
+        shelfId: { type: string }
+        productId: { type: string }
+        levelIndex: { type: integer }
+        maxFacings: { type: integer }
+        suggestedLevels: { type: integer }
+        productWidthMeters: { type: number }
+        productHeightMeters: { type: number }
+        usableWidthMeters: { type: number }
+        assumedDimensions: { type: boolean, description: True when product size defaults were used }
+    AutogenerateRequest:
+      type: object
+      properties:
+        orientation:
+          type: string
+          enum: [mixed, auto, horizontal, vertical]
+          default: mixed
+          description: mixed packs both horizontal rows and vertical columns
+        replaceExisting:
+          type: boolean
+          default: true
+          description: When true, replaces existing aisles and shelves
+        minAisleWidthMeters:
+          type: number
+          description: Override vertical config min aisle width
+        categoryMix:
+          type: array
+          description: Category allocation percentages (must sum to 100) for smart autogenerate
+          items:
+            type: object
+            required: [categoryId, percent]
+            properties:
+              categoryId: { type: string }
+              percent: { type: number, minimum: 0, maximum: 100 }
+              temperatureZone:
+                type: string
+                enum: [ambient, chilled, frozen]
+        shelfTemplate:
+          type: object
+          properties:
+            usableWidthMeters: { type: number }
+            depthMeters: { type: number }
+            heightMeters: { type: number }
+            levels: { type: integer, minimum: 1 }
+    AutogenerateResponse:
+      allOf:
+        - $ref: "#/components/schemas/Layout"
+        - type: object
+          properties:
+            generated:
+              type: object
+              properties:
+                aisles: { type: integer }
+                shelves: { type: integer }
+                categoryMapped: { type: boolean }
+                skippedOutsideCount:
+                  type: integer
+                  minimum: 0
+                  description: Shelves/aisles omitted because footprint did not fit inside polygon
+            replaced: { type: boolean }
+    FixtureInput:
+      type: object
+      required: [type, widthMeters, depthMeters, x, y]
+      properties:
+        id: { type: string }
+        type:
+          type: string
+          enum: [shelf, rack, gondola, storage]
+        label: { type: string }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        x: { type: number }
+        y: { type: number }
+        rotationDeg: { type: number }
+        categoryId: { type: string }
+        color: { type: string }
+    FixturePatch:
+      type: object
+      properties:
+        x: { type: number }
+        y: { type: number }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        rotationDeg: { type: number }
+        label: { type: string }
+    Fixture:
+      allOf:
+        - $ref: "#/components/schemas/FixtureInput"
+        - type: object
+          required: [id, type, widthMeters, depthMeters, x, y]
+    CategoryMapping:
+      type: object
+      required: [categoryId, color]
+      properties:
+        fixtureId: { type: string, description: Legacy target id }
+        shelfId: { type: string }
+        aisleId: { type: string }
+        categoryId: { type: string }
+        color: { type: string }
+      description: Prefer shelfId or aisleId; fixtureId retained for compatibility.
+    AutoCalcResult:
+      type: object
+      required: [maxFixtures, footprintSqm, calculatedAt]
+      properties:
+        maxFixtures: { type: integer }
+        footprintSqm: { type: number }
+        calculatedAt: { type: string, format: date-time }
+        durationMs: { type: number }
+    Layout:
+      type: object
+      required: [id, name, vertical, status, widthMeters, depthMeters]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vertical: { type: string }
+        status: { $ref: "#/components/schemas/LayoutStatus" }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        heightMeters: { type: number }
+        shape: { type: string }
+        polygon:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+        aisles:
+          type: array
+          items: { $ref: "#/components/schemas/Aisle" }
+        shelves:
+          type: array
+          items: { $ref: "#/components/schemas/Shelf" }
+        zones:
+          type: array
+          items: { $ref: "#/components/schemas/Zone" }
+          description: Special merchandising overlays (hot / offer / custom)
+        entryPoints:
+          type: array
+          items: { $ref: "#/components/schemas/EntryPoint" }
+          description: Store entrance markers
+        fixtures:
+          type: array
+          items: { $ref: "#/components/schemas/Fixture" }
+          description: Deprecated; synthesized from shelves on read during migration
+        mappings:
+          type: array
+          items: { $ref: "#/components/schemas/CategoryMapping" }
+        aisleMappings:
+          type: array
+          items: { $ref: "#/components/schemas/CategoryMapping" }
+        shelfMappings:
+          type: array
+          items: { $ref: "#/components/schemas/CategoryMapping" }
+        autoCalc: { $ref: "#/components/schemas/AutoCalcResult" }
+        validation:
+          type: object
+          properties:
+            aisleViolations:
+              type: array
+              items: { type: string }
+        updatedAt: { type: string, format: date-time }
+    LayoutVersion:
+      type: object
+      properties:
+        id: { type: string }
+        layoutId: { type: string }
+        label: { type: string }
+        createdAt: { type: string, format: date-time }
+        status: { $ref: "#/components/schemas/LayoutStatus" }
+        snapshot:
+          type: object
+          additionalProperties: true
+    CategoryInput:
+      type: object
+      required: [name, vertical]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vertical: { type: string }
+        parentId: { type: string }
+        color: { type: string }
+    Category:
+      allOf:
+        - $ref: "#/components/schemas/CategoryInput"
+        - type: object
+          required: [id, name, vertical]
+    ProductInput:
+      type: object
+      required: [name, categoryId]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        sku: { type: string }
+        categoryId: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+          description: |
+            Planogram uses attributes.widthMeters and attributes.heightMeters when present.
+            Defaults if missing: width 0.2m, height 0.25m.
+    ProductPatch:
+      type: object
+      properties:
+        name: { type: string }
+        sku: { type: string }
+        categoryId: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+    Product:
+      allOf:
+        - $ref: "#/components/schemas/ProductInput"
+        - type: object
+          required: [id, name, categoryId]
+    AnalyticsSummary:
+      type: object
+      properties:
+        layoutId: { type: string }
+        utilizationPercent: { type: number }
+        footprintSqm: { type: number }
+        fixtureCount: { type: integer }
+        capacity: { type: integer }
+        allocationByCategory:
+          type: array
+          items:
+            type: object
+            properties:
+              categoryId: { type: string }
+              categoryName: { type: string }
+              fixtureCount: { type: integer }
+              color: { type: string }
+        durationMs: { type: number }
+    AnalyticsCompare:
+      type: object
+      properties:
+        utilizationDelta: { type: number }
+        fixtureCountDelta: { type: integer }
+        summaryA: { $ref: "#/components/schemas/AnalyticsSummary" }
+        summaryB: { $ref: "#/components/schemas/AnalyticsSummary" }
+    PortfolioAnalytics:
+      type: object
+      properties:
+        layoutCount: { type: integer }
+        totalShelves: { type: integer }
+        mappedCategoryCount: { type: integer }
+        avgUtilizationPercent: { type: number }
+        allocationByCategory:
+          type: array
+          items:
+            type: object
+            properties:
+              categoryId: { type: string }
+              categoryName: { type: string }
+              shelfCount: { type: integer }
+              color: { type: string }
+    VerticalConfig:
+      type: object
+      required: [vertical]
+      properties:
+        vertical: { type: string }
+        units: { type: string, enum: [metric, imperial] }
+        minAisleWidthMeters: { type: number }
+        fixtureTemplates:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              defaultWidthMeters: { type: number }
+              defaultDepthMeters: { type: number }
+        complianceRules:
+          type: array
+          items: { type: string }
+        approvalWorkflowEnabled: { type: boolean }
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actorEmail: { type: string }
+        action: { type: string }
+        detail: { type: string }

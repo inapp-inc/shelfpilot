@@ -1,0 +1,9 @@
+{
+  "id": "testing-harness-honesty",
+  "title": "Testing skill describes OpenAPI shape/presence honestly",
+  "probe": "testing-harness-honesty",
+  "fixtureObserved": {},
+  "expect": {
+    "mustBeTrue": ["mentionsShapeCheck", "doesNotOverclaimOnly"]
+  }
+}

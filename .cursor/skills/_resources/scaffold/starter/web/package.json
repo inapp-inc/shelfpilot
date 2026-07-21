@@ -1,0 +1,11 @@
+{
+  "name": "@scaffold/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"Add Vite/React app here after scaffolding\" && exit 0",
+    "build": "echo \"Add Vite/React build here after scaffolding\" && exit 0",
+    "test": "echo \"No web tests yet\" && exit 0"
+  }
+}

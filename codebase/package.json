@@ -1,0 +1,32 @@
+{
+  "name": "shelfpilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ShelfPilot — Graphical Store Layout Design (UI + mock API)",
+  "type": "module",
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "start": "npm run start -w api",
+    "dev:api": "npm run dev -w api",
+    "dev:web": "npm run dev -w web",
+    "test": "npm run test -w api",
+    "lint": "eslint api/src web/src --max-warnings=0",
+    "openapi:check": "node scripts/check-openapi.mjs",
+    "seed:demo-catalog": "node scripts/seed-demo-catalog.mjs",
+    "seed:demo": "node scripts/seed-demo-catalog.mjs && node scripts/seed-demo.mjs",
+    "smoke:demo": "node scripts/smoke-demo.mjs",
+    "package": "bash scripts/package.sh",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1",
+    "docker:rebuild": "node scripts/docker-rebuild.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.16.0",
+    "prettier": "^3.4.2"
+  }
+}
