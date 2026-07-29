@@ -1,4 +1,5 @@
 import CategoryMixSliders from "./CategoryMixSliders.jsx";
+import AlertBanner from "../components/AlertBanner.jsx";
 
 export default function SmartGeneratePanel({
   open,
@@ -9,6 +10,8 @@ export default function SmartGeneratePanel({
   onOrientationChange,
   categoryMix,
   onCategoryMixChange,
+  fillPlanogram,
+  onFillPlanogramChange,
   onGenerate,
   generating,
   disabled,
@@ -54,10 +57,29 @@ export default function SmartGeneratePanel({
           </select>
         </div>
       </div>
-      <CategoryMixSliders mix={categoryMix} onChange={onCategoryMixChange} disabled={disabled} />
+      <p className="muted smart-gen-hint" style={{ fontSize: 12, margin: 0 }}>
+        Each gondola is a <strong>front + back</strong> shelf pair (A1 / A2) between two walk aisles. Mixed layouts fill cross-aisles across the whole floor.
+      </p>
+      <div className="smart-gen-scroll">
+        <CategoryMixSliders mix={categoryMix} onChange={onCategoryMixChange} disabled={disabled} />
+      </div>
+      {total !== 100 ? (
+        <AlertBanner variant="warning">
+          Category mix must total 100% before generating (currently {total}%).
+        </AlertBanner>
+      ) : null}
+      <label className="smart-gen-fill-row" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+        <input
+          type="checkbox"
+          checked={fillPlanogram !== false}
+          disabled={disabled}
+          onChange={(e) => onFillPlanogramChange?.(e.target.checked)}
+        />
+        Auto-fill planogram with catalog products (matched to each shelf category)
+      </label>
       <div className="smart-gen-actions">
         <span className="muted" style={{ fontSize: 12, flex: 1 }}>
-          Maps shelves to categories incl. chilled / frozen zones
+          Assigns categories to gondola faces and places matching products on shelf levels
         </span>
         <button type="button" className="btn-primary" style={{ padding: "8px 14px" }} disabled={!canRun} onClick={onGenerate}>
           {generating ? "Generating…" : "Run smart generate"}

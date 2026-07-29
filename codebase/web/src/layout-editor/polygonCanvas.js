@@ -184,6 +184,39 @@ export function entityFitsPolygon(entity, kind, bounds, layout) {
   return true;
 }
 
+/** Shrink horizontal run length until aisle footprint fits polygon. */
+export function maxLengthInsideX(x, y, maxLen, depth, poly, step = 0.1) {
+  if (!poly?.length) return maxLen;
+  const minLen = 0.5;
+  for (let len = maxLen; len >= minLen; len = Number((len - step).toFixed(2))) {
+    if (rectFullyInsidePolygon(x, y, len, depth, poly)) return len;
+  }
+  return 0;
+}
+
+/** Shrink vertical run length until aisle footprint fits polygon. */
+export function maxLengthInsideY(x, y, width, maxLen, poly, step = 0.1) {
+  if (!poly?.length) return maxLen;
+  const minLen = 0.5;
+  for (let len = maxLen; len >= minLen; len = Number((len - step).toFixed(2))) {
+    if (rectFullyInsidePolygon(x, y, width, len, poly)) return len;
+  }
+  return 0;
+}
+
+/** Longest aisle run from anchor inside floor bounds / polygon. */
+export function defaultAisleRun(bounds, x, y, orientation, widthMeters) {
+  const poly = bounds.polygon;
+  const span = orientation === "vertical" ? bounds.height : bounds.width;
+  const maxLen = Math.max(1, span - 0.2);
+  if (orientation === "vertical") {
+    const len = poly ? maxLengthInsideY(x, y, widthMeters, maxLen, poly) : maxLen;
+    return Math.max(1, len || maxLen * 0.85);
+  }
+  const len = poly ? maxLengthInsideX(x, y, maxLen, widthMeters, poly) : maxLen;
+  return Math.max(1, len || maxLen * 0.85);
+}
+
 function pointInAabb(px, py, rect, eps = 1e-6) {
   return (
     px >= rect.x - eps &&

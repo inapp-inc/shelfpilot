@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { api } from "./api.js";
+import { api, apiErrorMessage } from "./api.js";
+import ToastStack from "./components/ToastStack.jsx";
+import AlertBanner from "./components/AlertBanner.jsx";
+import FieldError from "./components/FieldError.jsx";
+import {
+  friendlyError,
+  validateLayoutCreate,
+  validateUser,
+  validateFixtureTemplates,
+} from "./validationMessages.js";
 import LayoutEditor from "./layout-editor/LayoutEditor.jsx";
 import CatalogPage from "./catalog/CatalogPage.jsx";
 import ProductFormDrawer from "./catalog/ProductFormDrawer.jsx";
@@ -7,10 +16,14 @@ import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
 import DashboardPage from "./modules/DashboardPage.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
+import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
+import { fixtureTemplatesForVertical } from "./fixtureCatalog.js";
 import { NAV_MODULES, STORE_TYPES } from "./storeTypes.js";
 import { pathForModule } from "./routes.js";
+import { resolveAssetUrl } from "./assetUrl.js";
 import { useAppRoute } from "./useAppRoute.js";
 import { downloadCatalogImportTemplate, parseCatalogImportWorkbook } from "./catalog/importExcel.js";
+import { catalogVerticalsForLayout } from "./layout-editor/categoryFilter.js";
 import ImportDialog from "./catalog/ImportDialog.jsx";
 import {
   VERTICALS,
@@ -19,6 +32,16 @@ import {
   flatCategories,
   initials,
 } from "./referenceCatalog.js";
+import {
+  adminTabsForRole,
+  adminTabLabel,
+  canAccessModule,
+  canEditCatalog,
+  canEditLayouts,
+  canManageUsers,
+  defaultModuleForRole,
+  navModulesForRole,
+} from "./rolePermissions.js";
 
 function LogoMark({ size = "lg" }) {
   return (
@@ -29,18 +52,6 @@ function LogoMark({ size = "lg" }) {
         <span />
         <span />
       </div>
-    </div>
-  );
-}
-
-function ToastStack({ toasts }) {
-  return (
-    <div className="toast-stack">
-      {toasts.map((t) => (
-        <div key={t.id} className="toast">
-          {t.text}
-        </div>
-      ))}
     </div>
   );
 }
@@ -63,7 +74,12 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [adminTab, setAdminTab] = useState("users");
-  const [configForm, setConfigForm] = useState({ minAisleWidthMeters: 1.2, approvalWorkflowEnabled: true });
+  const [configForm, setConfigForm] = useState({
+    minAisleWidthMeters: 1.2,
+    approvalWorkflowEnabled: true,
+    fixtureTemplates: [],
+  });
+  const [createConfig, setCreateConfig] = useState(null);
   const [newUser, setNewUser] = useState({ email: "", name: "", role: "Designer", password: "" });
   const [compareA, setCompareA] = useState("");
   const [compareB, setCompareB] = useState("");
@@ -88,13 +104,16 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [userFormErrors, setUserFormErrors] = useState({});
+  const [configSaveError, setConfigSaveError] = useState("");
 
   const token = session?.token;
   const role = session?.user?.role;
   const vMeta = VERTICALS[vertical];
 
   const catalogVertical = page === "layouts" && layout?.vertical ? layout.vertical : vertical;
-  const cats = catCategories.length > 0 ? catCategories : flatCategories(catalogVertical);
+  const cats =
+    catCategories.length > 0 ? catCategories : token ? [] : flatCategories(catalogVertical);
   const products =
     catProducts.length > 0
       ? catProducts.map((p) => ({
@@ -103,7 +122,9 @@ export default function App() {
             p.attr ||
             (p.attributes ? Object.values(p.attributes).filter(Boolean).join(" · ") : ""),
         }))
-      : (PRODUCTS[catalogVertical] || []).map((p) => ({ ...p, id: p.id || p.sku }));
+      : token
+        ? []
+        : (PRODUCTS[catalogVertical] || []).map((p) => ({ ...p, id: p.id || p.sku }));
 
   useEffect(() => {
     if (!token || (page !== "catalog" && page !== "layouts")) return;
@@ -121,9 +142,21 @@ export default function App() {
       setConfigForm({
         minAisleWidthMeters: config.minAisleWidthMeters ?? vMeta.minAisle,
         approvalWorkflowEnabled: config.approvalWorkflowEnabled !== false,
+        fixtureTemplates: config.fixtureTemplates?.length ? [...config.fixtureTemplates] : [],
       });
     }
   }, [config, vertical, vMeta.minAisle]);
+
+  useEffect(() => {
+    if (!createOpen || !token) {
+      setCreateConfig(null);
+      return;
+    }
+    const storeType = STORE_TYPES.find((s) => s.id === createDraft.storeTypeId) || STORE_TYPES[0];
+    api(`/admin/config?vertical=${storeType.vertical}`, { token })
+      .then(setCreateConfig)
+      .catch(() => setCreateConfig(null));
+  }, [createOpen, createDraft.storeTypeId, token]);
 
   function persist(next) {
     setSession(next);
@@ -142,11 +175,43 @@ export default function App() {
     persist(null);
   }
 
-  function toast(text) {
-    const id = `t-${Date.now()}`;
-    setToasts((t) => [...t, { id, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2600);
+  function dismissToast(id) {
+    setToasts((t) => t.filter((x) => x.id !== id));
   }
+
+  function toast(text, opts = {}) {
+    const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const type = opts.type || (opts.error ? "error" : opts.success ? "success" : opts.warning ? "warning" : "info");
+    const duration = opts.duration ?? (type === "error" ? 8000 : 5000);
+    setToasts((t) => [...t, { id, text, type }]);
+    if (duration > 0) {
+      setTimeout(() => dismissToast(id), duration);
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    api("/auth/me", { token }).catch((err) => {
+      if (err.status === 401) {
+        persist(null);
+        toast("Session expired — please sign in again.");
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  useEffect(() => {
+    if (!session || !role) return;
+    if (!canAccessModule(role, page)) {
+      navigate(pathForModule(defaultModuleForRole(role)), { replace: true });
+    }
+  }, [session, role, page, navigate]);
+
+  useEffect(() => {
+    if (page !== "admin" || !role) return;
+    const tabs = adminTabsForRole(role);
+    if (tabs.length && !tabs.includes(adminTab)) setAdminTab(tabs[0]);
+  }, [page, role, adminTab]);
 
   async function refreshLayouts() {
     const q = statusFilter !== "all" ? `?status=${statusFilter}` : "";
@@ -180,6 +245,12 @@ export default function App() {
       .catch((e) => toast(e.message));
   }, [token, editorLayoutId]);
 
+  useEffect(() => {
+    if (!token || !editorLayoutId || !layout?.vertical) return;
+    loadCatalog(layout.vertical).catch((e) => toast(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, editorLayoutId, layout?.vertical]);
+
   async function onLogin(e) {
     e.preventDefault();
     setLoginLoading(true);
@@ -187,16 +258,21 @@ export default function App() {
     try {
       const data = await api("/auth/login", { method: "POST", body: loginForm });
       persist(data);
-      navigate("/dashboard");
-      toast(`Signed in as ${data.user.role}`);
+      navigate(pathForModule(defaultModuleForRole(data.user.role)));
+      toast(`Signed in as ${data.user.role}`, { type: "success" });
     } catch (err) {
-      setLoginError(err.message === "invalid_credentials" ? "Invalid email or password." : err.message);
+      setLoginError(friendlyError(err, "Sign in failed. Check your email and password."));
     } finally {
       setLoginLoading(false);
     }
   }
 
   async function createLayout() {
+    const check = validateLayoutCreate(createDraft);
+    if (!check.ok) {
+      toast(Object.values(check.errors)[0], { type: "error" });
+      return false;
+    }
     const storeType = STORE_TYPES.find((s) => s.id === createDraft.storeTypeId) || STORE_TYPES[0];
     const width = Number(createDraft.widthMeters);
     const depth = Number(createDraft.depthMeters);
@@ -229,7 +305,10 @@ export default function App() {
       setVertical(storeType.vertical);
       await refreshLayouts();
       navigate(pathForModule("layouts", created.id));
-      toast("Layout created");
+      toast("Layout created", { type: "success" });
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
+      throw err;
     } finally {
       setCreating(false);
     }
@@ -246,9 +325,26 @@ export default function App() {
       await api(`/layouts/${l.id}`, { token, method: "DELETE" });
       if (editorLayoutId === l.id) navigate(pathForModule("layouts"));
       await refreshLayouts();
-      toast(`Deleted "${l.name}"`);
+      toast(`Deleted "${l.name}"`, { type: "success" });
     } catch (err) {
-      toast(err.message);
+      toast(friendlyError(err), { type: "error" });
+    }
+  }
+
+  async function cloneLayout(l) {
+    if (!window.confirm(`Duplicate "${l.name}" as a new draft layout?`)) return;
+    try {
+      const created = await api(`/layouts/${l.id}/clone`, {
+        token,
+        method: "POST",
+        body: { name: `${l.name} (copy)` },
+      });
+      await refreshLayouts();
+      if (created.vertical) setVertical(created.vertical);
+      navigate(pathForModule("layouts", created.id));
+      toast(`Duplicated as "${created.name}"`, { type: "success" });
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
     }
   }
 
@@ -269,49 +365,111 @@ export default function App() {
   }
 
   async function runCompare() {
-    if (!compareA || !compareB) return;
-    const result = await api("/analytics/compare", {
-      token,
-      method: "POST",
-      body: { layoutIdA: compareA, layoutIdB: compareB },
-    });
-    setComparison(result);
+    if (!compareA || !compareB) {
+      toast("Select two layouts to compare.", { type: "warning" });
+      return;
+    }
+    if (compareA === compareB) {
+      toast("Choose two different layouts.", { type: "warning" });
+      return;
+    }
+    try {
+      const result = await api("/analytics/compare", {
+        token,
+        method: "POST",
+        body: { layoutIdA: compareA, layoutIdB: compareB },
+      });
+      setComparison(result);
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
+    }
   }
 
   async function saveConfig(partial) {
+    setConfigSaveError("");
+    const rawTemplates = partial.fixtureTemplates ?? configForm.fixtureTemplates ?? config?.fixtureTemplates ?? [];
+    const templateCheck = validateFixtureTemplates(rawTemplates);
+    if (!templateCheck.ok) {
+      const msg = templateCheck.errors[0];
+      setConfigSaveError(msg);
+      toast(msg, { type: "error" });
+      return;
+    }
     const body = {
       vertical,
       units: config?.units || "metric",
       minAisleWidthMeters: Number(partial.minAisleWidthMeters ?? configForm.minAisleWidthMeters),
-      fixtureTemplates: config?.fixtureTemplates || [],
+      fixtureTemplates: rawTemplates.map((t) => ({
+        type: t.type,
+        defaultWidthMeters: Number(t.defaultWidthMeters),
+        defaultDepthMeters: Number(t.defaultDepthMeters),
+        defaultHeightMeters: Number(t.defaultHeightMeters ?? 2),
+        defaultLevels: Math.max(1, Number(t.defaultLevels) || 2),
+      })),
       complianceRules: config?.complianceRules || [],
       approvalWorkflowEnabled:
         partial.approvalWorkflowEnabled != null ? partial.approvalWorkflowEnabled : configForm.approvalWorkflowEnabled,
     };
     const updated = await api("/admin/config", { token, method: "PUT", body });
     setConfig(updated);
-    toast("Configuration updated");
+    toast("Configuration updated", { type: "success" });
   }
 
   async function createUser(e) {
     e.preventDefault();
+    const check = validateUser(newUser);
+    if (!check.ok) {
+      setUserFormErrors(check.errors);
+      toast(Object.values(check.errors)[0], { type: "error" });
+      return;
+    }
+    setUserFormErrors({});
     try {
       const created = await api("/admin/users", { token, method: "POST", body: newUser });
       setUsers((u) => [...u, created]);
       setNewUser({ email: "", name: "", role: "Designer", password: "" });
-      toast("User created");
+      toast("User created", { type: "success" });
     } catch (err) {
-      toast(err.message);
+      toast(friendlyError(err), { type: "error" });
     }
   }
 
   async function loadCatalog(v = vertical) {
-    const [catRes, prodRes] = await Promise.all([
-      api(`/categories?vertical=${v}`, { token }).catch(() => ({ items: [] })),
-      api(`/products?vertical=${v}`, { token }).catch(() => ({ items: [] })),
-    ]);
-    setCatCategories(catRes.items || []);
-    setCatProducts(prodRes.items || []);
+    const verticals = catalogVerticalsForLayout(v);
+    const catResults = await Promise.all(
+      verticals.map((cv) =>
+        api(`/categories?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
+      )
+    );
+    const allCategories = catResults.flatMap((r) => r.items || []);
+    const catIds = new Set(allCategories.map((c) => c.id));
+
+    const prodResults = await Promise.all(
+      verticals.map((cv) =>
+        api(`/products?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
+      )
+    );
+    const seen = new Set();
+    const merged = [];
+    for (const r of prodResults) {
+      for (const p of r.items || []) {
+        if (!seen.has(p.id)) {
+          seen.add(p.id);
+          merged.push(p);
+        }
+      }
+    }
+    // Include any product whose category is in the loaded tree (e.g. after manual add/import).
+    const prodAll = await api(`/products`, { token }).catch(() => ({ items: [] }));
+    for (const p of prodAll.items || []) {
+      if (catIds.has(p.categoryId) && !seen.has(p.id)) {
+        seen.add(p.id);
+        merged.push(p);
+      }
+    }
+
+    setCatCategories(allCategories);
+    setCatProducts(merged);
   }
 
   function openProductEditor(partial = {}) {
@@ -322,10 +480,30 @@ export default function App() {
       categoryId: partial.categoryId || cats[0]?.id || "",
       widthMeters: "0.2",
       heightMeters: "0.25",
+      depthMeters: "0.2",
       imageUrl: "",
       attributes: {},
       ...partial,
     });
+  }
+
+  async function uploadProductImage(file, productName) {
+    const dataBase64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Could not read file"));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+    const saved = await api("/catalog/product-images/upload", {
+      token,
+      method: "POST",
+      body: {
+        productName: productName || undefined,
+        fileName: productName ? `${productName}.png` : file.name,
+        dataBase64,
+      },
+    });
+    return saved.url;
   }
 
   async function saveProduct() {
@@ -336,6 +514,9 @@ export default function App() {
     }
     if (productEditor.heightMeters !== "" && productEditor.heightMeters != null) {
       attributes.heightMeters = Number(productEditor.heightMeters);
+    }
+    if (productEditor.depthMeters !== "" && productEditor.depthMeters != null) {
+      attributes.depthMeters = Number(productEditor.depthMeters);
     }
     attributes.imageUrl = productEditor.imageUrl || "";
     const body = {
@@ -348,15 +529,15 @@ export default function App() {
     try {
       if (productEditor.id) {
         await api(`/products/${productEditor.id}`, { token, method: "PATCH", body });
-        toast("Product updated");
+        toast("Product updated", { type: "success" });
       } else {
         await api("/products", { token, method: "POST", body });
-        toast("Product created");
+        toast("Product created", { type: "success" });
       }
       setProductEditor(null);
       await loadCatalog(catalogVertical);
     } catch (err) {
-      toast(err.message);
+      toast(friendlyError(err), { type: "error" });
     }
   }
 
@@ -371,15 +552,15 @@ export default function App() {
       };
       if (categoryEditor.id) {
         await api(`/categories/${categoryEditor.id}`, { token, method: "PATCH", body });
-        toast("Category updated");
+        toast("Category updated", { type: "success" });
       } else {
         await api("/categories", { token, method: "POST", body });
-        toast("Category created");
+        toast("Category created", { type: "success" });
       }
       setCategoryEditor(null);
       await loadCatalog(catalogVertical);
     } catch (err) {
-      toast(err.message);
+      toast(friendlyError(err), { type: "error" });
     }
   }
 
@@ -403,6 +584,14 @@ export default function App() {
 
   async function handleImportFile(file, storeTypeId) {
     if (!file || importing) return;
+    if (!token) {
+      toast("Sign in as Designer or Admin to import.");
+      return;
+    }
+    if (!["Designer", "Admin"].includes(role)) {
+      toast("Your role cannot import. Sign in as Designer or Admin.");
+      return;
+    }
     const selectedStoreType =
       STORE_TYPES.find((s) => s.id === storeTypeId) || STORE_TYPES.find((s) => s.vertical === vertical);
     const defaultVertical = selectedStoreType?.vertical || vertical;
@@ -463,6 +652,17 @@ export default function App() {
       if (targetVertical !== vertical) setVertical(targetVertical);
       await loadCatalog(targetVertical);
 
+      try {
+        await api("/catalog/product-images/map", {
+          token,
+          method: "POST",
+          body: { vertical: targetVertical },
+        });
+        await loadCatalog(targetVertical);
+      } catch {
+        /* images folder may be empty */
+      }
+
       const successMsg = `Import successful — ${result.importedCategories} categor${result.importedCategories === 1 ? "y" : "ies"}, ${result.importedProducts} product${result.importedProducts === 1 ? "" : "s"} added`;
       setImportProgress({
         phase: "done",
@@ -473,10 +673,11 @@ export default function App() {
       toast(successMsg);
       setImportOpen(false);
     } catch (err) {
-      const msg = err.message;
-      let friendly = msg || "Import failed. Use the Excel template.";
-      if (msg === "no_rows") friendly = "No valid rows found in the Excel file.";
-      else if (msg === "empty_workbook") friendly = "The Excel file is empty.";
+      if (err.status === 401) persist(null);
+      let friendly = apiErrorMessage(err);
+      if (err.message === "no_rows") friendly = "No valid rows found in the Excel file.";
+      else if (err.message === "empty_workbook") friendly = "The Excel file is empty.";
+      else if (!friendly || friendly === "Request failed") friendly = "Import failed. Use the Excel template.";
       setImportProgress({ phase: "error", percent: 0, message: friendly });
       toast(friendly);
     } finally {
@@ -505,7 +706,11 @@ export default function App() {
               <div style={{ fontSize: 16, color: "#6b7280", textAlign: "center" }}>Design store layouts in 2D and 3D</div>
             </div>
             <form className="login-card" onSubmit={onLogin}>
-              {loginError ? <div className="alert-error">{loginError}</div> : null}
+              {loginError ? (
+                <AlertBanner variant="error" onDismiss={() => setLoginError("")}>
+                  {loginError}
+                </AlertBanner>
+              ) : null}
               <div className="field">
                 <label>Email</label>
                 <input
@@ -539,7 +744,7 @@ export default function App() {
             <div style={{ fontSize: 12, color: "#9aa1ab" }}>Built by the Foundry</div>
           </div>
         </div>
-        <ToastStack toasts={toasts} />
+        <ToastStack toasts={toasts} onDismiss={dismissToast} />
       </>
     );
   }
@@ -552,6 +757,10 @@ export default function App() {
   }
 
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
+  const visibleNav = navModulesForRole(role);
+  const visibleAdminTabs = adminTabsForRole(role);
+  const layoutEditDisabled = !canEditLayouts(role);
+  const catalogEditDisabled = !canEditCatalog(role);
 
   return (
     <>
@@ -562,7 +771,7 @@ export default function App() {
             <span>ShelfPilot</span>
           </div>
           <nav className="top-nav" aria-label="Main">
-            {NAV_MODULES.map((n) => (
+            {visibleNav.map((n) => (
               <a
                 key={n.id}
                 href={n.path}
@@ -578,6 +787,14 @@ export default function App() {
             ))}
           </nav>
           <div className="header-actions">
+            <div className="header-foundry-brand" aria-label="Built by The Foundry">
+              <img
+                className="header-foundry-logo"
+                src={resolveAssetUrl("/branding/inapp-logo.png")}
+                alt="InApp"
+              />
+              <span className="header-foundry-text">BUILT BY THE FOUNDRY</span>
+            </div>
             <div className="user-chip">
               <div className="avatar">{initials(session.user.name)}</div>
               <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
@@ -592,7 +809,7 @@ export default function App() {
         </header>
 
         <main className="main">
-          <div className="content">
+          <div className={`content${editorLayoutId ? " content--editor" : ""}`}>
             {page === "dashboard" && (
               <DashboardPage
                 portfolio={portfolio}
@@ -610,7 +827,8 @@ export default function App() {
                 onOpenLayout={openLayout}
                 onNewLayout={() => setCreateOpen(true)}
                 onDeleteLayout={deleteLayout}
-                editDisabled={!["Designer", "Admin"].includes(role)}
+                onCloneLayout={cloneLayout}
+                editDisabled={layoutEditDisabled}
               />
             )}
 
@@ -641,7 +859,7 @@ export default function App() {
                   defaultStoreTypeId={STORE_TYPES.find((s) => s.vertical === vertical)?.id}
                   importing={importing}
                   onImport={(file, storeTypeId) =>
-                    handleImportFile(file, storeTypeId).catch((err) => toast(err.message))
+                    handleImportFile(file, storeTypeId).catch((err) => toast(friendlyError(err), { type: "error" }))
                   }
                   onClose={() => !importing && setImportOpen(false)}
                 />
@@ -655,6 +873,7 @@ export default function App() {
                   onSelectCategory={setSelectedCatalogCategoryId}
                   importing={importing}
                   importProgress={importProgress}
+                  onDismissImportProgress={() => setImportProgress(null)}
                   onAddCategory={() =>
                     setCategoryEditor({ name: "", parentId: null, color: "#A30A2A" })
                   }
@@ -677,6 +896,7 @@ export default function App() {
                       categoryId: p.categoryId || "",
                       widthMeters: String(p.attributes?.widthMeters ?? "0.2"),
                       heightMeters: String(p.attributes?.heightMeters ?? "0.25"),
+                      depthMeters: String(p.attributes?.depthMeters ?? p.attributes?.widthMeters ?? "0.2"),
                       imageUrl: p.imageUrl || p.attributes?.imageUrl || "",
                       attributes: p.attributes || {},
                     })
@@ -684,7 +904,7 @@ export default function App() {
                   onImport={() => setImportOpen(true)}
                   onExport={() => handleExport()}
                   onDownloadTemplate={handleDownloadImportTemplate}
-                  editDisabled={!["Designer", "Admin"].includes(role)}
+                  editDisabled={catalogEditDisabled}
                 />
               </>
             )}
@@ -771,7 +991,7 @@ export default function App() {
                       className="btn-primary"
                       style={{ padding: "9px 16px" }}
                       disabled={!compareA || !compareB}
-                      onClick={() => runCompare().catch((e) => toast(e.message))}
+                      onClick={() => runCompare()}
                     >
                       Compare
                     </button>
@@ -818,48 +1038,65 @@ export default function App() {
               </section>
             )}
 
-            {page === "admin" && (
+            {page === "admin" && visibleAdminTabs.length > 0 && (
               <section className="fade">
                 <h2 className="page-title" style={{ marginBottom: 16 }}>
-                  Admin & Config
+                  {role === "Approver" ? "Audit Log" : "Admin & Config"}
                 </h2>
                 <div className="admin-tabs">
-                  {["users", "stores", "approval", "configuration", "audit"].map((t) => (
+                  {visibleAdminTabs.map((t) => (
                     <button key={t} className={`admin-tab ${adminTab === t ? "active" : ""}`} onClick={() => setAdminTab(t)}>
-                      {t === "users" ? "Users & Roles" : t === "stores" ? "Store Master" : t === "approval" ? "Approval Workflow" : t === "configuration" ? "Configuration" : "Audit Log"}
+                      {adminTabLabel(t)}
                     </button>
                   ))}
                 </div>
                 <div className="panel">
                   {adminTab === "users" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Name</th>
-                            <th>Email</th>
-                            <th>Role</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {users.map((u) => (
-                            <tr key={u.id}>
-                              <td>{u.name}</td>
-                              <td>{u.email}</td>
-                              <td>{u.role}</td>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Email</th>
+                              <th>Role</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {role === "Admin" ? (
-                        <form onSubmit={createUser} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                          <div className="field">
+                          </thead>
+                          <tbody>
+                            {users.map((u) => (
+                              <tr key={u.id}>
+                                <td>{u.name}</td>
+                                <td>{u.email}</td>
+                                <td>{u.role}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {canManageUsers(role) ? (
+                        <form onSubmit={createUser} className="form-grid-2">
+                          <div className={`field${userFormErrors.name ? " field-invalid" : ""}`}>
                             <label>Name</label>
-                            <input value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} required />
+                            <input
+                              value={newUser.name}
+                              onChange={(e) => {
+                                setNewUser({ ...newUser, name: e.target.value });
+                                if (userFormErrors.name) setUserFormErrors((prev) => ({ ...prev, name: "" }));
+                              }}
+                            />
+                            <FieldError message={userFormErrors.name} />
                           </div>
-                          <div className="field">
+                          <div className={`field${userFormErrors.email ? " field-invalid" : ""}`}>
                             <label>Email</label>
-                            <input type="email" value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} required />
+                            <input
+                              type="email"
+                              value={newUser.email}
+                              onChange={(e) => {
+                                setNewUser({ ...newUser, email: e.target.value });
+                                if (userFormErrors.email) setUserFormErrors((prev) => ({ ...prev, email: "" }));
+                              }}
+                            />
+                            <FieldError message={userFormErrors.email} />
                           </div>
                           <div className="field">
                             <label>Role</label>
@@ -869,11 +1106,19 @@ export default function App() {
                               ))}
                             </select>
                           </div>
-                          <div className="field">
+                          <div className={`field${userFormErrors.password ? " field-invalid" : ""}`}>
                             <label>Password</label>
-                            <input type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} required />
+                            <input
+                              type="password"
+                              value={newUser.password}
+                              onChange={(e) => {
+                                setNewUser({ ...newUser, password: e.target.value });
+                                if (userFormErrors.password) setUserFormErrors((prev) => ({ ...prev, password: "" }));
+                              }}
+                            />
+                            <FieldError message={userFormErrors.password} />
                           </div>
-                          <button className="btn-primary" type="submit" style={{ padding: "10px 14px", gridColumn: "1 / -1" }}>
+                          <button className="btn-primary form-grid-span-all" type="submit" style={{ padding: "10px 14px" }}>
                             Create user
                           </button>
                         </form>
@@ -890,11 +1135,11 @@ export default function App() {
                         <input
                           type="checkbox"
                           checked={configForm.approvalWorkflowEnabled}
-                          disabled={role !== "Admin"}
+                          disabled={!canManageUsers(role)}
                           onChange={(e) => {
                             const next = e.target.checked;
                             setConfigForm({ ...configForm, approvalWorkflowEnabled: next });
-                            if (role === "Admin") {
+                            if (canManageUsers(role)) {
                               saveConfig({ approvalWorkflowEnabled: next }).catch((err) => toast(err.message));
                             }
                           }}
@@ -919,7 +1164,27 @@ export default function App() {
                           ))}
                         </select>
                       </div>
-                      <div style={{ fontWeight: 700 }}>Configuration — {vMeta.label}</div>
+                      <div style={{ fontWeight: 700 }}>Store setup — {vMeta.label}</div>
+                      <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+                        Set the shared shelf layer here before creating layouts. Each new layout inherits these fixture templates.
+                      </p>
+                      <FixtureTemplatesEditor
+                        templates={
+                          configForm.fixtureTemplates?.length
+                            ? configForm.fixtureTemplates
+                            : fixtureTemplatesForVertical(config, vertical)
+                        }
+                        disabled={!canManageUsers(role)}
+                        onChange={(fixtureTemplates) => {
+                          setConfigForm({ ...configForm, fixtureTemplates });
+                          if (configSaveError) setConfigSaveError("");
+                        }}
+                      />
+                      {configSaveError ? (
+                        <AlertBanner variant="error" onDismiss={() => setConfigSaveError("")}>
+                          {configSaveError}
+                        </AlertBanner>
+                      ) : null}
                       <div className="field">
                         <label>Min aisle width (m)</label>
                         <input
@@ -927,20 +1192,17 @@ export default function App() {
                           type="number"
                           step="0.1"
                           value={configForm.minAisleWidthMeters}
-                          disabled={role !== "Admin"}
+                          disabled={!canManageUsers(role)}
                           onChange={(e) => setConfigForm({ ...configForm, minAisleWidthMeters: e.target.value })}
                         />
                       </div>
-                      {role === "Admin" ? (
-                        <button className="btn-primary" style={{ padding: "10px 14px", width: "fit-content" }} onClick={() => saveConfig({}).catch((e) => toast(e.message))}>
-                          Save configuration
+                      {canManageUsers(role) ? (
+                        <button className="btn-primary" style={{ padding: "10px 14px", width: "fit-content" }} onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}>
+                          Save store configuration
                         </button>
                       ) : (
                         <div className="muted">Only Admin can save configuration.</div>
                       )}
-                      <pre className="mono" style={{ whiteSpace: "pre-wrap", fontSize: 12, marginTop: 8 }}>
-                        {JSON.stringify(config || { vertical, minAisleWidthMeters: vMeta.minAisle }, null, 2)}
-                      </pre>
                     </div>
                   )}
                   {adminTab === "audit" && (
@@ -966,10 +1228,14 @@ export default function App() {
         draft={createDraft}
         setDraft={setCreateDraft}
         submitting={creating}
-        onSubmit={() => createLayout().catch((e) => toast(e.message))}
+        shelfTemplates={fixtureTemplatesForVertical(
+          createConfig,
+          STORE_TYPES.find((s) => s.id === createDraft.storeTypeId)?.vertical || "retail"
+        )}
+        onSubmit={() => createLayout()}
       />
 
-      <ToastStack toasts={toasts} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       <ProductFormDrawer
         open={!!productEditor}
@@ -978,7 +1244,8 @@ export default function App() {
         setDraft={setProductEditor}
         categories={cats}
         onSubmit={() => saveProduct()}
-        editDisabled={!["Designer", "Admin"].includes(role)}
+        onUploadImage={catalogEditDisabled ? undefined : uploadProductImage}
+        editDisabled={catalogEditDisabled}
       />
       <CategoryFormDrawer
         open={!!categoryEditor}
@@ -988,7 +1255,7 @@ export default function App() {
         draft={categoryEditor}
         setDraft={setCategoryEditor}
         onSubmit={() => saveCategory()}
-        editDisabled={!["Designer", "Admin"].includes(role)}
+        editDisabled={catalogEditDisabled}
       />
     </>
   );

@@ -3,6 +3,7 @@ import CategoryTreeBar from "./CategoryTreeBar.jsx";
 import ImportProgressPanel from "./ImportProgressPanel.jsx";
 import { categoryLabel } from "./buildCategoryTree.js";
 import { descendantCategoryIds } from "../layout-editor/categoryFilter.js";
+import { resolveAssetUrl } from "../assetUrl.js";
 
 export default function CatalogPage({
   vertical,
@@ -21,6 +22,7 @@ export default function CatalogPage({
   onDownloadTemplate,
   importing,
   importProgress,
+  onDismissImportProgress,
   editDisabled,
 }) {
   const filtered = useMemo(() => {
@@ -41,7 +43,7 @@ export default function CatalogPage({
 
   return (
     <section className="fade catalog-page">
-      <ImportProgressPanel progress={importProgress} />
+      <ImportProgressPanel progress={importProgress} onDismiss={onDismissImportProgress} />
       <div className="catalog-toolbar">
         <div>
           <h2 className="page-title">Products & Categories</h2>
@@ -117,6 +119,7 @@ export default function CatalogPage({
               {filtered.length} item(s)
             </span>
           </div>
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -134,7 +137,7 @@ export default function CatalogPage({
                     <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {p.imageUrl || p.attributes?.imageUrl ? (
                         <img
-                          src={p.imageUrl || p.attributes?.imageUrl}
+                          src={resolveAssetUrl(p.imageUrl || p.attributes?.imageUrl)}
                           alt=""
                           style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 6, border: "1px solid #e5e7eb" }}
                         />
@@ -196,6 +199,7 @@ export default function CatalogPage({
               ))}
             </tbody>
           </table>
+          </div>
           {!filtered.length ? (
             <div className="empty-box" style={{ margin: 12 }}>
               <div style={{ fontWeight: 700, fontSize: 14 }}>No products in {filterName}</div>

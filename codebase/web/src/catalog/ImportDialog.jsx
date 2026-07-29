@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { STORE_TYPES } from "../storeTypes.js";
+import AlertBanner from "../components/AlertBanner.jsx";
+import { validateImportFile } from "../validationMessages.js";
 
 const ACCEPT = [".xlsx", ".xls", ".csv"];
-
-function hasValidExt(name) {
-  const lower = String(name || "").toLowerCase();
-  return ACCEPT.some((ext) => lower.endsWith(ext));
-}
 
 function fileSizeLabel(bytes) {
   if (!bytes && bytes !== 0) return "";
@@ -36,8 +33,9 @@ export default function ImportDialog({ open, defaultStoreTypeId, importing, onIm
 
   function acceptFile(f) {
     if (!f) return;
-    if (!hasValidExt(f.name)) {
-      setError("Unsupported file. Use .xlsx, .xls or .csv.");
+    const check = validateImportFile(f);
+    if (!check.ok) {
+      setError(check.error);
       setFile(null);
       return;
     }
@@ -56,7 +54,7 @@ export default function ImportDialog({ open, defaultStoreTypeId, importing, onIm
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !importing && onClose()}>
-      <div className="modal" style={{ width: "min(560px, 100%)" }}>
+      <div className="modal">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <strong style={{ fontSize: 17 }}>Import products from Excel</strong>
           <button
@@ -145,13 +143,12 @@ export default function ImportDialog({ open, defaultStoreTypeId, importing, onIm
         </div>
 
         {error ? (
-          <div className="violation" style={{ marginTop: 0 }}>
-            <span className="bang">!</span>
-            <span>{error}</span>
-          </div>
+          <AlertBanner variant="error" onDismiss={() => setError("")}>
+            {error}
+          </AlertBanner>
         ) : null}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <div className="modal-actions">
           <button type="button" className="btn-secondary" style={{ padding: "9px 14px" }} disabled={importing} onClick={onClose}>
             Cancel
           </button>
@@ -160,7 +157,14 @@ export default function ImportDialog({ open, defaultStoreTypeId, importing, onIm
             className="btn-primary"
             style={{ padding: "9px 16px" }}
             disabled={importing || !file}
-            onClick={() => file && onImport(file, storeTypeId)}
+            onClick={() => {
+              const check = validateImportFile(file);
+              if (!check.ok) {
+                setError(check.error);
+                return;
+              }
+              onImport(file, storeTypeId);
+            }}
           >
             {importing ? "Importing…" : `Import to ${storeType.label}`}
           </button>

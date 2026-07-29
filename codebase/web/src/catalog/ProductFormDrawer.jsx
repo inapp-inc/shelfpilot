@@ -1,6 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import DrawerShell from "./DrawerShell.jsx";
 import CategoryTreePicker from "./CategoryTreePicker.jsx";
+import FieldError from "../components/FieldError.jsx";
+import { validateProduct } from "../validationMessages.js";
+import { resolveAssetUrl } from "../assetUrl.js";
 
 const MAX_DIM = 256;
 
@@ -36,14 +39,35 @@ export default function ProductFormDrawer({
   setDraft,
   categories,
   onSubmit,
+  onUploadImage,
   editDisabled,
 }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [imgBusy, setImgBusy] = useState(false);
   const [imgError, setImgError] = useState("");
+  const [errors, setErrors] = useState({});
+
+  useEffect(() => {
+    if (open) setErrors({});
+  }, [open, draft?.id]);
 
   if (!open || !draft) return null;
+
+  function clearError(field) {
+    if (errors[field]) setErrors((prev) => ({ ...prev, [field]: "" }));
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const check = validateProduct(draft);
+    if (!check.ok) {
+      setErrors(check.errors);
+      return;
+    }
+    setErrors({});
+    onSubmit?.();
+  }
 
   async function acceptFile(file) {
     if (!file) return;
@@ -54,8 +78,13 @@ export default function ProductFormDrawer({
     setImgError("");
     setImgBusy(true);
     try {
-      const dataUrl = await fileToResizedDataUrl(file);
-      setDraft({ ...draft, imageUrl: dataUrl });
+      if (onUploadImage) {
+        const url = await onUploadImage(file, draft.name);
+        setDraft({ ...draft, imageUrl: url });
+      } else {
+        const dataUrl = await fileToResizedDataUrl(file);
+        setDraft({ ...draft, imageUrl: dataUrl });
+      }
     } catch (err) {
       setImgError(err.message || "Could not load image");
     } finally {
@@ -87,15 +116,19 @@ export default function ProductFormDrawer({
     >
       <form
         id="product-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit?.();
-        }}
+        onSubmit={handleSubmit}
         style={{ display: "flex", flexDirection: "column", gap: 12 }}
       >
-        <label className="field">
+        <label className={`field${errors.name ? " field-invalid" : ""}`}>
           Name
-          <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+          <input
+            value={draft.name}
+            onChange={(e) => {
+              setDraft({ ...draft, name: e.target.value });
+              clearError("name");
+            }}
+          />
+          <FieldError message={errors.name} />
         </label>
         <label className="field">
           SKU
@@ -135,7 +168,7 @@ export default function ProductFormDrawer({
             />
             {draft.imageUrl ? (
               <div className="product-image-preview">
-                <img src={draft.imageUrl} alt="Product" />
+                <img src={resolveAssetUrl(draft.imageUrl)} alt="Product" />
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   <span style={{ fontWeight: 700, fontSize: 13 }}>Image attached</span>
                   <button
@@ -158,7 +191,7 @@ export default function ProductFormDrawer({
                 <div style={{ fontWeight: 700, fontSize: 13 }}>
                   {imgBusy ? "Processing…" : "Drag & drop an image, or browse"}
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>PNG / JPG · auto-resized to 256px</div>
+                <div className="muted" style={{ fontSize: 11 }}>PNG / JPG · saved to product-images folder</div>
               </>
             )}
           </div>
@@ -170,46 +203,73 @@ export default function ProductFormDrawer({
             disabled={editDisabled || imgBusy}
             style={{ marginTop: 8 }}
           />
-          {imgError ? (
-            <span style={{ color: "var(--crimson)", fontSize: 11.5 }}>{imgError}</span>
-          ) : null}
+          {imgError ? <FieldError message={imgError} /> : null}
         </div>
 
-        <label className="field">
+        <label className={`field${errors.categoryId ? " field-invalid" : ""}`}>
           Category
           <CategoryTreePicker
             categories={categories}
             value={draft.categoryId}
-            onChange={(id) => setDraft({ ...draft, categoryId: id || "" })}
+            onChange={(id) => {
+              setDraft({ ...draft, categoryId: id || "" });
+              clearError("categoryId");
+            }}
             allowEmpty={false}
             emptyLabel="Select category"
             disabled={editDisabled}
           />
+          <FieldError message={errors.categoryId} />
         </label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <label className="field">
+        <div className="form-grid-3">
+          <label className={`field${errors.widthMeters ? " field-invalid" : ""}`}>
             Width (m)
             <input
               className="mono"
               type="number"
               step="0.01"
+              min="0"
               value={draft.widthMeters}
-              onChange={(e) => setDraft({ ...draft, widthMeters: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...draft, widthMeters: e.target.value });
+                clearError("widthMeters");
+              }}
             />
+            <FieldError message={errors.widthMeters} />
           </label>
-          <label className="field">
+          <label className={`field${errors.heightMeters ? " field-invalid" : ""}`}>
             Height (m)
             <input
               className="mono"
               type="number"
               step="0.01"
+              min="0"
               value={draft.heightMeters}
-              onChange={(e) => setDraft({ ...draft, heightMeters: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...draft, heightMeters: e.target.value });
+                clearError("heightMeters");
+              }}
             />
+            <FieldError message={errors.heightMeters} />
+          </label>
+          <label className={`field${errors.depthMeters ? " field-invalid" : ""}`}>
+            Depth (m)
+            <input
+              className="mono"
+              type="number"
+              step="0.01"
+              min="0"
+              value={draft.depthMeters ?? ""}
+              onChange={(e) => {
+                setDraft({ ...draft, depthMeters: e.target.value });
+                clearError("depthMeters");
+              }}
+            />
+            <FieldError message={errors.depthMeters} />
           </label>
         </div>
         <p className="muted" style={{ fontSize: 11.5, margin: 0 }}>
-          Dimensions drive planogram facing capacity on shelves.
+          Width, height, and depth drive front facings, levels, and backward depth on shelves.
         </p>
       </form>
     </DrawerShell>

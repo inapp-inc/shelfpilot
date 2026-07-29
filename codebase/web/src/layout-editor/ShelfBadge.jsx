@@ -1,28 +1,75 @@
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import {
+  isDoubleSided,
+  isPairedShelf,
+  normalizeShelfUI,
+  pairFaceId,
+  shelfDisplayLabel,
+  shelfFaceLabel,
+  shelfUnitLabel,
+} from "./shelfFaces.js";
 
-/** Responsive shelf number badge for 2D canvas. */
-export default function ShelfBadge({ shelf, pixelWidth, categories }) {
+/** Responsive shelf face label badge for 2D canvas (A1/A2, B1/B2). */
+export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories }) {
+  const shelf = normalizeShelfUI(rawShelf);
   const num = shelf.displayNumber;
   if (!num) return null;
 
+  const unit = shelfUnitLabel(num);
   const w = pixelWidth || 48;
-  const tooltipParts = [`#${num}`];
+  const tooltipParts = [unit];
+
+  if (isPairedShelf(shelf)) {
+    const face = pairFaceId(shelf);
+    const label = shelfFaceLabel(num, face);
+    const cat = shelf.categoryId ? categoryLabel(categories, shelf.categoryId) : "Unassigned";
+    const role = shelf.pairRole === "back" ? "back" : "front";
+    const title = `${label} · ${role} · ${cat}`;
+    const fontSize = w < 36 ? 9 : w < 48 ? 10 : 11;
+    const bg =
+      face === "B"
+        ? shelf.color
+          ? `${shelf.color}44`
+          : "rgba(14,165,233,0.18)"
+        : shelf.color
+          ? `${shelf.color}44`
+          : "rgba(163,10,42,0.15)";
+    return (
+      <span
+        className="mono"
+        title={title}
+        style={{
+          fontSize,
+          fontWeight: 700,
+          color: "#1f2933",
+          background: bg,
+          padding: "1px 4px",
+          borderRadius: 3,
+        }}
+      >
+        {label}
+      </span>
+    );
+  }
+
   if (shelf.faces?.length) {
     for (const face of shelf.faces) {
       const cat = face.categoryId ? categoryLabel(categories, face.categoryId) : "Unassigned";
-      tooltipParts.push(`Face ${face.id}: ${cat}`);
+      tooltipParts.push(`${shelfFaceLabel(num, face.id)}: ${cat}`);
     }
   }
   const title = tooltipParts.join(" · ");
 
-  if (shelf.doubleSided && shelf.faces?.length >= 2) {
+  if (isDoubleSided(shelf) && shelf.faces?.length >= 2) {
     const faceA = shelf.faces.find((f) => f.id === "A") || shelf.faces[0];
     const faceB = shelf.faces.find((f) => f.id === "B") || shelf.faces[1];
+    const labelA = shelfFaceLabel(num, "A");
+    const labelB = shelfFaceLabel(num, "B");
 
     if (w < 36) {
       return (
         <span className="mono shelf-badge-compact" title={title} style={{ fontSize: 9, fontWeight: 700, color: "#1f2933" }}>
-          {num}
+          {unit}
           <span style={{ display: "inline-flex", gap: 2, marginLeft: 3 }}>
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceA?.color || "#A30A2A" }} />
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceB?.color || "#0ea5e9" }} />
@@ -35,10 +82,10 @@ export default function ShelfBadge({ shelf, pixelWidth, categories }) {
       return (
         <div className="shelf-badge-stacked" title={title} style={{ display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.1 }}>
           <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: faceA?.color ? `${faceA.color}44` : "rgba(163,10,42,0.15)", padding: "1px 4px", borderRadius: 3 }}>
-            {num}A
+            {labelA}
           </span>
           <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: faceB?.color ? `${faceB.color}44` : "rgba(14,165,233,0.15)", padding: "1px 4px", borderRadius: 3, marginTop: 1 }}>
-            {num}B
+            {labelB}
           </span>
         </div>
       );
@@ -57,7 +104,7 @@ export default function ShelfBadge({ shelf, pixelWidth, categories }) {
             borderRight: "1px solid rgba(31,41,51,0.15)",
           }}
         >
-          {num}A
+          {labelA}
         </span>
         <span
           className="mono"
@@ -69,16 +116,17 @@ export default function ShelfBadge({ shelf, pixelWidth, categories }) {
             color: "#1f2933",
           }}
         >
-          {num}B
+          {labelB}
         </span>
       </div>
     );
   }
 
+  const singleLabel = shelfDisplayLabel(shelf);
   const fontSize = w < 36 ? 9 : w < 48 ? 10 : 11;
   return (
     <span className="mono" title={title} style={{ fontSize, fontWeight: 700, color: "#1f2933" }}>
-      {num}
+      {singleLabel}
     </span>
   );
 }

@@ -21,6 +21,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       SQLITE_PATH: /data/shelfpilot.db
+      PRODUCT_IMAGES_SEED: /app/seed/product-images
     volumes:
       - shelfpilot_data:/data
     healthcheck:

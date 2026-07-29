@@ -1,7 +1,19 @@
 import { Router } from "express";
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { repo, audit } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
+import { listCategoriesForLayout, resolveCategoryId } from "../services/categoryTree.js";
+import {
+  copyImagesFromSource,
+  ensureProductImagesDir,
+  imageFileNameForProduct,
+  mapImagesToProducts,
+  publicImageUrl,
+  resolveProductImagesDir,
+  saveProductImage,
+  saveProductImageForName,
+} from "../services/productImages.js";
 
 export const catalogRouter = Router();
 
@@ -46,10 +58,12 @@ catalogRouter.patch(
 catalogRouter.get("/products", authRequired, (req, res) => {
   let items = repo.listProducts(req.query.categoryId || null);
   if (req.query.vertical) {
-    const cats = new Set(
-      repo.listCategories(req.query.vertical).map((c) => c.id)
-    );
-    items = items.filter((p) => cats.has(p.categoryId));
+    const categories = listCategoriesForLayout(req.query.vertical, (v) => repo.listCategories(v));
+    const catIds = new Set(categories.map((c) => c.id));
+    items = items.filter((p) => {
+      const resolved = resolveCategoryId(p.categoryId, categories);
+      return catIds.has(resolved) || catIds.has(p.categoryId);
+    });
   }
   res.json({ items });
 });
@@ -173,3 +187,110 @@ catalogRouter.get("/catalog/export", authRequired, (req, res) => {
   const products = repo.listProducts().filter((p) => !vertical || catIds.has(p.categoryId));
   res.json({ categories, products });
 });
+
+catalogRouter.get("/catalog/product-images", authRequired, (req, res) => {
+  ensureProductImagesDir();
+  const files = [];
+  try {
+    for (const name of fs.readdirSync(resolveProductImagesDir())) {
+      if (/\.(png|jpe?g|webp)$/i.test(name)) files.push({ fileName: name, url: publicImageUrl(name) });
+    }
+  } catch {
+    /* empty folder */
+  }
+  res.json({ folder: resolveProductImagesDir(), items: files });
+});
+
+catalogRouter.post(
+  "/catalog/product-images/upload",
+  authRequired,
+  requireRoles("Admin", "Designer"),
+  (req, res) => {
+    const productName = String(req.body?.productName || req.body?.name || "").trim();
+    const fileName = String(req.body?.fileName || "").trim();
+    const dataBase64 = String(req.body?.dataBase64 || req.body?.data || "");
+    if (!dataBase64) return res.status(400).json({ error: "missing_image_data" });
+
+    let buffer;
+    try {
+      const raw = dataBase64.includes(",") ? dataBase64.split(",").pop() : dataBase64;
+      buffer = Buffer.from(raw, "base64");
+    } catch {
+      return res.status(400).json({ error: "invalid_image_data" });
+    }
+    if (!buffer.length) return res.status(400).json({ error: "empty_image" });
+
+    try {
+      const targetName =
+        fileName ||
+        (productName ? imageFileNameForProduct(productName, ".png") : "");
+      const saved = productName && !fileName
+        ? saveProductImageForName(buffer, productName, ".png")
+        : saveProductImage(buffer, targetName);
+
+      if (productName) {
+        const product = repo.listProducts().find((p) => p.name === productName);
+        if (product) {
+          repo.upsertProduct({
+            ...product,
+            attributes: { ...(product.attributes || {}), imageUrl: saved.url },
+          });
+        }
+      }
+
+      audit(req.user.email, "product-image.upload", saved.fileName);
+      res.status(201).json(saved);
+    } catch (err) {
+      if (err.message === "invalid_image_file") {
+        return res.status(400).json({ error: "invalid_image_file" });
+      }
+      throw err;
+    }
+  }
+);
+
+catalogRouter.post(
+  "/catalog/product-images/sync",
+  authRequired,
+  requireRoles("Admin", "Designer"),
+  (req, res) => {
+    const sourceDir = req.body?.sourceDir ? String(req.body.sourceDir) : null;
+    if (!sourceDir) return res.status(400).json({ error: "missing_source_dir" });
+
+    let copied = 0;
+    try {
+      copied = copyImagesFromSource(sourceDir);
+    } catch (err) {
+      if (String(err.message).startsWith("source_not_found:")) {
+        return res.status(400).json({ error: "source_not_found" });
+      }
+      throw err;
+    }
+
+    const products = repo.listProducts();
+    const mapResult = mapImagesToProducts(products, (p) => repo.upsertProduct(p));
+    audit(req.user.email, "product-image.sync", `copied=${copied},mapped=${mapResult.mapped}`);
+    res.json({
+      copied,
+      folder: resolveProductImagesDir(),
+      ...mapResult,
+    });
+  }
+);
+
+catalogRouter.post(
+  "/catalog/product-images/map",
+  authRequired,
+  requireRoles("Admin", "Designer"),
+  (req, res) => {
+    const vertical = req.query.vertical || req.body?.vertical || null;
+    let products = repo.listProducts();
+    if (vertical) {
+      const catIds = new Set(repo.listCategories(String(vertical)).map((c) => c.id));
+      products = products.filter((p) => catIds.has(p.categoryId));
+    }
+    const result = mapImagesToProducts(products, (p) => repo.upsertProduct(p));
+    audit(req.user.email, "product-image.map", `mapped=${result.mapped}`);
+    res.json({ folder: resolveProductImagesDir(), ...result });
+  }
+);

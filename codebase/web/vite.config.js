@@ -23,6 +23,10 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(new RegExp(`^${apiPrefix}`), ""),
       },
+      [`${base.replace(/\/+$/, "")}/product-images`]: {
+        target: "http://localhost:3000",
+        changeOrigin: true,
+      },
     },
   },
 });

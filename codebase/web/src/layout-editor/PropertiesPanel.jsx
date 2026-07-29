@@ -1,5 +1,7 @@
 /** Properties for aisle corridor vs shelf height/levels/usable width. */
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
+import { isDoubleSided, isPairedShelf, shelfDisplayLabel, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import { isShelfLike } from "./planogramSegments.js";
 
 export default function PropertiesPanel({
   selection,
@@ -11,6 +13,7 @@ export default function PropertiesPanel({
   onPatchShelf,
   onDeleteAisle,
   onDeleteShelf,
+  onOpenPlanogram,
 }) {
   if (!selection) {
     return (
@@ -37,11 +40,38 @@ export default function PropertiesPanel({
           className="mono"
           type="number"
           step="0.1"
+          min={minAisle}
           disabled={editDisabled}
           value={a.widthMeters}
           onChange={(e) => onPatchAisle(a.id, { widthMeters: Number(e.target.value) })}
           style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
         />
+        <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
+          Run length (m)
+        </label>
+        <input
+          className="mono"
+          type="number"
+          step="0.1"
+          min="1"
+          disabled={editDisabled}
+          value={a.lengthMeters ?? ""}
+          placeholder="Auto"
+          onChange={(e) => onPatchAisle(a.id, { lengthMeters: Number(e.target.value) })}
+          style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
+        />
+        <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
+          Orientation
+        </label>
+        <select
+          disabled={editDisabled}
+          value={a.orientation === "vertical" ? "vertical" : "horizontal"}
+          onChange={(e) => onPatchAisle(a.id, { orientation: e.target.value })}
+          style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
+        >
+          <option value="horizontal">Horizontal (east–west run)</option>
+          <option value="vertical">Vertical (north–south run)</option>
+        </select>
         <div className="mono" style={{ fontSize: 11, marginTop: 6, color: "#6b7280" }}>
           Run × width:{" "}
           {(a.orientation === "vertical"
@@ -69,7 +99,14 @@ export default function PropertiesPanel({
   const s = (layout.shelves || layout.fixtures || []).find((x) => x.id === selection.id);
   if (!s) return null;
   const levels = s.levels || [];
-  const displayNum = s.displayNumber != null ? `#${s.displayNumber}` : "—";
+  const unitLabel = s.displayNumber != null ? shelfUnitLabel(s.displayNumber) : null;
+  const faceSummary = isPairedShelf(s)
+    ? `${shelfDisplayLabel(s)} (${s.pairRole === "back" ? "back" : "front"})`
+    : unitLabel && isDoubleSided(s)
+      ? `${shelfFaceLabel(s.displayNumber, "A")} / ${shelfFaceLabel(s.displayNumber, "B")}`
+      : unitLabel
+        ? shelfFaceLabel(s.displayNumber, "A")
+        : "—";
   const typeLabel = (FIXTURE_TYPES[s.type] || FIXTURE_TYPES.shelf)?.label || s.type || "Shelf";
 
   return (
@@ -82,12 +119,12 @@ export default function PropertiesPanel({
         type="text"
         disabled={editDisabled}
         value={s.label || ""}
-        placeholder={`Shelf ${displayNum}`}
+        placeholder={unitLabel ? `Shelf ${unitLabel}` : "Shelf"}
         onChange={(e) => onPatchShelf(s.id, { label: e.target.value })}
         style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb", fontWeight: 700 }}
       />
       <div className="mono" style={{ fontSize: 11, marginTop: 8, color: "#6b7280" }}>
-        {displayNum} · {typeLabel}
+        {faceSummary} · {typeLabel}
       </div>
       <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
         Usable face width (m)
@@ -165,7 +202,7 @@ export default function PropertiesPanel({
         </button>
       </div>
       <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-        Drag the handle on canvas · Shift = 15° snap
+        Drag canvas handles to resize · rotate handle for angle · Shift = 15° snap
       </div>
       <div className="section-label" style={{ marginTop: 14 }}>
         Levels ({levels.length})
@@ -192,6 +229,16 @@ export default function PropertiesPanel({
           }}
         >
           + Add level
+        </button>
+      ) : null}
+      {isShelfLike(s.type) ? (
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ width: "100%", padding: "9px 10px", marginTop: 10, fontSize: 12.5 }}
+          onClick={() => onOpenPlanogram?.(s.id, "A")}
+        >
+          Open Planogram
         </button>
       ) : null}
       {!editDisabled ? (

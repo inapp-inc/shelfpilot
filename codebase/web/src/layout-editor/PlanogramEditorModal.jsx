@@ -1,0 +1,613 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api.js";
+import AlertBanner from "../components/AlertBanner.jsx";
+import { FIXTURE_TYPES } from "../referenceCatalog.js";
+import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { filterProductsForShelf } from "./categoryFilter.js";
+import { isDoubleSided, normalizeShelfUI, resolveGondolaForEditor, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import {
+  buildEqualSegmentsClient,
+  defaultSegmentId,
+  defaultSegmentIdForLevel,
+  effectiveSegmentsForLevel,
+  mergeAllSegments,
+  orphanPlacementsForLevel,
+  placementInCell,
+  resizeDivider,
+  shelfLevels,
+} from "./planogramSegments.js";
+
+function activeFace(shelf, faceId) {
+  if (!shelf?.faces?.length) {
+    return { id: "A", categoryId: shelf?.categoryId, planogram: shelf?.planogram || [] };
+  }
+  return shelf.faces.find((f) => f.id === faceId) || shelf.faces[0];
+}
+
+/** Visual level × bay planogram editor with draggable dividers. */
+export default function PlanogramEditorModal({
+  open,
+  shelfId,
+  initialFaceId = "A",
+  layout,
+  token,
+  products,
+  categories,
+  editDisabled,
+  onClose,
+  onLayoutUpdated,
+  onPatchShelf,
+  toast,
+}) {
+  const [faceId, setFaceId] = useState(initialFaceId);
+  const [addCell, setAddCell] = useState(null);
+  const [editPlacement, setEditPlacement] = useState(null);
+  const [productId, setProductId] = useState("");
+  const [facings, setFacings] = useState("");
+  const [depthFacings, setDepthFacings] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [dragDivider, setDragDivider] = useState(null);
+  const [draftSegmentsByLevel, setDraftSegmentsByLevel] = useState({});
+  const [selectedLevelIndex, setSelectedLevelIndex] = useState(0);
+  const [dismissedFillWarning, setDismissedFillWarning] = useState(false);
+  const gridRef = useRef(null);
+  const draftRef = useRef(null);
+  const dragLevelRef = useRef(null);
+
+  const gondolaCtx = useMemo(
+    () => (open && shelfId && layout ? resolveGondolaForEditor(layout, shelfId) : null),
+    [open, shelfId, layout]
+  );
+  const shelfRaw = useMemo(() => {
+    if (!gondolaCtx) return null;
+    const shelves = layout?.shelves || layout?.fixtures || [];
+    return shelves.find((s) => s.id === gondolaCtx.physicalShelfId(faceId)) || shelves.find((s) => s.id === shelfId);
+  }, [gondolaCtx, layout, shelfId, faceId]);
+  const shelf = gondolaCtx?.shelf ?? (shelfRaw ? normalizeShelfUI(shelfRaw) : null);
+  const dualFace = shelf ? isDoubleSided(shelf) || gondolaCtx?.mode === "gondola" : false;
+  const activePhysicalId = gondolaCtx ? gondolaCtx.physicalShelfId(faceId) : shelfId;
+  const activeApiFaceId = gondolaCtx ? gondolaCtx.apiFaceId(faceId) : faceId;
+  const face = shelf ? activeFace(shelf, faceId) : null;
+  const faceCategory = face?.categoryId || null;
+  const levels = shelf ? shelfLevels(shelf) : [];
+  const levelsDesc = useMemo(() => [...levels].reverse(), [levels]);
+  const usable = Number(shelf?.usableWidthMeters ?? shelf?.widthMeters) || 1.2;
+
+  const segmentsForLevel = useCallback(
+    (levelIndex) => {
+      const key = String(levelIndex);
+      if (draftSegmentsByLevel[key]) return draftSegmentsByLevel[key];
+      return effectiveSegmentsForLevel(shelf, faceId, levelIndex);
+    },
+    [draftSegmentsByLevel, shelf, faceId]
+  );
+  const typeLabel = (FIXTURE_TYPES[shelf?.type] || FIXTURE_TYPES.shelf)?.label || shelf?.type || "Shelf";
+  const productList = faceCategory ? filterProductsForShelf(products, faceCategory, categories) : [];
+  const planogram = face?.planogram || [];
+
+  useEffect(() => {
+    if (open) {
+      setFaceId(initialFaceId);
+      setAddCell(null);
+      setEditPlacement(null);
+      setDraftSegmentsByLevel({});
+      setSelectedLevelIndex(0);
+      setDismissedFillWarning(false);
+    }
+  }, [open, shelfId, initialFaceId]);
+
+  useEffect(() => {
+    if (levelsDesc.length) {
+      setSelectedLevelIndex((prev) =>
+        levelsDesc.some((lv) => (lv.levelIndex ?? 0) === prev) ? prev : (levelsDesc[0].levelIndex ?? 0)
+      );
+    }
+  }, [levelsDesc, shelf?.id]);
+
+  useEffect(() => {
+    setProductId("");
+    setFacings("");
+    setDepthFacings("");
+    setPreview(null);
+    setAddCell(null);
+    setEditPlacement(null);
+    setDraftSegmentsByLevel({});
+    draftRef.current = null;
+    dragLevelRef.current = null;
+  }, [faceId, faceCategory]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    setPreview(null);
+    if (!productId || !token || !shelf || !faceCategory) return;
+    const levelIndex = addCell?.levelIndex ?? editPlacement?.levelIndex ?? selectedLevelIndex;
+    const segmentId =
+      addCell?.segmentId ||
+      editPlacement?.segmentId ||
+      defaultSegmentIdForLevel(shelf, faceId, levelIndex);
+    const previewBody = {
+      shelfId: activePhysicalId,
+      productId,
+      levelIndex: addCell?.levelIndex ?? editPlacement?.levelIndex ?? selectedLevelIndex,
+      faceId: activeApiFaceId,
+    };
+    if (segmentId && segmentId !== "implicit") previewBody.segmentId = segmentId;
+    api(`/layouts/${layout.id}/planogram/preview`, {
+      token,
+      method: "POST",
+      body: previewBody,
+    })
+      .then((p) => {
+        setPreview(p);
+        if (!editPlacement) {
+          setFacings(String(p.maxFacings));
+          setDepthFacings(String(p.maxDepthFacings ?? 1));
+        }
+      })
+      .catch((e) => toast?.(e.message));
+  }, [productId, addCell, editPlacement, selectedLevelIndex, activePhysicalId, activeApiFaceId, faceCategory, layout?.id, token, shelf, faceId]);
+
+  const applySegments = useCallback(
+    async (levelIndex, nextSegments) => {
+      if (!shelf || editDisabled) return;
+      const orphans = orphanPlacementsForLevel(planogram, nextSegments, levelIndex);
+      if (orphans.length) {
+        const ok = window.confirm(
+          `Re-splitting level ${levelIndex} will remove ${orphans.length} product placement(s) tied to old bays. Continue?`
+        );
+        if (!ok) return;
+        for (const p of orphans) {
+          await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram/${p.id}`, {
+            token,
+            method: "DELETE",
+          });
+        }
+      }
+      const updated = await onPatchShelf(activePhysicalId, {
+        segments: nextSegments,
+        faceId: activeApiFaceId,
+        levelIndex,
+      });
+      onLayoutUpdated?.(updated);
+      setDraftSegmentsByLevel((prev) => {
+        const next = { ...prev };
+        delete next[String(levelIndex)];
+        return next;
+      });
+      draftRef.current = null;
+      dragLevelRef.current = null;
+    },
+    [shelf, editDisabled, planogram, layout?.id, token, onPatchShelf, onLayoutUpdated, activePhysicalId, activeApiFaceId]
+  );
+
+  const onDividerPointerDown = (levelIndex, idx, e) => {
+    if (editDisabled) return;
+    e.preventDefault();
+    dragLevelRef.current = levelIndex;
+    setDragDivider(idx);
+    setSelectedLevelIndex(levelIndex);
+  };
+
+  useEffect(() => {
+    if (dragDivider == null) return;
+
+    const onMove = (e) => {
+      const grid = gridRef.current;
+      const levelIndex = dragLevelRef.current;
+      if (!grid || !shelf || levelIndex == null) return;
+      const gutter = 72;
+      const rect = grid.getBoundingClientRect();
+      const cellsWidth = Math.max(1, rect.width - gutter);
+      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - gutter) / cellsWidth));
+      const boundary = ratio * usable;
+      const base = draftRef.current || effectiveSegmentsForLevel(shelf, faceId, levelIndex);
+      const next = resizeDivider(base, dragDivider, boundary, usable);
+      draftRef.current = next;
+      setDraftSegmentsByLevel((prev) => ({ ...prev, [String(levelIndex)]: next }));
+    };
+
+    const onUp = () => {
+      const pending = draftRef.current;
+      const levelIndex = dragLevelRef.current;
+      setDragDivider(null);
+      dragLevelRef.current = null;
+      if (pending != null && levelIndex != null) {
+        applySegments(levelIndex, pending).catch((err) => toast?.(err.message));
+      }
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragDivider, usable, shelf, applySegments, toast, faceId]);
+
+  async function savePlacement({ replaceId } = {}) {
+    if (!productId || !shelf) return;
+    const levelIndex = addCell?.levelIndex ?? editPlacement?.levelIndex ?? 0;
+    const segmentId = addCell?.segmentId ?? editPlacement?.segmentId ?? defaultSegmentId(shelf, faceId);
+    const body = {
+      productId,
+      levelIndex,
+      faceId: activeApiFaceId,
+      facings: facings !== "" ? Number(facings) : undefined,
+      depthFacings: depthFacings !== "" ? Number(depthFacings) : undefined,
+    };
+    if (segmentId && segmentId !== "implicit") body.segmentId = segmentId;
+    if (replaceId) {
+      await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram/${replaceId}`, {
+        token,
+        method: "DELETE",
+      });
+    }
+    const updated = await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram`, {
+      token,
+      method: "POST",
+      body,
+    });
+    onLayoutUpdated(updated);
+    setAddCell(null);
+    setEditPlacement(null);
+    toast?.(`Placed on level ${levelIndex}`);
+  }
+
+  async function handleAddToCell(levelIndex, segmentId) {
+    if (editDisabled) return;
+    if (!faceCategory) {
+      toast?.("Assign a category to this face first.");
+      return;
+    }
+    const existing = placementInCell(planogram, { levelIndex, segmentId, shelf, faceId });
+    if (existing) {
+      const prod = products.find((p) => p.id === existing.productId);
+      setEditPlacement({
+        ...existing,
+        levelIndex,
+        segmentId: segmentId || defaultSegmentId(shelf, faceId),
+        productName: prod?.name,
+      });
+      setProductId(existing.productId);
+      setFacings(String(existing.facings));
+      setDepthFacings(String(existing.depthFacings ?? 1));
+      setAddCell(null);
+      return;
+    }
+    setEditPlacement(null);
+    setAddCell({ levelIndex, segmentId: segmentId || defaultSegmentId(shelf, faceId) });
+    setProductId("");
+    setFacings("");
+    setDepthFacings("");
+  }
+
+  async function removePlacement(placementId) {
+    const updated = await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram/${placementId}`, {
+      token,
+      method: "DELETE",
+    });
+    onLayoutUpdated(updated);
+    setEditPlacement(null);
+  }
+
+  async function equalSplit(n) {
+    if (editDisabled || !shelf) return;
+    await applySegments(selectedLevelIndex, buildEqualSegmentsClient(usable, n));
+  }
+
+  async function mergeBays() {
+    if (editDisabled || !shelf) return;
+    await applySegments(selectedLevelIndex, mergeAllSegments(usable));
+  }
+
+  async function toggleFillMode(levelIndex, seg) {
+    if (editDisabled || !shelf) return;
+    const segs = segmentsForLevel(levelIndex);
+    const next = segs.map((s) =>
+      s.id === seg.id ? { ...s, fillMode: s.fillMode === "partial" ? "full" : "partial" } : s
+    );
+    await applySegments(levelIndex, next);
+  }
+
+  const summary = useMemo(() => {
+    let warnings = 0;
+    let bayCount = 0;
+    for (const lv of levels) {
+      const levelIndex = lv.levelIndex ?? 0;
+      const segs = effectiveSegmentsForLevel(shelf, faceId, levelIndex);
+      bayCount = Math.max(bayCount, segs.length);
+      for (const seg of segs) {
+        if (seg.fillMode !== "full") continue;
+        const p = placementInCell(planogram, { levelIndex, segmentId: seg.id, shelf, faceId });
+        if (p && p.maxFacings && p.facings < p.maxFacings - 0.5) warnings += 1;
+      }
+    }
+    return {
+      placements: planogram.length,
+      warnings,
+      maxBays: bayCount,
+    };
+  }, [levels, planogram, shelf, faceId]);
+
+  if (!open || !shelf) return null;
+
+  const pickerOpen = addCell || editPlacement;
+
+  return (
+    <div
+      className="modal-backdrop planogram-editor-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="planogram-editor-title"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}
+    >
+      <div className="modal planogram-editor-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <header className="planogram-editor-header">
+          <div>
+            <h2 id="planogram-editor-title" style={{ margin: 0, fontSize: 18 }}>
+              Planogram · {shelf.displayNumber != null ? shelfFaceLabel(shelf.displayNumber, faceId) : "—"}
+            </h2>
+            <div className="muted mono" style={{ fontSize: 12, marginTop: 4 }}>
+              {shelfUnitLabel(shelf.displayNumber)} · {typeLabel} · {usable.toFixed(1)} m × {Number(shelf.depthMeters ?? 0.6).toFixed(1)} m
+              {faceCategory ? (
+                <span className="cat-chip" style={{ marginLeft: 8 }}>
+                  {categoryLabel(categories, faceCategory)}
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="planogram-editor-header-actions">
+            {dualFace ? (
+              <div className="merch-face-toggle">
+                <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
+                  {shelfFaceLabel(shelf.displayNumber, "A")}
+                </button>
+                <button type="button" className={faceId === "B" ? "active" : ""} onClick={() => setFaceId("B")}>
+                  {shelfFaceLabel(shelf.displayNumber, "B")}
+                </button>
+              </div>
+            ) : null}
+            <button type="button" className="btn-secondary" onClick={() => onClose?.()}>
+              Close
+            </button>
+          </div>
+        </header>
+
+        {!faceCategory ? (
+          <div className="planogram-editor-empty muted">
+            Assign a category to {shelfFaceLabel(shelf.displayNumber, faceId)} in the Merchandising panel before adding products.
+          </div>
+        ) : null}
+
+        <div className="planogram-editor-toolbar">
+          <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>
+            Bays · Level {selectedLevelIndex}
+          </span>
+          {!editDisabled ? (
+            <>
+              {[2, 3, 4].map((n) => (
+                <button key={n} type="button" className="btn-secondary planogram-toolbar-btn" onClick={() => equalSplit(n).catch((e) => toast?.(e.message))}>
+                  Split {n}
+                </button>
+              ))}
+              <button type="button" className="btn-secondary planogram-toolbar-btn" onClick={() => mergeBays().catch((e) => toast?.(e.message))}>
+                Merge level
+              </button>
+              <span className="muted" style={{ fontSize: 11 }}>
+                Select a level row, then split · drag dividers on that level only
+              </span>
+            </>
+          ) : (
+            <span className="muted" style={{ fontSize: 11 }}>View only</span>
+          )}
+        </div>
+
+        <div className="planogram-editor-grid-wrap" ref={gridRef}>
+          {levelsDesc.map((lv) => {
+            const levelIndex = lv.levelIndex ?? 0;
+            const segments = segmentsForLevel(levelIndex);
+            const levelSelected = selectedLevelIndex === levelIndex;
+            return (
+              <div key={levelIndex} className={`planogram-level-row${levelSelected ? " planogram-level-selected" : ""}`}>
+                <div
+                  className="planogram-level-gutter planogram-level-gutter-btn"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedLevelIndex(levelIndex)}
+                  onKeyDown={(e) => e.key === "Enter" && setSelectedLevelIndex(levelIndex)}
+                >
+                  <span className="mono">L{levelIndex}</span>
+                  {lv.heightFromFloorMeters != null ? (
+                    <span className="muted" style={{ fontSize: 10 }}>
+                      {lv.heightFromFloorMeters} m
+                    </span>
+                  ) : null}
+                </div>
+                <div className="planogram-level-stack">
+                  {segments.length > 1 ? (
+                    <div className="planogram-bay-headers planogram-bay-headers-inline">
+                      {segments.map((seg, idx) => (
+                        <div key={seg.id} className="planogram-bay-header" style={{ flex: `${seg.widthMeters} 1 0` }}>
+                          <span>{seg.label || `Bay ${idx + 1}`}</span>
+                          <span className="mono muted">{seg.widthMeters.toFixed(2)} m</span>
+                          {!editDisabled && levelSelected ? (
+                            <button
+                              type="button"
+                              className="planogram-fill-toggle"
+                              title={seg.fillMode === "partial" ? "Partial fill" : "Full fill"}
+                              onClick={() => toggleFillMode(levelIndex, seg).catch((e) => toast?.(e.message))}
+                            >
+                              {seg.fillMode === "partial" ? "Partial" : "Full"}
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="planogram-level-cells">
+                    {segments.map((seg, segIdx) => {
+                      const placement = placementInCell(planogram, {
+                        levelIndex,
+                        segmentId: seg.id,
+                        shelf,
+                        faceId,
+                      });
+                      const prod = placement ? products.find((p) => p.id === placement.productId) : null;
+                      const fillPct =
+                        placement?.maxFacings > 0
+                          ? Math.min(100, (placement.facings / placement.maxFacings) * 100)
+                          : 0;
+                      const isPartial = seg.fillMode === "partial";
+                      return (
+                        <div
+                          key={seg.id}
+                          className={`planogram-cell${isPartial ? " segment-partial" : ""}${!placement ? " planogram-cell-empty" : ""}`}
+                          style={{ flex: `${seg.widthMeters} 1 0` }}
+                          onClick={() => {
+                            setSelectedLevelIndex(levelIndex);
+                            handleAddToCell(levelIndex, seg.id);
+                          }}
+                        >
+                          {placement ? (
+                            <div className="planogram-product-block">
+                              <div className="planogram-product-name">{prod?.name || placement.productId}</div>
+                              <div className="mono planogram-product-count">
+                                {placement.facings} wide × {placement.depthFacings ?? 1} deep
+                              </div>
+                              <div className="planogram-fill-bar">
+                                <div className="planogram-fill-bar-inner" style={{ width: `${fillPct}%` }} />
+                              </div>
+                              {!editDisabled ? (
+                                <button
+                                  type="button"
+                                  className="planogram-cell-remove"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removePlacement(placement.id).catch((err) => toast?.(err.message));
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className="planogram-cell-placeholder">
+                              {editDisabled ? "—" : "+ Add"}
+                            </span>
+                          )}
+                          {segIdx < segments.length - 1 && !editDisabled && levelSelected ? (
+                            <div
+                              className="planogram-divider-handle"
+                              onPointerDown={(e) => onDividerPointerDown(levelIndex, segIdx, e)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {pickerOpen ? (
+          <div className="planogram-add-panel">
+            <div className="section-label">
+              {editPlacement ? "Edit placement" : `Add · Level ${addCell?.levelIndex}`}
+            </div>
+            <div className="planogram-add-fields">
+              <label>
+                Product
+                <select
+                  disabled={editDisabled || !!editPlacement}
+                  value={productId}
+                  onChange={(e) => setProductId(e.target.value)}
+                >
+                  <option value="">Select product</option>
+                  {productList.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} {p.sku ? `(${p.sku})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Front facings
+                <input
+                  className="mono"
+                  type="number"
+                  min="1"
+                  disabled={editDisabled || !preview}
+                  value={facings}
+                  onChange={(e) => setFacings(e.target.value)}
+                />
+              </label>
+              <label>
+                Depth (backstock)
+                <input
+                  className="mono"
+                  type="number"
+                  min="1"
+                  disabled={editDisabled || !preview}
+                  value={depthFacings}
+                  onChange={(e) => setDepthFacings(e.target.value)}
+                />
+              </label>
+            </div>
+            {preview ? (
+              <div className="mono muted" style={{ fontSize: 11.5 }}>
+                Max {preview.maxFacings} wide · {preview.maxDepthFacings ?? 1} deep
+              </div>
+            ) : null}
+            <div className="planogram-add-actions">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={editDisabled || !productId}
+                onClick={() =>
+                  savePlacement(editPlacement ? { replaceId: editPlacement.id } : {}).catch((e) =>
+                    toast?.(e.message)
+                  )
+                }
+              >
+                {editPlacement ? "Update" : "Add product"}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  setAddCell(null);
+                  setEditPlacement(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {summary.warnings > 0 && !dismissedFillWarning ? (
+          <AlertBanner variant="warning" onDismiss={() => setDismissedFillWarning(true)}>
+            {summary.warnings} placement{summary.warnings === 1 ? "" : "s"} leave unused shelf width — add facings or adjust bay splits.
+          </AlertBanner>
+        ) : null}
+
+        <footer className="planogram-editor-footer mono muted">
+          {levels.length} levels · up to {summary.maxBays} bay{summary.maxBays === 1 ? "" : "s"} ·{" "}
+          {summary.placements} placement{summary.placements === 1 ? "" : "s"}
+          {summary.warnings > 0 ? ` · ${summary.warnings} fill gap warning(s)` : ""}
+        </footer>
+      </div>
+    </div>
+  );
+}

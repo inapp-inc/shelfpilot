@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import MerchandisingPanel from "./MerchandisingPanel.jsx";
+import MissingProductsPanel from "./MissingProductsPanel.jsx";
 import ShelfNumberLegend from "./ShelfNumberLegend.jsx";
 import ZonesEntryPanel from "./ZonesEntryPanel.jsx";
 
@@ -28,7 +29,11 @@ export default function EditorSideRail({
   onDeleteEntry,
   onSelectZone,
   onRefreshCatalog,
+  onOpenPlanogram,
   toast,
+  planogramCoverage,
+  coverageLoading,
+  onRefreshCoverage,
 }) {
   const [tab, setTab] = useState("merch");
 
@@ -75,6 +80,7 @@ export default function EditorSideRail({
             onPatchShelf={onPatchShelf}
             onDeleteAisle={onDeleteAisle}
             onDeleteShelf={onDeleteShelf}
+            onOpenPlanogram={onOpenPlanogram}
           />
         ) : (
           <>
@@ -90,7 +96,14 @@ export default function EditorSideRail({
               onMapShelf={onMapShelf}
               onQuickAddProduct={onQuickAddProduct}
               onRefreshCatalog={onRefreshCatalog}
+              onOpenPlanogram={onOpenPlanogram}
               toast={toast}
+            />
+            <MissingProductsPanel
+              coverage={planogramCoverage}
+              loading={coverageLoading}
+              onRefresh={onRefreshCoverage}
+              categories={categories}
             />
             <ShelfNumberLegend layout={layout} categories={categories} />
           </>

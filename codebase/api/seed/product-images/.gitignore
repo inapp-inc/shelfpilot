@@ -1,0 +1,4 @@
+# Populated by: npm run seed:product-images (from Docs/products/images)
+# Used by Docker build and API bootstrap on first start.
+*
+!.gitignore

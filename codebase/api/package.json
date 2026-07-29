@@ -7,13 +7,17 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test test/health.test.js test/shelfpilot.test.js test/planogram.test.js test/autogen.test.js test/merch-layers.test.js test/category-mix.test.js test/dual-face.test.js test/client-feedback.test.js test/zones-aisles.test.js test/rotation-segments.test.js"
+    "import:catalog": "node scripts/import-product-catalog.mjs",
+    "seed:product-images": "node scripts/seed-product-images.mjs",
+    "sync:product-images": "node scripts/sync-product-images.mjs",
+    "test": "node --test test/health.test.js test/shelfpilot.test.js test/planogram.test.js test/autogen.test.js test/merch-layers.test.js test/category-mix.test.js test/dual-face.test.js test/client-feedback.test.js test/zones-aisles.test.js test/rotation-segments.test.js test/layout-merch.test.js test/product-images.test.js test/category-resolve.test.js test/planogram-autofill.test.js test/packer-runway-dedup.test.js test/packer-shallow-zone.test.js test/autogen-pair-integrity.test.js test/aisle-binding.test.js test/demo-packing.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "xlsx": "^0.18.5"
   },
   "engines": {
     "node": ">=22.5"

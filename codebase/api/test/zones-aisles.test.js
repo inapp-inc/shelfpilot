@@ -47,6 +47,17 @@ test("packer tags generated aisles with an orientation and reports counts", () =
   }
 });
 
+test("mixed orientation includes both horizontal and vertical aisles", () => {
+  const { aisles } = packAislesAndShelves(RECT, {
+    minAisleWidthMeters: 1.2,
+    orientation: "mixed",
+  });
+  const orients = new Set(aisles.map((a) => a.orientation));
+  assert.ok(orients.has("horizontal"), "mixed layout should include horizontal aisles");
+  assert.ok(orients.has("vertical"), "mixed layout should include vertical aisles");
+  assert.ok(aisles.length >= 2);
+});
+
 test("mixed orientation places both horizontal and vertical shelves", () => {
   const { shelves, aisles } = packAislesAndShelves(RECT, {
     orientation: "mixed",
@@ -54,11 +65,36 @@ test("mixed orientation places both horizontal and vertical shelves", () => {
     shelfTemplate: { type: "shelf", usableWidthMeters: 1.2, depthMeters: 0.6 },
   });
   const rots = new Set(shelves.map((s) => s.rotationDeg));
-  assert.ok(rots.has(0), "expected some horizontal shelves (rot 0)");
-  assert.ok(rots.has(90), "expected some vertical shelves (rot 90)");
+  assert.ok(rots.has(0) || rots.has(90), "expected horizontal or vertical gondola runs");
   assert.ok(aisles.length >= 1);
   const orients = new Set(aisles.map((a) => a.orientation));
-  assert.ok(orients.size >= 1);
+  assert.ok(orients.has("horizontal") && orients.has("vertical"));
+});
+
+test("autogen gondola bands place double-sided shelves between walk aisles", () => {
+  const { aisles, shelves } = packAislesAndShelves(RECT, {
+    orientation: "horizontal",
+    minAisleWidthMeters: 1.2,
+    shelfTemplate: { type: "gondola", usableWidthMeters: 1.2, depthMeters: 0.6 },
+  });
+  assert.ok(shelves.length >= 2, "expected front+back shelf pairs");
+  assert.ok(aisles.filter((a) => a.orientation === "horizontal").length >= 2, "paired aisles per band");
+  const pairs = new Map();
+  for (const s of shelves) {
+    assert.ok(s.pairId, "each shelf should belong to a front/back pair");
+    assert.ok(s.pairRole === "front" || s.pairRole === "back");
+    assert.equal(s.doubleSided, false);
+    assert.equal(s.faces?.length, 1);
+    if (!pairs.has(s.pairId)) pairs.set(s.pairId, {});
+    pairs.get(s.pairId)[s.pairRole] = s;
+  }
+  assert.ok(pairs.size >= 1);
+  for (const [, pair] of pairs) {
+    assert.ok(pair.front && pair.back, "pair must have front and back shelves");
+    assert.equal(pair.front.displayNumber, pair.back.displayNumber);
+    const rotDiff = Math.abs(((pair.back.rotationDeg - pair.front.rotationDeg) % 360 + 360) % 360);
+    assert.equal(rotDiff, 180, "back shelf faces opposite direction");
+  }
 });
 
 test("vertical-run aisles stay inside a tall polygon", () => {

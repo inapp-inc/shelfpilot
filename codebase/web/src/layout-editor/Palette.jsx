@@ -1,4 +1,4 @@
-import { FIXTURE_TYPES, ZONE_TYPES } from "../referenceCatalog.js";
+import { ZONE_TYPES } from "../referenceCatalog.js";
 
 /** Left sidebar palette: select, draw area, aisles, shelves. */
 export default function Palette({
@@ -6,6 +6,7 @@ export default function Palette({
   setPaletteTool,
   editDisabled,
   minAisle,
+  fixtureTypes = [],
   draftCount,
   onApplyArea,
   onClearDraft,
@@ -39,7 +40,7 @@ export default function Palette({
       >
         <div style={{ fontSize: 13, fontWeight: 700 }}>Draw area</div>
         <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          click vertices · irregular
+          click · line preview · close shape
         </div>
       </button>
       {draftCount > 0 ? (
@@ -81,7 +82,7 @@ export default function Palette({
       >
         <div style={{ fontSize: 13, fontWeight: 700 }}>Generate</div>
         <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          aisles + shelves (smart)
+          gondola pairs + walk aisles
         </div>
       </button>
 
@@ -90,42 +91,62 @@ export default function Palette({
       </div>
       <button
         type="button"
-        className={`tool-btn ${paletteTool === "aisle" ? "active" : ""}`}
+        className={`tool-btn ${paletteTool === "aisle-h" || paletteTool === "aisle" ? "active" : ""}`}
         disabled={editDisabled}
         draggable={!editDisabled}
         onDragStart={(e) => {
-          e.dataTransfer.setData("application/x-shelfpilot-tool", "aisle");
+          e.dataTransfer.setData("application/x-shelfpilot-tool", "aisle-h");
           e.dataTransfer.effectAllowed = "copy";
-          setPaletteTool("aisle");
+          setPaletteTool("aisle-h");
         }}
-        onClick={() => setPaletteTool("aisle")}
+        onClick={() => setPaletteTool("aisle-h")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Aisle</div>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Aisle (horizontal)</div>
         <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          corridor · min {minAisle} m
+          east–west run · min {minAisle} m wide
+        </div>
+      </button>
+      <button
+        type="button"
+        className={`tool-btn ${paletteTool === "aisle-v" ? "active" : ""}`}
+        disabled={editDisabled}
+        draggable={!editDisabled}
+        onDragStart={(e) => {
+          e.dataTransfer.setData("application/x-shelfpilot-tool", "aisle-v");
+          e.dataTransfer.effectAllowed = "copy";
+          setPaletteTool("aisle-v");
+        }}
+        onClick={() => setPaletteTool("aisle-v")}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Aisle (vertical)</div>
+        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
+          north–south run · min {minAisle} m wide
         </div>
       </button>
 
       <div className="section-label" style={{ padding: "10px 4px 6px" }}>
         Shelves
       </div>
-      {Object.entries(FIXTURE_TYPES).map(([key, t]) => (
+      <div className="mono" style={{ fontSize: 10, color: "#9aa1ab", padding: "0 4px 6px" }}>
+        From Admin store configuration
+      </div>
+      {fixtureTypes.map((t) => (
         <button
-          key={key}
+          key={t.type}
           type="button"
-          className={`tool-btn ${paletteTool === key ? "active" : ""}`}
+          className={`tool-btn ${paletteTool === t.type ? "active" : ""}`}
           disabled={editDisabled}
           draggable={!editDisabled}
           onDragStart={(e) => {
-            e.dataTransfer.setData("application/x-shelfpilot-tool", key);
+            e.dataTransfer.setData("application/x-shelfpilot-tool", t.type);
             e.dataTransfer.effectAllowed = "copy";
-            setPaletteTool(key);
+            setPaletteTool(t.type);
           }}
-          onClick={() => setPaletteTool(key)}
+          onClick={() => setPaletteTool(t.type)}
         >
           <div style={{ fontSize: 13, fontWeight: 700 }}>{t.label}</div>
           <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-            {t.w} × {t.d} m · drag to floor
+            {t.defaultWidthMeters} × {t.defaultDepthMeters} m · {t.defaultLevels} lvl
           </div>
         </button>
       ))}

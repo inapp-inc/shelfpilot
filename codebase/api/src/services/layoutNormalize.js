@@ -30,7 +30,9 @@ export function fixtureToShelf(f) {
     color: f.color,
     temperatureZone: f.temperatureZone || "ambient",
     displayNumber: f.displayNumber ?? null,
-    doubleSided: f.doubleSided ?? isDoubleSidedType(type),
+    doubleSided: f.pairId ? false : f.doubleSided !== false,
+    pairId: f.pairId || null,
+    pairRole: f.pairRole === "back" ? "back" : f.pairRole === "front" ? "front" : null,
     faces: f.faces,
     levels: Array.isArray(f.levels) && f.levels.length ? f.levels : levelsForType(type, height, f.defaultLevels),
     planogram: Array.isArray(f.planogram) ? f.planogram : [],
@@ -52,6 +54,10 @@ export function shelfToFixture(s) {
     rotationDeg: Number(s.rotationDeg) || 0,
     categoryId: s.categoryId,
     color: s.color,
+    pairId: s.pairId || null,
+    pairRole: s.pairRole || null,
+    doubleSided: s.doubleSided,
+    displayNumber: s.displayNumber ?? null,
   };
 }
 

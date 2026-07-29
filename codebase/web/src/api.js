@@ -4,6 +4,18 @@
 // API base tracks the deploy subpath automatically — no hardcoded host or path.
 const API = `${(import.meta.env.BASE_URL || "/").replace(/\/+$/, "")}/api`;
 
+/** Human-readable message for common API auth failures. */
+export function apiErrorMessage(err) {
+  if (!err) return "Request failed";
+  if (err.status === 401 || err.message === "unauthorized") {
+    return "Session expired or invalid. Sign out and sign in again as Designer or Admin.";
+  }
+  if (err.status === 403 || err.message === "forbidden") {
+    return "Your role cannot import. Sign in as Designer or Admin.";
+  }
+  return err.message || "Request failed";
+}
+
 export async function api(path, { token, method = "GET", body } = {}) {
   const headers = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;

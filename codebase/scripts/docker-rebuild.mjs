@@ -13,6 +13,25 @@
  *   npm run docker:rebuild -- web
  */
 import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const apiDir = path.resolve(__dirname, "../api");
+
+function seedProductImages() {
+  console.log("\n> Seeding product-images from Docs/products/images …");
+  const res = spawnSync("node", ["scripts/seed-product-images.mjs"], {
+    cwd: apiDir,
+    stdio: "inherit",
+    shell: false,
+  });
+  if (res.status !== 0) {
+    console.warn("Warning: product image seed step failed — Docker build may ship without thumbnails.");
+  }
+}
+
+seedProductImages();
 
 const services = process.argv.slice(2); // optional: ["web"] or ["api"]
 const cacheBust = new Date().toISOString().replace(/[^0-9]/g, "");

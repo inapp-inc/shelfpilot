@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ShelfPilot API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     UI + mock API contract for ShelfPilot store layout design (demo stack).
     Auth is mock email/password with role selection. Persistence is SQLite.
@@ -15,6 +15,9 @@ info:
     (change: module-reframe-smart-autogen).
     v0.7 adds dual-face shelves (faces A/B), displayNumber, strict polygon fixture zone,
     and faceId on planogram writes (change: dual-face-numbered-shelves-strict-polygon).
+    v0.8 adds shelf bay segments (horizontal splits), segment-scoped planogram preview/placement,
+    and documents the visual planogram editor contract (changes: layout-dimensions-rotation-shelf-bays,
+    shelf-planogram-visual-editor).
 servers:
   - url: http://localhost:3000
   - url: http://localhost:3001
@@ -180,6 +183,35 @@ paths:
       responses:
         "200":
           description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /layouts/{layoutId}/clone:
+    post:
+      tags: [Layouts]
+      operationId: cloneLayout
+      description: Designer, Admin — duplicate a layout as a new draft (master-layout reuse).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/LayoutId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Optional name for the copy (defaults to "{source name} (copy)")
+      responses:
+        "201":
+          description: Cloned layout
           content:
             application/json:
               schema:
@@ -656,7 +688,7 @@ paths:
     post:
       tags: [Planogram]
       operationId: previewPlanogramFacings
-      description: Compute maxFacings and suggestedLevels without persisting.
+      description: Compute maxFacings, maxDepthFacings, and suggestedLevels without persisting.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/LayoutId"
@@ -671,6 +703,14 @@ paths:
                 shelfId: { type: string }
                 productId: { type: string }
                 levelIndex: { type: integer, default: 0 }
+                faceId:
+                  type: string
+                  enum: [A, B]
+                  default: A
+                  description: Shelf face for dual-face fixtures (storage, gondola)
+                segmentId:
+                  type: string
+                  description: Optional shelf bay segment; maxFacings computed from segment width
       responses:
         "200":
           description: Facing preview
@@ -1381,6 +1421,11 @@ components:
           enum: [A, B]
         categoryId: { type: string }
         color: { type: string }
+        segments:
+          type: array
+          description: Bay splits for this face (independent per face on dual-sided fixtures)
+          items:
+            $ref: "#/components/schemas/ShelfSegment"
         planogram:
           type: array
           items:
@@ -1419,6 +1464,13 @@ components:
         doubleSided:
           type: boolean
           default: false
+        pairId:
+          type: string
+          description: Shared id for a front+back shelf pair occupying the same footprint
+        pairRole:
+          type: string
+          enum: [front, back]
+          description: Front faces one aisle; back faces the opposite aisle (rotation +180°)
         faces:
           type: array
           items:
@@ -1449,6 +1501,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ShelfLevel"
+        segments:
+          type: array
+          description: Horizontal bay splits for the face given by faceId (defaults to A)
+          items:
+            $ref: "#/components/schemas/ShelfSegment"
     Shelf:
       allOf:
         - $ref: "#/components/schemas/ShelfInput"
@@ -1482,6 +1539,11 @@ components:
         fillMode:
           type: string
           enum: [full, partial]
+          description: full = target 100% bay fill; partial = deliberate empty space allowed
+        label:
+          type: string
+          maxLength: 32
+          description: Optional bay name shown in planogram editor (e.g. Promo, Bay 2)
     PlanogramPlacementInput:
       type: object
       required: [productId]
@@ -1489,7 +1551,10 @@ components:
         id: { type: string }
         productId: { type: string }
         levelIndex: { type: integer, default: 0 }
-        facings: { type: integer, description: Requested facings; clamped to maxFacings }
+        facings: { type: integer, description: Requested front facings; clamped to maxFacings }
+        depthFacings:
+          type: integer
+          description: Requested depth (backstock) facings; clamped to maxDepthFacings
         positionX: { type: number, description: Offset along shelf face in meters }
         faceId:
           type: string
@@ -1508,7 +1573,21 @@ components:
         levelIndex: { type: integer }
         facings: { type: integer }
         maxFacings: { type: integer }
+        depthFacings:
+          type: integer
+          description: Units deep along shelf depth (backstock)
+        maxDepthFacings:
+          type: integer
+          description: Max units deep from shelf depth vs product depth
         positionX: { type: number }
+        faceId:
+          type: string
+          enum: [A, B]
+          default: A
+          description: Shelf face for dual-face fixtures
+        segmentId:
+          type: string
+          description: Shelf bay segment when placement targets a horizontal split
     PlanogramPreview:
       type: object
       required: [shelfId, productId, maxFacings]
@@ -1516,11 +1595,18 @@ components:
         shelfId: { type: string }
         productId: { type: string }
         levelIndex: { type: integer }
-        maxFacings: { type: integer }
-        suggestedLevels: { type: integer }
+        maxFacings: { type: integer, description: Max units across shelf width (front facings) }
+        maxDepthFacings: { type: integer, description: Max units along shelf depth (backward/backstock) }
+        suggestedLevels: { type: integer, description: Max vertical product stacks on shelf height }
         productWidthMeters: { type: number }
         productHeightMeters: { type: number }
+        productDepthMeters: { type: number }
+        shelfDepthMeters: { type: number }
         usableWidthMeters: { type: number }
+        segmentWidthMeters:
+          type: number
+          description: Bay width used for maxFacings when segmentId is set
+        segmentId: { type: string }
         assumedDimensions: { type: boolean, description: True when product size defaults were used }
     AutogenerateRequest:
       type: object

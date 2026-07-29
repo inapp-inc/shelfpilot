@@ -488,6 +488,18 @@ export const repo = {
          FROM layouts ORDER BY updated_at DESC`;
     return status ? getDb().prepare(sql).all(status) : getDb().prepare(sql).all();
   },
+  clearCatalog() {
+    const db = getDb();
+    db.exec("BEGIN");
+    try {
+      db.exec("DELETE FROM products");
+      db.exec("DELETE FROM categories");
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  },
   upsertCategory(cat) {
     getDb()
       .prepare(

@@ -4,11 +4,14 @@ import { repo, audit, getConfig, now } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
 import { computeAutoCalc, validateAisles } from "../services/layoutMath.js";
 import { fixtureToShelf, normalizeLayout, nextDisplayNumber, shelfToFixture } from "../services/layoutNormalize.js";
-import { clampFacings, previewFacings } from "../services/planogramMath.js";
+import { clampFacings, clampDepthFacings, previewFacings } from "../services/planogramMath.js";
 import {
+  countGondolaUnits,
   faceCategoryId,
   facePlanogram,
+  getFace,
   normalizeShelf,
+  oppositeShelfOrigin,
   setFaceCategory,
   syncLegacyFromFaces,
 } from "../services/shelfFaces.js";
@@ -18,21 +21,50 @@ import {
   collectContainmentViolations,
   collectOverlapViolations,
   entityInsideLayout,
+  layoutBoundaryPolygon,
+  maxLengthInsideX,
+  maxLengthInsideY,
   validatePolygonRing,
 } from "../services/polygonContainment.js";
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../services/zones.js";
 import { packAislesAndShelves } from "../services/layoutPacker.js";
+import { bindShelvesToAisles, finalizeAisleShelfBinding } from "../services/aisleBinding.js";
 import { assignCategoryMix } from "../services/categoryMixPacker.js";
 import { applyFixtureTypesToShelves } from "../services/categoryFixtureDefaults.js";
-import { productAllowedForShelf } from "../services/categoryTree.js";
+import { listCategoriesForLayout, productAllowedForShelf, resolveCategoryId } from "../services/categoryTree.js";
+import { fillPlanogramsForLayout, loadProductsForLayoutVertical } from "../services/planogramAutoFill.js";
+import { computePlanogramCoverage } from "../services/planogramCoverage.js";
 import {
   SegmentError,
   getShelfSegment,
+  normalizeFaceLevelSegments,
   normalizeRotationDeg,
-  normalizeShelfSegments,
+  normalizeShelfFaceSegments,
 } from "../services/shelfSegments.js";
 
 export const layoutsRouter = Router();
+
+function findPairMate(layout, shelf) {
+  if (!shelf?.pairId) return null;
+  return (layout.shelves || []).find((s) => s.pairId === shelf.pairId && s.id !== shelf.id) || null;
+}
+
+function syncPairMatePose(layout, shelf) {
+  const mate = findPairMate(layout, shelf);
+  if (!mate) return null;
+  const w = Number(shelf.usableWidthMeters ?? shelf.widthMeters) || 1.2;
+  const d = Number(shelf.depthMeters) || 0.6;
+  const opp = oppositeShelfOrigin(shelf.x, shelf.y, shelf.rotationDeg, w, d);
+  mate.x = opp.x;
+  mate.y = opp.y;
+  mate.rotationDeg = opp.rotationDeg;
+  mate.usableWidthMeters = w;
+  mate.widthMeters = Number(shelf.widthMeters) || w;
+  mate.depthMeters = d;
+  if (shelf.heightMeters != null) mate.heightMeters = shelf.heightMeters;
+  normalizeShelf(mate);
+  return mate;
+}
 
 function planogramEnabled() {
   const raw = process.env.PLANOGRAM_EDITOR;
@@ -149,6 +181,34 @@ layoutsRouter.get("/layouts/:layoutId", authRequired, (req, res) => {
   if (!layout) return res.status(404).json({ error: "not_found" });
   res.json(layout);
 });
+
+layoutsRouter.post(
+  "/layouts/:layoutId/clone",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const source = repo.getLayout(req.params.layoutId);
+    if (!source) return res.status(404).json({ error: "not_found" });
+    const name =
+      typeof req.body?.name === "string" && req.body.name.trim()
+        ? req.body.name.trim().slice(0, 120)
+        : `${source.name} (copy)`;
+    const cloned = JSON.parse(JSON.stringify(source));
+    cloned.id = `lay-${randomUUID().slice(0, 8)}`;
+    cloned.name = name;
+    cloned.status = "draft";
+    cloned.contentRevision = 0;
+    cloned.submittedRevision = null;
+    cloned.reviewComment = null;
+    cloned.reviewedAt = null;
+    cloned.reviewedBy = null;
+    cloned.lastSubmittedAt = null;
+    cloned.updatedAt = now();
+    saveNormalized(cloned, { skipRevisionBump: true });
+    audit(req.user.email, "layout.clone", `${source.id}->${cloned.id}`);
+    res.status(201).json(cloned);
+  }
+);
 
 layoutsRouter.delete(
   "/layouts/:layoutId",
@@ -359,12 +419,32 @@ layoutsRouter.get("/layouts/:layoutId/versions", authRequired, (req, res) => {
 layoutsRouter.post("/layouts/:layoutId/aisles", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
   const layout = repo.getLayout(req.params.layoutId);
   if (!layout) return res.status(404).json({ error: "not_found" });
+  const orientation = req.body?.orientation === "vertical" ? "vertical" : "horizontal";
+  const widthMeters = Number(req.body?.widthMeters ?? 1.2);
+  const x = Number(req.body?.x || 0);
+  const y = Number(req.body?.y || 0);
+  const poly = layoutBoundaryPolygon(layout);
+  const spanW = Number(layout.widthMeters) || 10;
+  const spanD = Number(layout.depthMeters) || 8;
+  let lengthMeters =
+    req.body?.lengthMeters != null ? Number(req.body.lengthMeters) : null;
+  if (lengthMeters == null || !Number.isFinite(lengthMeters) || lengthMeters <= 0) {
+    if (orientation === "vertical") {
+      lengthMeters =
+        maxLengthInsideY(x, y, widthMeters, spanD, poly) || Math.max(2, spanD * 0.85);
+    } else {
+      lengthMeters =
+        maxLengthInsideX(x, y, spanW, widthMeters, poly) || Math.max(2, spanW * 0.85);
+    }
+  }
   const aisle = {
     id: req.body?.id || `aisle-${randomUUID().slice(0, 6)}`,
     name: req.body?.name || "Aisle",
-    widthMeters: Number(req.body?.widthMeters ?? 1.2),
-    x: Number(req.body?.x || 0),
-    y: Number(req.body?.y || 0),
+    widthMeters,
+    lengthMeters: Math.max(1, lengthMeters),
+    orientation,
+    x,
+    y,
     path: req.body?.path || [],
     categoryId: req.body?.categoryId,
     color: req.body?.color,
@@ -642,36 +722,68 @@ layoutsRouter.post("/layouts/:layoutId/shelves", authRequired, requireRoles("Des
     req.body?.usableWidthMeters ?? req.body?.widthMeters ?? tmpl?.defaultWidthMeters ?? 1.2
   );
   const heightMeters = Number(req.body?.heightMeters || 2);
-  const shelf = fixtureToShelf({
+  const depthMeters = Number(req.body?.depthMeters ?? tmpl?.defaultDepthMeters ?? 0.6);
+  const x = Number(req.body?.x || 0);
+  const y = Number(req.body?.y || 0);
+  const rotationDeg = Number(req.body?.rotationDeg || 0);
+  const pairId = `pair-${randomUUID().slice(0, 8)}`;
+  const front = fixtureToShelf({
     id: req.body?.id || `shf-${randomUUID().slice(0, 6)}`,
     type,
-    label: req.body?.label || "Shelf",
+    label: req.body?.label || "Shelf (front)",
     usableWidthMeters: usable,
     widthMeters: Number(req.body?.widthMeters ?? usable),
-    depthMeters: Number(req.body?.depthMeters ?? tmpl?.defaultDepthMeters ?? 0.6),
+    depthMeters,
     heightMeters,
-    x: Number(req.body?.x || 0),
-    y: Number(req.body?.y || 0),
-    rotationDeg: Number(req.body?.rotationDeg || 0),
+    x,
+    y,
+    rotationDeg,
     aisleId: req.body?.aisleId || null,
     categoryId: req.body?.categoryId,
     color: req.body?.color,
     defaultLevels: tmpl?.defaultLevels,
     levels: req.body?.levels,
     planogram: [],
+    pairId,
+    pairRole: "front",
+    doubleSided: false,
+  });
+  const backOrigin = oppositeShelfOrigin(x, y, rotationDeg, usable, depthMeters);
+  const back = fixtureToShelf({
+    id: `shf-${randomUUID().slice(0, 6)}`,
+    type,
+    label: "Shelf (back)",
+    usableWidthMeters: usable,
+    widthMeters: Number(req.body?.widthMeters ?? usable),
+    depthMeters,
+    heightMeters,
+    x: backOrigin.x,
+    y: backOrigin.y,
+    rotationDeg: backOrigin.rotationDeg,
+    aisleId: req.body?.aisleId || null,
+    defaultLevels: tmpl?.defaultLevels,
+    planogram: [],
+    pairId,
+    pairRole: "back",
+    doubleSided: false,
   });
   layout.shelves = layout.shelves || [];
   try {
-    assertInsideOrThrow(shelf, "shelf", layout);
-    assertNoOverlapOrThrow(shelf, "shelf", layout);
+    assertInsideOrThrow(front, "shelf", layout);
+    assertInsideOrThrow(back, "shelf", layout);
+    assertNoOverlapOrThrow(front, "shelf", layout);
+    assertNoOverlapOrThrow(back, "shelf", layout, { ignoreId: front.id });
   } catch (err) {
     return containmentError(res, err);
   }
-  shelf.displayNumber = nextDisplayNumber(layout.shelves);
-  layout.shelves.push(shelf);
-  normalizeShelf(shelf);
+  const unit = nextDisplayNumber(layout.shelves);
+  front.displayNumber = unit;
+  back.displayNumber = unit;
+  layout.shelves.push(front, back);
+  normalizeShelf(front);
+  normalizeShelf(back);
   saveNormalized(layout);
-  audit(req.user.email, "layout.shelf.add", `${layout.id}:${shelf.id}`);
+  audit(req.user.email, "layout.shelf.add", `${layout.id}:${front.id}+${back.id}`);
   res.status(201).json(layout);
 });
 
@@ -695,8 +807,19 @@ layoutsRouter.patch(
     if (Array.isArray(patch.levels)) shelf.levels = patch.levels;
     if (Array.isArray(patch.segments)) {
       try {
-        shelf.segments = patch.segments;
-        normalizeShelfSegments(shelf);
+        normalizeShelf(shelf);
+        const faceId = patch.faceId === "B" ? "B" : "A";
+        const face = getFace(shelf, faceId);
+        const usable = Math.max(0.1, Number(shelf.usableWidthMeters ?? shelf.widthMeters) || 1.2);
+        if (patch.levelIndex != null && patch.levelIndex !== "") {
+          const levelKey = String(Number(patch.levelIndex) || 0);
+          if (!face.levelSegments) face.levelSegments = {};
+          face.levelSegments[levelKey] = patch.segments;
+          normalizeFaceLevelSegments(face, usable);
+        } else {
+          face.segments = patch.segments;
+          normalizeShelfFaceSegments(shelf);
+        }
       } catch (err) {
         if (err instanceof SegmentError) return res.status(400).json({ error: err.code });
         throw err;
@@ -719,9 +842,21 @@ layoutsRouter.patch(
       }
     }
     if (patch.color != null && patch.categoryId === undefined) shelf.color = patch.color;
+    const poseChanged =
+      patch.x != null ||
+      patch.y != null ||
+      patch.rotationDeg != null ||
+      patch.widthMeters != null ||
+      patch.depthMeters != null ||
+      patch.usableWidthMeters != null;
+    const mate = poseChanged ? syncPairMatePose(layout, shelf) : findPairMate(layout, shelf);
     try {
       assertInsideOrThrow(shelf, "shelf", layout);
       assertNoOverlapOrThrow(shelf, "shelf", layout, { ignoreId: shelf.id });
+      if (mate) {
+        assertInsideOrThrow(mate, "shelf", layout);
+        assertNoOverlapOrThrow(mate, "shelf", layout, { ignoreId: mate.id });
+      }
     } catch (err) {
       return containmentError(res, err);
     }
@@ -738,14 +873,20 @@ layoutsRouter.delete(
   (req, res) => {
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
-    const before = (layout.shelves || []).length;
-    layout.shelves = (layout.shelves || []).filter((s) => s.id !== req.params.shelfId);
-    if (layout.shelves.length === before) return res.status(404).json({ error: "shelf_not_found" });
+    const shelf = (layout.shelves || []).find((s) => s.id === req.params.shelfId);
+    if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
+    const removeIds = new Set([shelf.id]);
+    if (shelf.pairId) {
+      for (const s of layout.shelves) {
+        if (s.pairId === shelf.pairId) removeIds.add(s.id);
+      }
+    }
+    layout.shelves = (layout.shelves || []).filter((s) => !removeIds.has(s.id));
     layout.shelfMappings = (layout.shelfMappings || []).filter(
-      (m) => m.shelfId !== req.params.shelfId && m.fixtureId !== req.params.shelfId
+      (m) => !removeIds.has(m.shelfId) && !removeIds.has(m.fixtureId)
     );
     saveNormalized(layout);
-    audit(req.user.email, "layout.shelf.delete", `${layout.id}:${req.params.shelfId}`);
+    audit(req.user.email, "layout.shelf.delete", `${layout.id}:${[...removeIds].join("+")}`);
     res.json(layout);
   }
 );
@@ -807,12 +948,13 @@ layoutsRouter.post(
     if (!activeCategoryId) return res.status(400).json({ error: "shelf_category_required" });
     const productId = req.body?.productId;
     if (!productId) return res.status(400).json({ error: "missing_fields" });
-    if (segmentId && !getShelfSegment(shelf, segmentId)) {
+    const levelIndex = Number(req.body?.levelIndex) || 0;
+    if (segmentId && !getShelfSegment(shelf, segmentId, faceId, levelIndex)) {
       return res.status(404).json({ error: "segment_not_found" });
     }
     const product = repo.listProducts().find((p) => p.id === productId);
     if (!product) return res.status(404).json({ error: "product_not_found" });
-    const categories = repo.listCategories(layout.vertical);
+    const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
     const shelfForGate = { ...shelf, categoryId: activeCategoryId };
     if (!productAllowedForShelf(product, activeCategoryId, categories)) {
       return res.status(400).json({ error: "product_category_mismatch" });
@@ -822,14 +964,18 @@ layoutsRouter.post(
       product,
       levelIndex: req.body?.levelIndex,
       segmentId,
+      faceId,
     });
     const facings = clampFacings(req.body?.facings, preview.maxFacings);
+    const depthFacings = clampDepthFacings(req.body?.depthFacings, preview.maxDepthFacings);
     const placement = {
       id: req.body?.id || `pog-${randomUUID().slice(0, 6)}`,
       productId,
       levelIndex: Number(req.body?.levelIndex) || 0,
       facings,
       maxFacings: preview.maxFacings,
+      depthFacings,
+      maxDepthFacings: preview.maxDepthFacings,
       positionX: Number(req.body?.positionX || 0),
       faceId,
       segmentId: segmentId || undefined,
@@ -878,7 +1024,8 @@ layoutsRouter.post("/layouts/:layoutId/planogram/preview", authRequired, (req, r
   const segmentId = req.body?.segmentId || null;
   const activeCategoryId = faceCategoryId(shelf, faceId);
   if (!activeCategoryId) return res.status(400).json({ error: "shelf_category_required" });
-  if (segmentId && !getShelfSegment(shelf, segmentId)) {
+  const levelIndex = Number(req.body?.levelIndex) || 0;
+  if (segmentId && !getShelfSegment(shelf, segmentId, faceId, levelIndex)) {
     return res.status(404).json({ error: "segment_not_found" });
   }
   const product = repo.listProducts().find((p) => p.id === req.body?.productId);
@@ -889,6 +1036,7 @@ layoutsRouter.post("/layouts/:layoutId/planogram/preview", authRequired, (req, r
       product,
       levelIndex: req.body?.levelIndex,
       segmentId,
+      faceId,
     })
   );
 });
@@ -913,9 +1061,15 @@ layoutsRouter.post(
       body.shelfTemplate?.type ||
       (layout.vertical === "hypermarket" ? "gondola" : "shelf");
     const shelfTmpl = templates.find((t) => t.type === preferredType) || templates.find((t) => t.type === "shelf") || {};
+    const minAisle =
+      body.minAisleWidthMeters != null
+        ? Number(body.minAisleWidthMeters)
+        : Math.min(Number(config.minAisleWidthMeters) || 1.2, 1.0);
     const packed = packAislesAndShelves(layout, {
       orientation: body.orientation || "auto",
-      minAisleWidthMeters: body.minAisleWidthMeters ?? config.minAisleWidthMeters,
+      minAisleWidthMeters: minAisle,
+      crossAisles: body.crossAisles === true,
+      compactMode: body.compactMode !== false,
       shelfTemplate: {
         type: body.shelfTemplate?.type ?? shelfTmpl.type ?? preferredType,
         usableWidthMeters: body.shelfTemplate?.usableWidthMeters ?? shelfTmpl.defaultWidthMeters ?? 1.2,
@@ -928,16 +1082,22 @@ layoutsRouter.post(
     layout.aisleMappings = [];
 
     const categoryMix = Array.isArray(body.categoryMix) ? body.categoryMix : [];
+    const categories = listCategoriesForLayout(layout.vertical, (v) =>
+      repo.listCategories().filter((c) => c.vertical === v)
+    );
     if (categoryMix.length > 0) {
       const totalPct = categoryMix.reduce((s, m) => s + Number(m.percent || 0), 0);
       if (Math.abs(totalPct - 100) > 0.01) {
         return res.status(400).json({ error: "category_mix_invalid", detail: "Percentages must sum to 100" });
       }
-      const categories = repo.listCategories().filter((c) => c.vertical === layout.vertical);
-      const assigned = assignCategoryMix(packed.shelves, categoryMix, categories);
+      const resolvedMix = categoryMix.map((row) => ({
+        ...row,
+        categoryId: resolveCategoryId(row.categoryId, categories) || row.categoryId,
+      }));
+      const assigned = assignCategoryMix(packed.shelves, resolvedMix, categories);
       layout.shelves = applyFixtureTypesToShelves(
         assigned.shelves,
-        categoryMix,
+        resolvedMix,
         categories,
         config
       );
@@ -959,22 +1119,70 @@ layoutsRouter.post(
       return false;
     });
 
+    let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
+    layout.shelves = bound.shelves;
+    layout.aisles = bound.aisles;
+
     layout.fixtures = [];
     layout.mappings = [];
+
+    let planogramPlacements = 0;
+    const fillPlanogram = body.fillPlanogram !== false;
+    if (categoryMix.length > 0 && fillPlanogram) {
+      const { categories: fillCats, products: fillProducts } = loadProductsForLayoutVertical(
+        layout.vertical,
+        (v) => repo.listCategories(v),
+        () => repo.listProducts()
+      );
+      planogramPlacements = fillPlanogramsForLayout(layout, fillProducts, fillCats);
+      bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
+      layout.shelves = bound.shelves;
+      layout.aisles = bound.aisles;
+    }
+
     saveNormalized(layout);
+    const coverage = computePlanogramCoverage(
+      layout,
+      (v) => repo.listCategories(v),
+      () => repo.listProducts()
+    );
     audit(req.user.email, "layout.autogenerate", `${layout.id}:${layout.shelves.length}`);
     res.json({
       ...layout,
       generated: {
         aisles: layout.aisles.length,
         shelves: layout.shelves.length,
+        gondolaUnits: countGondolaUnits(layout.shelves),
+        walkAisles: layout.aisles.length,
         categoryMapped: categoryMix.length > 0,
+        planogramFilled: fillPlanogram && categoryMix.length > 0 && planogramPlacements > 0,
+        planogramPlacements,
+        productsMapped: planogramPlacements,
         skippedOutsideCount: (packed.skippedOutsideCount ?? 0) + droppedOutside,
+      },
+      coverage: {
+        totalProducts: coverage.totalProducts,
+        placedCount: coverage.placedCount,
+        missingCount: coverage.missingCount,
+        coveragePercent: coverage.coveragePercent,
+        missingProducts: coverage.missingProducts,
       },
       replaced: replaceExisting && hasContent,
     });
   }
 );
+
+layoutsRouter.get("/layouts/:layoutId/planogram/coverage", authRequired, (req, res) => {
+  const layout = repo.getLayout(req.params.layoutId);
+  if (!layout) return res.status(404).json({ error: "not_found" });
+  res.json(
+    computePlanogramCoverage(
+      layout,
+      (v) => repo.listCategories(v),
+      () => repo.listProducts()
+    )
+  );
+});
 
 layoutsRouter.post("/layouts/:layoutId/auto-calc", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
   const layout = repo.getLayout(req.params.layoutId);

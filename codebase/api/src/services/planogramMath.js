@@ -8,16 +8,25 @@ export const DEFAULT_PRODUCT_HEIGHT_M = 0.25;
 
 export function productDimensions(product) {
   const attrs = product?.attributes || {};
+  const cm = (v) => (v != null ? Number(v) / 100 : null);
   const width =
-    Number(attrs.widthMeters ?? attrs.width ?? DEFAULT_PRODUCT_WIDTH_M) || DEFAULT_PRODUCT_WIDTH_M;
+    Number(attrs.widthMeters ?? attrs.width ?? cm(product?.widthCm ?? attrs.widthCm) ?? DEFAULT_PRODUCT_WIDTH_M) ||
+    DEFAULT_PRODUCT_WIDTH_M;
   const height =
-    Number(attrs.heightMeters ?? attrs.height ?? DEFAULT_PRODUCT_HEIGHT_M) || DEFAULT_PRODUCT_HEIGHT_M;
+    Number(attrs.heightMeters ?? attrs.height ?? cm(product?.heightCm ?? attrs.heightCm) ?? DEFAULT_PRODUCT_HEIGHT_M) ||
+    DEFAULT_PRODUCT_HEIGHT_M;
+  const depth =
+    Number(attrs.depthMeters ?? attrs.depth ?? cm(product?.depthCm ?? attrs.depthCm) ?? width) || width;
   const assumed =
     attrs.widthMeters == null &&
     attrs.width == null &&
+    attrs.widthCm == null &&
+    product?.widthCm == null &&
     attrs.heightMeters == null &&
-    attrs.height == null;
-  return { widthMeters: width, heightMeters: height, assumedDimensions: assumed };
+    attrs.height == null &&
+    attrs.heightCm == null &&
+    product?.heightCm == null;
+  return { widthMeters: width, heightMeters: height, depthMeters: depth, assumedDimensions: assumed };
 }
 
 export function computeMaxFacings(usableWidthMeters, productWidthMeters) {
@@ -26,6 +35,13 @@ export function computeMaxFacings(usableWidthMeters, productWidthMeters) {
   if (usable <= 0 || pw <= 0) return 0;
   // Avoid IEEE float truncation (e.g. 1.2/0.2 === 5.999…)
   return Math.max(0, Math.floor(usable / pw + 1e-9));
+}
+
+export function computeSuggestedDepthFacings(shelfDepthMeters, productDepthMeters) {
+  const depth = Number(shelfDepthMeters) || 0;
+  const pd = Number(productDepthMeters) || DEFAULT_PRODUCT_WIDTH_M;
+  if (depth <= 0 || pd <= 0) return 0;
+  return Math.max(0, Math.floor(depth / pd + 1e-9));
 }
 
 export function computeSuggestedLevels(shelfHeightMeters, productHeightMeters) {
@@ -43,14 +59,35 @@ export function clampFacings(requested, maxFacings) {
   return Math.min(n, max);
 }
 
-export function previewFacings({ shelf, product, levelIndex = 0, segmentId = null }) {
+export function clampDepthFacings(requested, maxDepthFacings) {
+  return clampFacings(requested, maxDepthFacings);
+}
+
+import { levelSegmentsList } from "./shelfSegments.js";
+
+export function previewFacings({ shelf, product, levelIndex = 0, segmentId = null, faceId = "A" }) {
   const started = performance.now();
   const dims = productDimensions(product);
   let usable = Number(shelf?.usableWidthMeters ?? shelf?.widthMeters) || 0;
-  if (segmentId && Array.isArray(shelf?.segments)) {
+  const segments = levelSegmentsList(shelf, faceId, levelIndex);
+  if (segmentId && segments.length) {
+    const seg = segments.find((s) => s.id === segmentId);
+    if (seg) usable = Number(seg.widthMeters) || usable;
+  } else if (segmentId && Array.isArray(shelf?.segments)) {
     const seg = shelf.segments.find((s) => s.id === segmentId);
     if (seg) usable = Number(seg.widthMeters) || usable;
   }
+  const depthFromCm =
+    product?.depthCm != null
+      ? Number(product.depthCm) / 100
+      : product?.attributes?.depthCm != null
+        ? Number(product.attributes.depthCm) / 100
+        : null;
+  const depthDim =
+    Number(
+      product?.attributes?.depthMeters ?? product?.attributes?.depth ?? depthFromCm ?? dims.depthMeters ?? dims.widthMeters
+    ) || dims.depthMeters || dims.widthMeters;
+  const maxDepthFacings = computeSuggestedDepthFacings(Number(shelf?.depthMeters) || 0, depthDim);
   const maxFacings = computeMaxFacings(usable, dims.widthMeters);
   const suggestedLevels = computeSuggestedLevels(shelf?.heightMeters, dims.heightMeters);
   const durationMs = Number((performance.now() - started).toFixed(3));
@@ -69,9 +106,12 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
     productId: product?.id,
     levelIndex: Number(levelIndex) || 0,
     maxFacings,
+    maxDepthFacings,
     suggestedLevels,
     productWidthMeters: dims.widthMeters,
     productHeightMeters: dims.heightMeters,
+    productDepthMeters: depthDim,
+    shelfDepthMeters: Number(shelf?.depthMeters) || 0,
     usableWidthMeters: usable,
     assumedDimensions: dims.assumedDimensions,
     durationMs,

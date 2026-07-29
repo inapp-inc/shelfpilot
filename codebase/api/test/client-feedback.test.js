@@ -165,3 +165,45 @@ test("L-shaped polygon autogen has zero containment violations", () => {
     assert.equal(entityInsideLayout(a, "aisle", layout), true);
   }
 });
+
+test("clone layout copies geometry and fixtures as new draft", async () => {
+  await withServer(async (port) => {
+    const token = await login(port);
+    const layout = await createLayout(port, token, {
+      name: "Master Store",
+      vertical: "retail",
+      widthMeters: 20,
+      depthMeters: 15,
+      shape: "polygon",
+      polygon: [
+        { x: 0, y: 0 },
+        { x: 12, y: 0 },
+        { x: 12, y: 8 },
+        { x: 0, y: 8 },
+      ],
+    });
+
+    const fx = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/fixtures`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ type: "gondola", widthMeters: 1.2, depthMeters: 0.6, x: 2, y: 2, heightMeters: 2 }),
+    });
+    assert.equal(fx.status, 201);
+
+    const cloneRes = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/clone`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Store B from master" }),
+    });
+    assert.equal(cloneRes.status, 201);
+    const copy = await cloneRes.json();
+    assert.notEqual(copy.id, layout.id);
+    assert.equal(copy.name, "Store B from master");
+    assert.equal(copy.status, "draft");
+    assert.equal(copy.storeEnvelope.widthMeters, 20);
+    assert.equal(copy.polygon.length, 4);
+    assert.ok((copy.shelves || []).length >= 1);
+    assert.equal(copy.reviewComment, null);
+    assert.equal(copy.submittedRevision, null);
+  });
+});

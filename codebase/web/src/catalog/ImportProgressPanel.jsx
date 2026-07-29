@@ -1,9 +1,10 @@
 /** Inline import progress panel for Excel catalog import. */
-export default function ImportProgressPanel({ progress }) {
+export default function ImportProgressPanel({ progress, onDismiss }) {
   if (!progress) return null;
 
   const done = progress.phase === "done";
   const error = progress.phase === "error";
+  const canDismiss = (done || error) && onDismiss;
 
   return (
     <div
@@ -15,6 +16,11 @@ export default function ImportProgressPanel({ progress }) {
         <strong>{error ? "Import failed" : done ? "Import complete" : "Importing…"}</strong>
         {!error && !done ? <span className="spin import-progress-spin" aria-hidden /> : null}
         {done ? <span className="import-progress-check">✓</span> : null}
+        {canDismiss ? (
+          <button type="button" className="alert-banner-dismiss" aria-label="Dismiss" onClick={onDismiss}>
+            ×
+          </button>
+        ) : null}
       </div>
       <p className="import-progress-message">{progress.message}</p>
       {progress.detail ? (

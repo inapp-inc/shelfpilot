@@ -1,9 +1,33 @@
+import { useEffect, useState } from "react";
 import DrawerShell from "./DrawerShell.jsx";
+import FieldError from "../components/FieldError.jsx";
+import { validateCategory } from "../validationMessages.js";
 
 export default function CategoryFormDrawer({ open, onClose, vertical, categories, draft, setDraft, onSubmit, editDisabled }) {
+  const [errors, setErrors] = useState({});
+
+  useEffect(() => {
+    if (open) setErrors({});
+  }, [open, draft?.id]);
+
   if (!open || !draft) return null;
 
   const parents = (categories || []).filter((c) => !c.parentId && c.id !== draft.id);
+
+  function clearError(field) {
+    if (errors[field]) setErrors((prev) => ({ ...prev, [field]: "" }));
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const check = validateCategory(draft);
+    if (!check.ok) {
+      setErrors(check.errors);
+      return;
+    }
+    setErrors({});
+    onSubmit?.();
+  }
 
   return (
     <DrawerShell
@@ -29,15 +53,19 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
     >
       <form
         id="category-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit?.();
-        }}
+        onSubmit={handleSubmit}
         style={{ display: "flex", flexDirection: "column", gap: 12 }}
       >
-        <label className="field">
+        <label className={`field${errors.name ? " field-invalid" : ""}`}>
           Name
-          <input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+          <input
+            value={draft.name}
+            onChange={(e) => {
+              setDraft({ ...draft, name: e.target.value });
+              clearError("name");
+            }}
+          />
+          <FieldError message={errors.name} />
         </label>
         <label className="field">
           Parent (optional)
@@ -53,23 +81,30 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
             ))}
           </select>
         </label>
-        <div className="field">
+        <div className={`field${errors.color ? " field-invalid" : ""}`}>
           <span>Color</span>
           <div className="color-field">
             <input
               type="color"
               className="color-swatch-input"
               value={draft.color || "#A30A2A"}
-              onChange={(e) => setDraft({ ...draft, color: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...draft, color: e.target.value });
+                clearError("color");
+              }}
             />
             <input
               className="mono"
               value={draft.color || "#A30A2A"}
-              onChange={(e) => setDraft({ ...draft, color: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...draft, color: e.target.value });
+                clearError("color");
+              }}
               style={{ flex: 1 }}
               maxLength={7}
             />
           </div>
+          <FieldError message={errors.color} />
           <div className="color-presets">
             {["#A30A2A", "#C4183A", "#0EA5E9", "#16A34A", "#F59E0B", "#7C3AED", "#DB2777", "#0F766E", "#64748B", "#111827"].map(
               (c) => (
@@ -80,7 +115,10 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
                   style={{ background: c }}
                   title={c}
                   aria-label={`Use ${c}`}
-                  onClick={() => setDraft({ ...draft, color: c })}
+                  onClick={() => {
+                    setDraft({ ...draft, color: c });
+                    clearError("color");
+                  }}
                 />
               )
             )}

@@ -17,7 +17,8 @@ test("assignCategoryMix distributes 50/50 across ten shelves", () => {
   const grocery = out.filter((s) => s.categoryId === "grocery").length;
   assert.equal(produce, 5);
   assert.equal(grocery, 5);
-  assert.equal(shelfMappings.length, 10);
+  assert.equal(shelfMappings.length, 20);
+  assert.ok(out.every((s) => s.doubleSided && s.faces?.length === 2));
 });
 
 test("assignCategoryMix tags chilled zone", () => {

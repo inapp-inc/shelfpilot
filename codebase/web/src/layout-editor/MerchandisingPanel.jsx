@@ -3,6 +3,8 @@ import { api } from "../api.js";
 import CategoryTreePicker from "../catalog/CategoryTreePicker.jsx";
 import { filterProductsForShelf } from "./categoryFilter.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { isDoubleSided, isPairedShelf, normalizeShelfUI, shelfDisplayLabel, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import { isShelfLike } from "./planogramSegments.js";
 
 function activeFace(shelf, faceId) {
   if (!shelf?.faces?.length) return { id: "A", categoryId: shelf?.categoryId, planogram: shelf?.planogram || [] };
@@ -22,6 +24,7 @@ export default function MerchandisingPanel({
   onMapShelf,
   onQuickAddProduct,
   onRefreshCatalog,
+  onOpenPlanogram,
   toast,
 }) {
   const [levelIndex, setLevelIndex] = useState(0);
@@ -40,7 +43,9 @@ export default function MerchandisingPanel({
     entity = (layout.shelves || layout.fixtures || []).find((s) => s.id === selection.id);
   }
 
-  const shelf = kind === "shelf" ? entity : null;
+  const shelfRaw = kind === "shelf" ? entity : null;
+  const shelf = shelfRaw ? normalizeShelfUI(shelfRaw) : null;
+  const dualFace = shelf ? isDoubleSided(shelf) : false;
   const face = shelf ? activeFace(shelf, faceId) : null;
   const faceCategory = face?.categoryId || null;
   const levels = shelf?.levels?.length
@@ -55,6 +60,7 @@ export default function MerchandisingPanel({
     setFacings("");
     setLevelIndex(0);
     setFaceId("A");
+    if (kind === "shelf" && onRefreshCatalog) onRefreshCatalog();
   }, [entity?.id]);
 
   useEffect(() => {
@@ -109,7 +115,7 @@ export default function MerchandisingPanel({
       },
     });
     onLayoutUpdated(updated);
-    toast?.(`Product placed on Face ${faceId}, level ${levelIndex}`);
+    toast?.(`Product placed on ${shelfFaceLabel(shelf.displayNumber, faceId)}, level ${levelIndex}`);
   }
 
   async function removePlacement(placementId) {
@@ -125,28 +131,42 @@ export default function MerchandisingPanel({
 
   return (
     <div className="merch-panel">
+      {kind === "shelf" && shelf && isShelfLike(shelf.type) ? (
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ padding: "10px 12px", width: "100%", marginBottom: 4 }}
+          onClick={() => onOpenPlanogram?.(shelf.id, faceId)}
+        >
+          Open Planogram
+        </button>
+      ) : null}
+
       {kind === "shelf" && shelf?.displayNumber ? (
         <div className="mono" style={{ fontSize: 12, fontWeight: 700, marginBottom: 10, color: "#374151" }}>
-          Shelf #{shelf.displayNumber}
-          {shelf.doubleSided ? " · Gondola (A/B)" : ` · ${shelf.type || "shelf"}`}
+          {isPairedShelf(shelf)
+            ? `${shelfDisplayLabel(shelf)} · ${shelf.pairRole === "back" ? "back face" : "front face"}`
+            : dualFace
+              ? `Shelf ${shelfUnitLabel(shelf.displayNumber)} · ${shelfFaceLabel(shelf.displayNumber, "A")} / ${shelfFaceLabel(shelf.displayNumber, "B")}`
+              : `Shelf ${shelfUnitLabel(shelf.displayNumber)} · ${shelfFaceLabel(shelf.displayNumber, "A")}`}
         </div>
       ) : null}
 
-      {kind === "shelf" && shelf?.doubleSided ? (
+      {kind === "shelf" && dualFace ? (
         <div className="merch-face-toggle">
           <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
-            Face A
+            {shelfFaceLabel(shelf.displayNumber, "A")}
           </button>
           <button type="button" className={faceId === "B" ? "active" : ""} onClick={() => setFaceId("B")}>
-            Face B
+            {shelfFaceLabel(shelf.displayNumber, "B")}
           </button>
         </div>
       ) : null}
 
       <div className="merch-step">
         <div className="merch-step-label">
-          <span className="merch-step-num">1</span> Category
-          {kind === "shelf" && shelf?.doubleSided ? ` (Face ${faceId})` : ""}
+          <span className="merch-step-num">1</span>           Category
+          {kind === "shelf" && dualFace ? ` (${shelfFaceLabel(shelf.displayNumber, faceId)})` : ""}
         </div>
         <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>
           Target: <strong>{kind}</strong>
@@ -171,8 +191,8 @@ export default function MerchandisingPanel({
       {kind === "shelf" ? (
         <div className="merch-step">
           <div className="merch-step-label">
-            <span className="merch-step-num">2</span> Planogram
-            {shelf?.doubleSided ? ` · Face ${faceId}` : ""}
+            <span className="merch-step-num">2</span>             Planogram
+            {dualFace ? ` · ${shelfFaceLabel(shelf.displayNumber, faceId)}` : ""}
           </div>
           {!faceCategory ? (
             <div className="muted" style={{ fontSize: 12.5 }}>
@@ -252,8 +272,16 @@ export default function MerchandisingPanel({
                 </div>
               ) : null}
               {preview ? (
-                <div className="mono" style={{ fontSize: 11.5, marginTop: 8, color: "#6b7280" }}>
-                  Max facings {preview.maxFacings}
+                <div className="planogram-suggest mono" style={{ fontSize: 11.5, marginTop: 8, color: "#374151", lineHeight: 1.55 }}>
+                  <div><strong>Suggested arrangement</strong></div>
+                  <div>Front facings (wide): up to {preview.maxFacings}</div>
+                  <div>Depth (backward): up to {preview.maxDepthFacings ?? 1} unit(s) deep</div>
+                  <div>Levels (high): up to {preview.suggestedLevels ?? levels.length}</div>
+                  {preview.assumedDimensions ? (
+                    <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                      Using default product size — set width/height in Catalog for accurate counts.
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 8, display: "block" }}>

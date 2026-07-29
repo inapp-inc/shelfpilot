@@ -39,6 +39,21 @@ export function applyFixtureTypesToShelves(shelves, categoryMix, categories, con
     const height = Number(tmpl.defaultHeightMeters ?? shelf.heightMeters) || 2;
     const usable = Number(tmpl.defaultWidthMeters ?? shelf.usableWidthMeters) || 1.2;
     const depth = Number(tmpl.defaultDepthMeters ?? shelf.depthMeters) || 0.6;
+
+    // Paired front/back shelves: preserve pair metadata; never force doubleSided.
+    if (shelf.pairId) {
+      return normalizeShelf({
+        ...shelf,
+        type,
+        usableWidthMeters: usable,
+        widthMeters: usable,
+        depthMeters: depth,
+        heightMeters: height,
+        doubleSided: false,
+        levels: levelsForType(type, height, tmpl.defaultLevels),
+      });
+    }
+
     const doubleSided = isDoubleSidedType(type);
     const next = {
       ...shelf,

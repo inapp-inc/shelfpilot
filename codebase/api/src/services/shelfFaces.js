@@ -1,8 +1,36 @@
 /** Dual-face shelf helpers: normalize legacy ↔ faces[], display numbers. */
-import { normalizeRotationDeg, normalizeShelfSegments } from "./shelfSegments.js";
+import { normalizeRotationDeg, normalizeShelfFaceSegments } from "./shelfSegments.js";
 
-export function isDoubleSidedType(type) {
-  return type === "gondola";
+/** 1 → A, 2 → B, … 26 → Z, 27 → AA */
+export function displayNumberToLetter(displayNumber) {
+  let n = Math.max(1, Math.floor(Number(displayNumber) || 1));
+  let s = "";
+  while (n > 0) {
+    n -= 1;
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26);
+  }
+  return s;
+}
+
+/** Face A → 1, Face B → 2 */
+export function faceDigit(faceId = "A") {
+  return faceId === "B" ? 2 : 1;
+}
+
+/** Shelf unit letter only, e.g. displayNumber 2 → "B" */
+export function shelfUnitLabel(displayNumber) {
+  return displayNumberToLetter(displayNumber);
+}
+
+/** Per-face shelf label, e.g. displayNumber 2 + Face B → "B2" */
+export function shelfFaceLabel(displayNumber, faceId = "A") {
+  return `${displayNumberToLetter(displayNumber)}${faceDigit(faceId)}`;
+}
+
+/** All fixture types support Face A / Face B unless explicitly single-sided. */
+export function isDoubleSidedType(_type) {
+  return true;
 }
 
 export function nextDisplayNumber(shelves) {
@@ -10,18 +38,65 @@ export function nextDisplayNumber(shelves) {
   return nums.length ? Math.max(...nums) + 1 : 1;
 }
 
+/**
+ * Front/back pair origin so both shelves share the same floor AABB
+ * when the back shelf is rotated +180°.
+ */
+export function oppositeShelfOrigin(x, y, rotationDeg, widthMeters, depthMeters) {
+  const rot = ((Number(rotationDeg) || 0) % 360 + 360) % 360;
+  const w = Number(widthMeters) || 1.2;
+  const d = Number(depthMeters) || 0.6;
+  const rad = (rot * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: Number((x + w * cos - d * sin).toFixed(3)),
+    y: Number((y + w * sin + d * cos).toFixed(3)),
+    rotationDeg: (rot + 180) % 360,
+  };
+}
+
+/** Face digit for paired shelves: front → 1 (A), back → 2 (B). */
+export function pairFaceId(shelf) {
+  return shelf?.pairRole === "back" ? "B" : "A";
+}
+
+/** Count gondola units (front+back pairs count as one). */
+export function countGondolaUnits(shelves) {
+  const seen = new Set();
+  let units = 0;
+  for (const s of shelves || []) {
+    if (s.pairId) {
+      if (seen.has(s.pairId)) continue;
+      seen.add(s.pairId);
+    }
+    units += 1;
+  }
+  return units;
+}
+
 export function assignDisplayNumbers(shelves) {
-  return (shelves || []).map((shelf, idx) => ({
-    ...shelf,
-    displayNumber: idx + 1,
-  }));
+  const pairUnit = new Map();
+  let next = 1;
+  return (shelves || []).map((shelf) => {
+    if (shelf.pairId) {
+      if (!pairUnit.has(shelf.pairId)) {
+        pairUnit.set(shelf.pairId, next);
+        next += 1;
+      }
+      return { ...shelf, displayNumber: pairUnit.get(shelf.pairId) };
+    }
+    const n = next;
+    next += 1;
+    return { ...shelf, displayNumber: n };
+  });
 }
 
 export function buildFacesFromLegacy(shelf) {
   const categoryId = shelf.categoryId || null;
   const color = shelf.color;
   const planogram = Array.isArray(shelf.planogram) ? [...shelf.planogram] : [];
-  const doubleSided = shelf.doubleSided ?? isDoubleSidedType(shelf.type);
+  const doubleSided = shelf.doubleSided !== false;
   if (doubleSided) {
     const faceB = shelf.faces?.find((f) => f.id === "B");
     return [
@@ -49,14 +124,26 @@ export function syncLegacyFromFaces(shelf) {
 
 export function normalizeShelf(shelf) {
   if (!shelf) return shelf;
-  const doubleSided = shelf.doubleSided ?? isDoubleSidedType(shelf.type);
+  // Paired front/back shelves are two physical single-face units.
+  const isPaired = Boolean(shelf.pairId) || shelf.pairRole === "front" || shelf.pairRole === "back";
+  if (isPaired) {
+    shelf.doubleSided = false;
+    shelf.pairRole = shelf.pairRole === "back" ? "back" : "front";
+  }
+  const doubleSided = isPaired ? false : shelf.doubleSided !== false;
   shelf.doubleSided = doubleSided;
+  if (doubleSided && Array.isArray(shelf.faces) && shelf.faces.length === 1) {
+    shelf.faces = buildFacesFromLegacy(shelf);
+  }
   shelf.rotationDeg = normalizeRotationDeg(shelf.rotationDeg);
   if (!Array.isArray(shelf.faces) || !shelf.faces.length) {
     shelf.faces = buildFacesFromLegacy(shelf);
   }
+  if (!doubleSided && shelf.faces.length > 1) {
+    shelf.faces = [shelf.faces.find((f) => f.id === "A") || shelf.faces[0]];
+  }
   syncLegacyFromFaces(shelf);
-  normalizeShelfSegments(shelf);
+  normalizeShelfFaceSegments(shelf);
   if (!shelf.displayNumber) shelf.displayNumber = null;
   return shelf;
 }
@@ -93,7 +180,7 @@ export function applyFacesFromMix(shelves, slots, categories) {
   return shelves.map((shelf, idx) => {
     const mixA = slots[idx];
     const catA = categories.find((c) => c.id === mixA.categoryId);
-    const doubleSided = shelf.doubleSided ?? isDoubleSidedType(shelf.type);
+    const doubleSided = shelf.doubleSided !== false;
     const temperatureZone = mixA.temperatureZone || "ambient";
 
     if (!doubleSided) {

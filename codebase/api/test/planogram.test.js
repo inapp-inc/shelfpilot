@@ -5,7 +5,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   clampFacings,
+  clampDepthFacings,
   computeMaxFacings,
+  computeSuggestedDepthFacings,
   computeSuggestedLevels,
   previewFacings,
 } from "../src/services/planogramMath.js";
@@ -16,13 +18,17 @@ test("computeMaxFacings floors usable / product width", () => {
   assert.equal(computeMaxFacings(1.0, 0.25), 4);
 });
 
-test("clampFacings clamps to max", () => {
-  assert.equal(clampFacings(9, 4), 4);
-  assert.equal(clampFacings(null, 6), 6);
+test("clampDepthFacings clamps to max depth", () => {
+  assert.equal(clampDepthFacings(9, 3), 3);
+  assert.equal(clampDepthFacings(null, 2), 2);
 });
 
 test("suggestedLevels from heights", () => {
   assert.equal(computeSuggestedLevels(2.0, 0.4), 5);
+});
+
+test("suggestedDepthFacings from depths", () => {
+  assert.equal(computeSuggestedDepthFacings(0.6, 0.2), 3);
 });
 
 test("normalize synthesizes shelves from fixtures", () => {

@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { resolveAssetUrl } from "./assetUrl.js";
 import { pointInPolygon } from "./layout-editor/polygonCanvas.js";
+import { isDoubleSided, normalizeShelfUI, shelvesForScene3D } from "./layout-editor/shelfFaces.js";
 
 function productFacingColor(productId) {
   let hash = 0;
@@ -44,21 +46,85 @@ function clampOrbitCamera(camera, target, layout, maxDim) {
 }
 
 function buildWalkerAvatar() {
-  const avatar = new THREE.Group();
-  const shirt = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.75 });
-  const pants = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.8 });
-  const skin = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.65 });
+  const group = new THREE.Group();
+  const skin = new THREE.MeshStandardMaterial({ color: 0xe8b796, roughness: 0.62 });
+  const shirt = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.72 });
+  const pants = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.78 });
+  const shoes = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.55 });
+  const hair = new THREE.MeshStandardMaterial({ color: 0x3d2314, roughness: 0.85 });
 
-  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.72, 14), shirt);
-  torso.position.y = 0.92;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 14), skin);
-  head.position.y = 1.38;
-  const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.08, 0.82, 10), pants);
-  legL.position.set(-0.11, 0.41, 0);
-  const legR = legL.clone();
-  legR.position.x = 0.11;
-  avatar.add(torso, head, legL, legR);
-  return avatar;
+  const body = new THREE.Group();
+  body.position.y = 0;
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 16, 16), skin);
+  head.position.y = 1.62;
+  const hairCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.145, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+    hair
+  );
+  hairCap.position.y = 1.64;
+
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.1, 10), skin);
+  neck.position.y = 1.48;
+
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.55, 14), shirt);
+  torso.position.y = 1.15;
+
+  const hips = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.19, 0.18, 12), pants);
+  hips.position.y = 0.82;
+
+  function makeLeg(side) {
+    const leg = new THREE.Group();
+    leg.position.set(side * 0.1, 0.74, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.07, 0.42, 10), pants);
+    thigh.position.y = -0.21;
+    const lower = new THREE.Group();
+    lower.position.y = -0.42;
+    const calf = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.055, 0.38, 10), pants);
+    calf.position.y = -0.19;
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, 0.24), shoes);
+    foot.position.set(0, -0.4, 0.05);
+    lower.add(calf, foot);
+    leg.add(thigh, lower);
+    return { leg, lower };
+  }
+
+  function makeArm(side) {
+    const arm = new THREE.Group();
+    arm.position.set(side * 0.26, 1.32, 0);
+    const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.32, 8), shirt);
+    upper.position.y = -0.16;
+    const lower = new THREE.Group();
+    lower.position.y = -0.32;
+    const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.28, 8), skin);
+    fore.position.y = -0.14;
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), skin);
+    hand.position.y = -0.3;
+    lower.add(fore, hand);
+    arm.add(upper, lower);
+    return { arm, lower };
+  }
+
+  const legL = makeLeg(-1);
+  const legR = makeLeg(1);
+  const armL = makeArm(-1);
+  const armR = makeArm(1);
+
+  body.add(head, hairCap, neck, torso, hips, legL.leg, legR.leg, armL.arm, armR.arm);
+  group.add(body);
+
+  return {
+    group,
+    body,
+    legL: legL.leg,
+    legR: legR.leg,
+    lowerLegL: legL.lower,
+    lowerLegR: legR.lower,
+    armL: armL.arm,
+    armR: armR.arm,
+    lowerArmL: armL.lower,
+    lowerArmR: armR.lower,
+  };
 }
 
 /** Immersive Three.js: Orbit (zoom/pan) or Walk; shelves, levels, planogram facings. */
@@ -72,7 +138,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
     const productImages = new Map();
     for (const p of products || []) {
       const url = p.imageUrl || p.attributes?.imageUrl;
-      if (url) productImages.set(p.id, url);
+      if (url) productImages.set(p.id, resolveAssetUrl(url));
     }
     const texLoader = new THREE.TextureLoader();
     const texCache = new Map();
@@ -166,7 +232,10 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       const aw = Math.max(0.4, Number(a.widthMeters) || 1);
       const len =
         a.lengthMeters != null ? Number(a.lengthMeters) : Math.max(2, (layout.widthMeters || 10) * 0.35);
-      const geo = new THREE.BoxGeometry(len, 0.04, aw);
+      const vertical = a.orientation === "vertical";
+      const geo = vertical
+        ? new THREE.BoxGeometry(aw, 0.04, len)
+        : new THREE.BoxGeometry(len, 0.04, aw);
       let color = 0x9aa1ab;
       try {
         if (a.color) color = new THREE.Color(a.color);
@@ -177,23 +246,33 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       const mesh = new THREE.Mesh(geo, mat);
       const ax = a.x != null ? Number(a.x) : 1;
       const az = a.y != null ? Number(a.y) : 1;
-      mesh.position.set(ax + len / 2, 0.03, az + aw / 2);
+      if (vertical) {
+        mesh.position.set(ax + aw / 2, 0.03, az + len / 2);
+      } else {
+        mesh.position.set(ax + len / 2, 0.03, az + aw / 2);
+      }
       scene.add(mesh);
       disposables.push(geo, mat);
     }
 
-    const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+    const shelves = shelvesForScene3D(
+      layout.shelves?.length ? layout.shelves : layout.fixtures || []
+    );
     let facingBudget = 0;
     const MAX_FACINGS = 500;
 
-    for (const f of shelves) {
+    for (const raw of shelves) {
+      const f = normalizeShelfUI(raw);
       const w = Number(f.usableWidthMeters ?? f.widthMeters) || 1.2;
       const d = Number(f.depthMeters) || 0.6;
       const h = Number(f.heightMeters) || 2;
       const rot = (((Number(f.rotationDeg) || 0) % 360) + 360) % 360 * (Math.PI / 180);
+      const dual = isDoubleSided(f);
+      const faceA = f.faces?.find((face) => face.id === "A");
+      const faceB = f.faces?.find((face) => face.id === "B");
       let baseColor = new THREE.Color("#A30A2A");
       try {
-        baseColor = new THREE.Color(f.color || "#A30A2A");
+        baseColor = new THREE.Color(f.color || faceA?.color || "#A30A2A");
       } catch {
         /* keep */
       }
@@ -209,6 +288,38 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       group.add(frame);
       disposables.push(frameGeo, frameMat);
 
+      if (dual) {
+        const spineGeo = new THREE.BoxGeometry(w * 0.96, h * 0.92, Math.max(0.06, d * 0.1));
+        const spineMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.82 });
+        const spine = new THREE.Mesh(spineGeo, spineMat);
+        spine.position.set(w / 2, h * 0.46, d / 2);
+        group.add(spine);
+        disposables.push(spineGeo, spineMat);
+
+        const halfBoardGeo = new THREE.BoxGeometry(w * 0.94, 0.03, d * 0.42);
+        const boardA = new THREE.Mesh(
+          halfBoardGeo,
+          new THREE.MeshStandardMaterial({
+            color: faceA?.color ? new THREE.Color(faceA.color) : 0xf3f0eb,
+            roughness: 0.85,
+          })
+        );
+        boardA.position.set(w / 2, 0.35, d * 0.21);
+        group.add(boardA);
+        disposables.push(halfBoardGeo, boardA.material);
+
+        const boardB = new THREE.Mesh(
+          halfBoardGeo.clone(),
+          new THREE.MeshStandardMaterial({
+            color: faceB?.color ? new THREE.Color(faceB.color) : 0xe8eef5,
+            roughness: 0.85,
+          })
+        );
+        boardB.position.set(w / 2, 0.35, d * 0.79);
+        group.add(boardB);
+        disposables.push(boardB.geometry, boardB.material);
+      }
+
       const levels =
         Array.isArray(f.levels) && f.levels.length
           ? f.levels
@@ -217,33 +328,61 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
               { levelIndex: 1, heightFromFloorMeters: h * 0.55 },
             ];
 
-      for (const lv of levels) {
-        const y = Number(lv.heightFromFloorMeters) || 0.4;
-        const boardGeo = new THREE.BoxGeometry(w * 0.96, 0.04, d * 0.92);
-        const boardMat = new THREE.MeshStandardMaterial({ color: 0xf3f0eb, roughness: 0.85 });
-        const board = new THREE.Mesh(boardGeo, boardMat);
-        board.position.set(w / 2, y, d / 2);
-        group.add(board);
-        disposables.push(boardGeo, boardMat);
+      if (!dual) {
+        for (const lv of levels) {
+          const y = Number(lv.heightFromFloorMeters) || 0.4;
+          const boardGeo = new THREE.BoxGeometry(w * 0.96, 0.04, d * 0.92);
+          const boardMat = new THREE.MeshStandardMaterial({ color: 0xf3f0eb, roughness: 0.85 });
+          const board = new THREE.Mesh(boardGeo, boardMat);
+          board.position.set(w / 2, y, d / 2);
+          group.add(board);
+          disposables.push(boardGeo, boardMat);
+        }
+      } else {
+        for (const lv of levels) {
+          const y = Number(lv.heightFromFloorMeters) || 0.4;
+          const shelfGeo = new THREE.BoxGeometry(w * 0.94, 0.03, d * 0.4);
+          const shelfAMat = new THREE.MeshStandardMaterial({ color: 0xf3f0eb, roughness: 0.85 });
+          const shelfA = new THREE.Mesh(shelfGeo, shelfAMat);
+          shelfA.position.set(w / 2, y, d * 0.2);
+          group.add(shelfA);
+          disposables.push(shelfGeo, shelfAMat);
+
+          const shelfBGeo = shelfGeo.clone();
+          const shelfBMat = new THREE.MeshStandardMaterial({ color: 0xe8eef5, roughness: 0.85 });
+          const shelfB = new THREE.Mesh(shelfBGeo, shelfBMat);
+          shelfB.position.set(w / 2, y, d * 0.8);
+          group.add(shelfB);
+          disposables.push(shelfBGeo, shelfBMat);
+        }
       }
 
-      for (const p of f.planogram || []) {
-        if (facingBudget >= MAX_FACINGS) break;
-        const lv = levels.find((l) => l.levelIndex === p.levelIndex) || levels[0];
-        const y = (Number(lv?.heightFromFloorMeters) || 0.4) + 0.12;
-        const facings = Math.max(1, Number(p.facings) || 1);
-        const boxW = Math.min(w / facings, 0.22);
-        const imageUrl = productImages.get(p.productId);
-        for (let i = 0; i < facings && facingBudget < MAX_FACINGS; i++) {
-          const geo = new THREE.BoxGeometry(boxW * 0.9, 0.2, d * 0.35);
-          const facingColor = productFacingColor(p.productId);
-          const mat = new THREE.MeshStandardMaterial({ color: facingColor, roughness: 0.55 });
-          if (imageUrl) applyTexture(mat, imageUrl, disposables);
-          const mesh = new THREE.Mesh(geo, mat);
-          mesh.position.set(boxW * (i + 0.5) + (Number(p.positionX) || 0), y, d * 0.35);
-          group.add(mesh);
-          disposables.push(geo, mat);
-          facingBudget += 1;
+      const facePlanograms = dual
+        ? [
+            { id: "A", planogram: faceA?.planogram || f.planogram || [], z: d * 0.12 },
+            { id: "B", planogram: faceB?.planogram || [], z: d * 0.88 },
+          ]
+        : [{ id: "A", planogram: f.planogram || [], z: d * 0.35 }];
+
+      for (const face of facePlanograms) {
+        for (const p of face.planogram || []) {
+          if (facingBudget >= MAX_FACINGS) break;
+          const lv = levels.find((l) => l.levelIndex === p.levelIndex) || levels[0];
+          const y = (Number(lv?.heightFromFloorMeters) || 0.4) + 0.12;
+          const facings = Math.max(1, Number(p.facings) || 1);
+          const boxW = Math.min(w / facings, 0.22);
+          const imageUrl = productImages.get(p.productId);
+          for (let i = 0; i < facings && facingBudget < MAX_FACINGS; i++) {
+            const geo = new THREE.BoxGeometry(boxW * 0.9, 0.2, d * 0.22);
+            const facingColor = productFacingColor(p.productId);
+            const mat = new THREE.MeshStandardMaterial({ color: facingColor, roughness: 0.55 });
+            if (imageUrl) applyTexture(mat, imageUrl, disposables);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(boxW * (i + 0.5) + (Number(p.positionX) || 0), y, face.z);
+            group.add(mesh);
+            disposables.push(geo, mat);
+            facingBudget += 1;
+          }
         }
       }
 
@@ -258,11 +397,13 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
     let cleanupWalk = null;
     let cleanupOrbit = null;
     let avatar = null;
+    let avatarRig = null;
     let walker = { x: cx, z: Math.min(cz + 2, Math.max(0.5, (layout.depthMeters || 10) - 0.5)) };
     let lastWalker = { ...walker };
 
     if (walkMode) {
-      avatar = buildWalkerAvatar();
+      avatarRig = buildWalkerAvatar();
+      avatar = avatarRig.group;
       scene.add(avatar);
 
       camera.rotation.order = "YXZ";
@@ -326,6 +467,15 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
         const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
         const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
         const next = { x: walker.x, z: walker.z };
+        const moving =
+          keys.has("KeyW") ||
+          keys.has("KeyS") ||
+          keys.has("KeyA") ||
+          keys.has("KeyD") ||
+          keys.has("ArrowUp") ||
+          keys.has("ArrowDown") ||
+          keys.has("ArrowLeft") ||
+          keys.has("ArrowRight");
         if (keys.has("KeyW") || keys.has("ArrowUp")) {
           next.x += forward.x * speed;
           next.z += forward.z * speed;
@@ -342,6 +492,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
           next.x += right.x * speed;
           next.z += right.z * speed;
         }
+        const didMove = next.x !== walker.x || next.z !== walker.z;
         if (insideFloor(next.x, next.z, layout)) {
           walker = next;
           lastWalker = { ...walker };
@@ -351,6 +502,26 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
 
         avatar.position.set(walker.x, 0, walker.z);
         avatar.rotation.y = yaw;
+
+        if (avatarRig && moving && didMove) {
+          const phase = clock.elapsedTime * 9;
+          const swing = Math.sin(phase) * 0.55;
+          avatarRig.legL.rotation.x = swing;
+          avatarRig.legR.rotation.x = -swing;
+          avatarRig.lowerLegL.rotation.x = Math.max(0, swing) * 0.35;
+          avatarRig.lowerLegR.rotation.x = Math.max(0, -swing) * 0.35;
+          avatarRig.armL.rotation.x = -swing * 0.45;
+          avatarRig.armR.rotation.x = swing * 0.45;
+          avatarRig.body.position.y = Math.abs(Math.sin(phase * 2)) * 0.025;
+        } else if (avatarRig) {
+          avatarRig.legL.rotation.x *= 0.85;
+          avatarRig.legR.rotation.x *= 0.85;
+          avatarRig.lowerLegL.rotation.x *= 0.85;
+          avatarRig.lowerLegR.rotation.x *= 0.85;
+          avatarRig.armL.rotation.x *= 0.85;
+          avatarRig.armR.rotation.x *= 0.85;
+          avatarRig.body.position.y *= 0.85;
+        }
 
         const followDist = 3.4;
         const camHeight = 1.85 + pitch * 1.2;

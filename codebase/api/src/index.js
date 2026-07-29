@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { correlationId } from "./middleware/correlationId.js";
+import { ensureProductImagesDir, resolveProductImagesDir } from "./services/productImages.js";
+import { bootstrapProductImages } from "./services/bootstrapProductImages.js";
 import { healthRouter } from "./routes/health.js";
 import { authRouter } from "./routes/auth.js";
 import { layoutsRouter } from "./routes/layouts.js";
@@ -40,6 +42,15 @@ app.use(cors(corsOrigins.length ? { origin: corsOrigins, credentials: true } : u
 app.use(express.json({ limit: "2mb" }));
 app.use(correlationId);
 app.use(morgan("combined"));
+
+// Product thumbnails live in data/product-images/ and are served at /product-images/.
+const imageBootstrap = bootstrapProductImages();
+const productImagesDir = ensureProductImagesDir();
+const mountProductImages = (mountPath) => {
+  app.use(mountPath, express.static(productImagesDir, { fallthrough: true }));
+};
+mountProductImages(`${basePath}/product-images`);
+if (basePath) mountProductImages("/product-images");
 
 const routers = [
   healthRouter,
@@ -82,6 +93,8 @@ if (isMain) {
         serveWeb,
         basePath: serveWeb ? basePath || "/" : null,
         webDist: serveWeb ? webDist : null,
+        productImagesDir: resolveProductImagesDir(),
+        productImagesBootstrapped: imageBootstrap.copied,
       })
     );
   });

@@ -8,6 +8,7 @@ export default function LayoutsPortfolio({
   onOpenLayout,
   onNewLayout,
   onDeleteLayout,
+  onCloneLayout,
   editDisabled,
 }) {
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
@@ -69,6 +70,20 @@ export default function LayoutsPortfolio({
                     <span className="status-chip" style={{ background: st.bg, color: st.color }}>
                       {st.label}
                     </span>
+                    {!editDisabled && onCloneLayout ? (
+                      <button
+                        type="button"
+                        className="card-duplicate-btn"
+                        title="Duplicate layout"
+                        aria-label={`Duplicate ${l.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCloneLayout(l);
+                        }}
+                      >
+                        ⧉
+                      </button>
+                    ) : null}
                     {!editDisabled && onDeleteLayout ? (
                       <button
                         type="button"

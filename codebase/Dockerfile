@@ -20,6 +20,7 @@ COPY --from=deps /app/api/package.json ./api/package.json
 ARG CACHEBUST=dev
 RUN echo "cachebust=$CACHEBUST"
 COPY api ./api
+COPY api/seed/product-images ./seed/product-images
 VOLUME ["/data"]
 EXPOSE 3000
 CMD ["node", "api/src/index.js"]

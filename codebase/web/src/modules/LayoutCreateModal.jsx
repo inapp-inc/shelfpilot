@@ -1,4 +1,8 @@
+import { useEffect, useState } from "react";
 import { STORE_TYPES } from "../storeTypes.js";
+import AlertBanner from "../components/AlertBanner.jsx";
+import FieldError from "../components/FieldError.jsx";
+import { validateLayoutCreate } from "../validationMessages.js";
 
 export const EMPTY_CREATE_DRAFT = {
   name: "",
@@ -9,10 +13,30 @@ export const EMPTY_CREATE_DRAFT = {
   shape: "rectangle",
 };
 
-export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSubmit, submitting }) {
+export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSubmit, submitting, shelfTemplates = [] }) {
+  const [errors, setErrors] = useState({});
+
+  useEffect(() => {
+    if (open) setErrors({});
+  }, [open]);
+
   if (!open) return null;
 
   const form = draft || EMPTY_CREATE_DRAFT;
+
+  function clearError(field) {
+    if (errors[field]) setErrors((prev) => ({ ...prev, [field]: "" }));
+  }
+
+  function handleSubmit() {
+    const check = validateLayoutCreate(form);
+    if (!check.ok) {
+      setErrors(check.errors);
+      return;
+    }
+    setErrors({});
+    onSubmit?.();
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -20,13 +44,23 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
         <div style={{ fontSize: 18, fontWeight: 800 }}>New store layout</div>
         <div className="section-label">Single form · choose store type and dimensions</div>
 
-        <div className="field">
+        {Object.keys(errors).length ? (
+          <AlertBanner variant="error" onDismiss={() => setErrors({})}>
+            Please fix the highlighted fields before creating the layout.
+          </AlertBanner>
+        ) : null}
+
+        <div className={`field${errors.name ? " field-invalid" : ""}`}>
           <label>Store name</label>
           <input
             value={form.name}
-            onChange={(e) => setDraft({ ...form, name: e.target.value })}
+            onChange={(e) => {
+              setDraft({ ...form, name: e.target.value });
+              clearError("name");
+            }}
             placeholder="Downtown Hypermarket #12"
           />
+          <FieldError message={errors.name} />
         </div>
         <div className="field">
           <label>Store type</label>
@@ -41,28 +75,36 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
             ))}
           </select>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          <div className="field">
+        <div className="form-grid-3">
+          <div className={`field${errors.widthMeters ? " field-invalid" : ""}`}>
             <label>Width (m)</label>
             <input
               className="mono"
               type="number"
               min="1"
               value={form.widthMeters}
-              onChange={(e) => setDraft({ ...form, widthMeters: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...form, widthMeters: e.target.value });
+                clearError("widthMeters");
+              }}
             />
+            <FieldError message={errors.widthMeters} />
           </div>
-          <div className="field">
+          <div className={`field${errors.depthMeters ? " field-invalid" : ""}`}>
             <label>Depth (m)</label>
             <input
               className="mono"
               type="number"
               min="1"
               value={form.depthMeters}
-              onChange={(e) => setDraft({ ...form, depthMeters: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...form, depthMeters: e.target.value });
+                clearError("depthMeters");
+              }}
             />
+            <FieldError message={errors.depthMeters} />
           </div>
-          <div className="field">
+          <div className={`field${errors.heightMeters ? " field-invalid" : ""}`}>
             <label>Height (m)</label>
             <input
               className="mono"
@@ -70,13 +112,40 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
               min="1"
               step="0.1"
               value={form.heightMeters}
-              onChange={(e) => setDraft({ ...form, heightMeters: e.target.value })}
+              onChange={(e) => {
+                setDraft({ ...form, heightMeters: e.target.value });
+                clearError("heightMeters");
+              }}
             />
+            <FieldError message={errors.heightMeters} />
           </div>
         </div>
+        {shelfTemplates.length ? (
+          <div
+            style={{
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "rgba(163,10,42,0.04)",
+              border: "1px solid rgba(163,10,42,0.12)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Shared shelf layer</div>
+            <div className="mono" style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
+              Inherited from Admin → Configuration for this store type. Edit templates there before creating layouts.
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+              {shelfTemplates.map((t) => (
+                <li key={t.type} style={{ marginBottom: 4 }}>
+                  {t.label}: {t.defaultWidthMeters} × {t.defaultDepthMeters} m · {t.defaultLevels} levels
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="field">
           <label>Floor shape</label>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="shape-toggle">
             {[
               { id: "rectangle", label: "Rectangle" },
               { id: "polygon", label: "Draw irregular in canvas" },
@@ -86,8 +155,6 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
                 type="button"
                 className="btn-secondary"
                 style={{
-                  flex: 1,
-                  padding: 9,
                   background: form.shape === opt.id ? "rgba(163,10,42,0.08)" : "#fff",
                   color: form.shape === opt.id ? "#A30A2A" : "#1f2933",
                 }}
@@ -99,7 +166,7 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
           </div>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+        <div className="modal-actions">
           <button type="button" className="btn-secondary" style={{ padding: "10px 16px" }} onClick={onClose}>
             Cancel
           </button>
@@ -107,8 +174,8 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
             type="button"
             className="btn-primary"
             style={{ padding: "10px 20px" }}
-            disabled={submitting || !form.name?.trim()}
-            onClick={onSubmit}
+            disabled={submitting}
+            onClick={handleSubmit}
           >
             {submitting ? "Creating…" : "Create layout"}
           </button>

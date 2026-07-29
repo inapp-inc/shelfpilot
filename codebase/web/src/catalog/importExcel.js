@@ -188,8 +188,9 @@ export function parseCatalogImportWorkbook(buffer, options = {}) {
       if (row.heightMeters != null && !Number.isNaN(row.heightMeters)) {
         attributes.heightMeters = row.heightMeters;
       }
-      if (row.imageUrl) {
-        attributes.imageUrl = row.imageUrl;
+      if (row.imageUrl || row.name) {
+        const fileName = `${row.name || row.sku}.png`;
+        attributes.imageUrl = `/product-images/${encodeURIComponent(fileName)}`;
       }
       rawProducts.push({
         id: row.id || undefined,

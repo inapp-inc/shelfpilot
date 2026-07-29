@@ -160,6 +160,23 @@ Reframes app by module: Dashboard = analytics KPIs; Layouts = portfolio + single
 
 Strict **drawn-area** canvas (polygon AABB viewport); shelf **display numbers** instead of type labels; gondola **Face A / Face B** with independent category and planogram; autogenerate assigns numbers and reports `skippedOutsideCount`. OpenAPI v0.7.0.
 
+## 5g. Change note — layout-client-feedback (2026-07-21 / methodology 2026-07-27)
+
+**OpenSpec change:** `openspec/changes/layout-client-feedback/`  
+**SEED series:** SEED-CF-01 … SEED-CF-11 (`Docs/seeds/SEED-CF-*.md`)  
+**Methodology:** [Docs/Standard Methods for Store Layout Design.md](./Standard%20Methods%20for%20Store%20Layout%20Design.md)
+
+Implements **measurement-driven design with graphical visualization**:
+
+- **Store envelope** vs **fixture polygon** (dual boundary on canvas and meter bar).
+- Strict autogen containment; **category → fixture type** mapping (produce → storage, etc.).
+- Viewport-fit editor, fit-to-view, category/selection focus zoom.
+- Editable shelf name; polygon **vertex and edge** edit mode; **rubber-band line draw** when tracing boundaries.
+- Review workflow with rejection comments and button gating.
+- **Clone layout** for master-plan reuse; methodology hints in 2D vs 3D modes.
+- **Dual-face gondola 3D**: Face A (A1) and Face B (A2) merchandising on opposite sides; **vertical aisles** render correctly in mixed-orientation layouts.
+- **Gondola runway autogen**: aisle · **front shelf + back shelf pair** (same footprint, opposite facing) · aisle. Labels A1 / A2.
+
 ## 6. Non-Functional Requirements
 
 - **NFR-1 Performance:** 3D interactive on standard business laptops (no discrete GPU required).

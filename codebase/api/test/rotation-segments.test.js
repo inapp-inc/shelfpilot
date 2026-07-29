@@ -7,7 +7,11 @@ import {
 } from "../src/services/polygonContainment.js";
 import {
   buildEqualSegments,
+  getShelfSegment,
+  levelSegmentsList,
+  normalizeFaceLevelSegments,
   normalizeShelfSegments,
+  normalizeShelfFaceSegments,
   SegmentError,
 } from "../src/services/shelfSegments.js";
 import { previewFacings } from "../src/services/planogramMath.js";
@@ -75,6 +79,7 @@ test("buildEqualSegments spans full usable width", () => {
 test("previewFacings uses segment width when segmentId set", () => {
   const shelf = normalizeShelf({
     type: "shelf",
+    doubleSided: false,
     usableWidthMeters: 3.6,
     widthMeters: 3.6,
     depthMeters: 0.6,
@@ -85,11 +90,75 @@ test("previewFacings uses segment width when segmentId set", () => {
     shelf,
     product: { id: "p1", attributes: { widthMeters: 0.2 } },
     segmentId: seg.id,
+    faceId: "A",
   });
   assert.equal(preview.maxFacings, 6);
   const full = previewFacings({
     shelf,
     product: { id: "p1", attributes: { widthMeters: 0.2 } },
+    faceId: "A",
   });
   assert.equal(full.maxFacings, 18);
+});
+
+test("dual-face shelves keep independent segment layouts per face", () => {
+  const shelf = normalizeShelf({
+    id: "g1",
+    type: "gondola",
+    doubleSided: true,
+    usableWidthMeters: 3.6,
+    widthMeters: 3.6,
+    faces: [{ id: "A" }, { id: "B" }],
+  });
+  const faceA = shelf.faces.find((f) => f.id === "A");
+  const faceB = shelf.faces.find((f) => f.id === "B");
+  faceA.segments = buildEqualSegments(3.6, 2);
+  faceB.segments = buildEqualSegments(3.6, 3);
+  normalizeShelfFaceSegments(shelf);
+
+  assert.equal(faceA.segments.length, 2);
+  assert.equal(faceB.segments.length, 3);
+  assert.equal(shelf.segments, undefined);
+
+  const segA = faceA.segments[0];
+  const segB = faceB.segments[0];
+  const previewA = previewFacings({
+    shelf,
+    product: { id: "p1", attributes: { widthMeters: 0.2 } },
+    segmentId: segA.id,
+    faceId: "A",
+  });
+  const previewB = previewFacings({
+    shelf,
+    product: { id: "p1", attributes: { widthMeters: 0.2 } },
+    segmentId: segB.id,
+    faceId: "B",
+  });
+  assert.equal(previewA.maxFacings, 9);
+  assert.equal(previewB.maxFacings, 6);
+});
+
+test("per-level segments split independently on the same face", () => {
+  const shelf = normalizeShelfFaceSegments({
+    id: "sh-level-seg",
+    usableWidthMeters: 3.6,
+    widthMeters: 3.6,
+    faces: [{ id: "A", categoryId: "cat-1", planogram: [] }],
+  });
+  const face = shelf.faces[0];
+  face.levelSegments = {
+    "0": buildEqualSegments(3.6, 2),
+    "1": buildEqualSegments(3.6, 3),
+  };
+  normalizeFaceLevelSegments(face, 3.6);
+
+  assert.equal(levelSegmentsList(shelf, "A", 0).length, 2);
+  assert.equal(levelSegmentsList(shelf, "A", 1).length, 3);
+  assert.equal(levelSegmentsList(shelf, "A", 2).length, 1);
+
+  const segL0 = levelSegmentsList(shelf, "A", 0)[0];
+  const segL1 = levelSegmentsList(shelf, "A", 1)[0];
+  assert.ok(getShelfSegment(shelf, segL0.id, "A", 0));
+  assert.ok(getShelfSegment(shelf, segL1.id, "A", 1));
+  assert.equal(getShelfSegment(shelf, segL1.id, "A", 0), null);
 });
