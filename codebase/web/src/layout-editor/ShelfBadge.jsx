@@ -4,24 +4,23 @@ import {
   isPairedShelf,
   normalizeShelfUI,
   pairFaceId,
+  shelfCanvasFaceLabel,
   shelfDisplayLabel,
+  shelfFaceDisplayLabel,
   shelfFaceLabel,
-  shelfUnitLabel,
 } from "./shelfFaces.js";
 
-/** Responsive shelf face label badge for 2D canvas (A1/A2, B1/B2). */
-export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories }) {
+/** Responsive shelf face label badge for 2D canvas (aisle-centric: 4A, 4B). */
+export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, aisles, allShelves }) {
   const shelf = normalizeShelfUI(rawShelf);
-  const num = shelf.displayNumber;
-  if (!num) return null;
-
-  const unit = shelfUnitLabel(num);
   const w = pixelWidth || 48;
-  const tooltipParts = [unit];
 
   if (isPairedShelf(shelf)) {
     const face = pairFaceId(shelf);
-    const label = shelfFaceLabel(num, face);
+    const label =
+      shelfFaceDisplayLabel(shelf, aisles) ||
+      shelfCanvasFaceLabel(shelf, face, aisles, allShelves) ||
+      (shelf.displayNumber ? shelfFaceLabel(shelf.displayNumber, face) : "—");
     const cat = shelf.categoryId ? categoryLabel(categories, shelf.categoryId) : "Unassigned";
     const role = shelf.pairRole === "back" ? "back" : "front";
     const title = `${label} · ${role} · ${cat}`;
@@ -52,10 +51,14 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories }) 
     );
   }
 
+  const labelA = shelfCanvasFaceLabel(shelf, "A", aisles, allShelves);
+  const labelB = shelfCanvasFaceLabel(shelf, "B", aisles, allShelves);
+  const tooltipParts = [labelA];
   if (shelf.faces?.length) {
     for (const face of shelf.faces) {
       const cat = face.categoryId ? categoryLabel(categories, face.categoryId) : "Unassigned";
-      tooltipParts.push(`${shelfFaceLabel(num, face.id)}: ${cat}`);
+      const lbl = face.id === "B" ? labelB : labelA;
+      tooltipParts.push(`${lbl}: ${cat}`);
     }
   }
   const title = tooltipParts.join(" · ");
@@ -63,13 +66,11 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories }) 
   if (isDoubleSided(shelf) && shelf.faces?.length >= 2) {
     const faceA = shelf.faces.find((f) => f.id === "A") || shelf.faces[0];
     const faceB = shelf.faces.find((f) => f.id === "B") || shelf.faces[1];
-    const labelA = shelfFaceLabel(num, "A");
-    const labelB = shelfFaceLabel(num, "B");
 
     if (w < 36) {
       return (
         <span className="mono shelf-badge-compact" title={title} style={{ fontSize: 9, fontWeight: 700, color: "#1f2933" }}>
-          {unit}
+          {labelA.replace(/[A-Z]$/, "")}
           <span style={{ display: "inline-flex", gap: 2, marginLeft: 3 }}>
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceA?.color || "#A30A2A" }} />
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceB?.color || "#0ea5e9" }} />
@@ -122,7 +123,7 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories }) 
     );
   }
 
-  const singleLabel = shelfDisplayLabel(shelf);
+  const singleLabel = shelfDisplayLabel(shelf, aisles);
   const fontSize = w < 36 ? 9 : w < 48 ? 10 : 11;
   return (
     <span className="mono" title={title} style={{ fontSize, fontWeight: 700, color: "#1f2933" }}>

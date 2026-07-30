@@ -4,20 +4,27 @@ import { isDoubleSidedType, normalizeShelf } from "./shelfFaces.js";
 
 const PRODUCE_PATTERNS = /fresh|produce|veg|fruit|hm-fresh/i;
 const GROCERY_PATTERNS = /grocery|dry.?goods|hm-grocery|cv-grocery/i;
+const CHILLED_PATTERNS = /chill|dairy|hm-chilled|cv-chilled|ph-chilled/i;
+const FROZEN_PATTERNS = /frozen|hm-frozen/i;
 
-export function defaultFixtureTypeForCategory(categoryId, categoryName) {
-  const id = String(categoryId || "");
-  const name = String(categoryName || "");
-  const hay = `${id} ${name}`;
-  if (PRODUCE_PATTERNS.test(hay)) return "storage";
-  if (GROCERY_PATTERNS.test(hay)) return "gondola";
-  return "shelf";
+export function defaultFixtureTypeForCategory(categoryId, categoryName, allowedTypes) {
+  const allowed = allowedTypes?.length ? allowedTypes : null;
+  const pick = (...candidates) => {
+    if (allowed) return candidates.find((t) => allowed.includes(t)) || allowed[0] || "shelf";
+    return candidates.find((t) => ["shelf", "gondola", "rack", "storage"].includes(t)) || candidates[0] || "shelf";
+  };
+  const hay = `${categoryId || ""} ${categoryName || ""}`;
+  if (FROZEN_PATTERNS.test(hay)) return allowed?.includes("frozen") ? "frozen" : pick("shelf", "storage");
+  if (CHILLED_PATTERNS.test(hay)) return allowed?.includes("chilled") ? "chilled" : pick("shelf", "gondola");
+  if (PRODUCE_PATTERNS.test(hay)) return pick("storage", "shelf");
+  if (GROCERY_PATTERNS.test(hay)) return allowed?.includes("ambient") ? "ambient" : pick("gondola", "shelf");
+  return allowed?.includes("ambient") ? "ambient" : pick("shelf", "gondola");
 }
 
-export function fixtureTypeForMixEntry(entry, categoriesById) {
+export function fixtureTypeForMixEntry(entry, categoriesById, allowedTypes) {
   if (entry?.fixtureType) return entry.fixtureType;
   const cat = categoriesById?.[entry?.categoryId];
-  return defaultFixtureTypeForCategory(entry?.categoryId, cat?.name);
+  return defaultFixtureTypeForCategory(entry?.categoryId, cat?.name, allowedTypes);
 }
 
 /** Re-type shelves after category mix assignment using per-category fixture types. */
@@ -26,6 +33,7 @@ export function applyFixtureTypesToShelves(shelves, categoryMix, categories, con
   const byId = Object.fromEntries((categories || []).map((c) => [c.id, c]));
   const mixByCat = Object.fromEntries((categoryMix || []).map((m) => [m.categoryId, m]));
   const templates = config?.fixtureTemplates || [];
+  const allowedTypes = templates.map((t) => t.type).filter(Boolean);
 
   return shelves.map((shelf) => {
     const catId =
@@ -34,8 +42,9 @@ export function applyFixtureTypesToShelves(shelves, categoryMix, categories, con
       null;
     if (!catId) return shelf;
     const mixEntry = mixByCat[catId] || { categoryId: catId };
-    const type = fixtureTypeForMixEntry(mixEntry, byId);
-    const tmpl = templates.find((t) => t.type === type) || {};
+    const type = fixtureTypeForMixEntry(mixEntry, byId, allowedTypes);
+    const tmpl = templates.find((t) => t.type === type) || templates[0] || {};
+    const baseKind = tmpl.baseKind || tmpl.type || type;
     const height = Number(tmpl.defaultHeightMeters ?? shelf.heightMeters) || 2;
     const usable = Number(tmpl.defaultWidthMeters ?? shelf.usableWidthMeters) || 1.2;
     const depth = Number(tmpl.defaultDepthMeters ?? shelf.depthMeters) || 0.6;
@@ -50,7 +59,7 @@ export function applyFixtureTypesToShelves(shelves, categoryMix, categories, con
         depthMeters: depth,
         heightMeters: height,
         doubleSided: false,
-        levels: levelsForType(type, height, tmpl.defaultLevels),
+        levels: levelsForType(baseKind, height, tmpl.defaultLevels),
       });
     }
 
@@ -63,7 +72,7 @@ export function applyFixtureTypesToShelves(shelves, categoryMix, categories, con
       depthMeters: depth,
       heightMeters: height,
       doubleSided,
-      levels: levelsForType(type, height, tmpl.defaultLevels),
+      levels: levelsForType(baseKind, height, tmpl.defaultLevels),
     };
     if (doubleSided && (!next.faces || next.faces.length < 2)) {
       next.faces = [

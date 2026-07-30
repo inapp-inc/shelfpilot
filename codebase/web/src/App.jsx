@@ -23,7 +23,7 @@ import { pathForModule } from "./routes.js";
 import { resolveAssetUrl } from "./assetUrl.js";
 import { useAppRoute } from "./useAppRoute.js";
 import { downloadCatalogImportTemplate, parseCatalogImportWorkbook } from "./catalog/importExcel.js";
-import { catalogVerticalsForLayout } from "./layout-editor/categoryFilter.js";
+import { catalogVerticalsForLayout, mergeCategoriesForLayout } from "./layout-editor/categoryFilter.js";
 import ImportDialog from "./catalog/ImportDialog.jsx";
 import {
   VERTICALS,
@@ -97,7 +97,6 @@ export default function App() {
     password: "password",
     role: "Designer",
   });
-  const [portfolio, setPortfolio] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState(() => ({ ...EMPTY_CREATE_DRAFT }));
   const [creating, setCreating] = useState(false);
@@ -112,6 +111,7 @@ export default function App() {
   const vMeta = VERTICALS[vertical];
 
   const catalogVertical = page === "layouts" && layout?.vertical ? layout.vertical : vertical;
+  const configVertical = page === "layouts" && layout?.vertical ? layout.vertical : vertical;
   const cats =
     catCategories.length > 0 ? catCategories : token ? [] : flatCategories(catalogVertical);
   const products =
@@ -219,21 +219,13 @@ export default function App() {
     setLayouts(data.items || []);
   }
 
-  async function loadPortfolio() {
-    const data = await api("/analytics/portfolio", { token });
-    setPortfolio(data);
-  }
-
   useEffect(() => {
     if (!token) return;
     refreshLayouts().catch((e) => toast(e.message));
-    api(`/admin/config?vertical=${vertical}`, { token })
+    api(`/admin/config?vertical=${configVertical}`, { token })
       .then(setConfig)
       .catch(() => {});
-    if (page === "dashboard") {
-      loadPortfolio().catch((e) => toast(e.message));
-    }
-  }, [token, vertical, statusFilter, page]);
+  }, [token, configVertical, statusFilter, page]);
 
   useEffect(() => {
     if (!token || !editorLayoutId) {
@@ -401,6 +393,9 @@ export default function App() {
       minAisleWidthMeters: Number(partial.minAisleWidthMeters ?? configForm.minAisleWidthMeters),
       fixtureTemplates: rawTemplates.map((t) => ({
         type: t.type,
+        label: t.label || t.type,
+        baseKind: t.baseKind || t.type,
+        temperatureZone: t.temperatureZone || "ambient",
         defaultWidthMeters: Number(t.defaultWidthMeters),
         defaultDepthMeters: Number(t.defaultDepthMeters),
         defaultHeightMeters: Number(t.defaultHeightMeters ?? 2),
@@ -441,7 +436,10 @@ export default function App() {
         api(`/categories?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
       )
     );
-    const allCategories = catResults.flatMap((r) => r.items || []);
+    const listsByVertical = Object.fromEntries(
+      verticals.map((cv, i) => [cv, catResults[i]?.items || []])
+    );
+    const allCategories = mergeCategoriesForLayout(v, listsByVertical);
     const catIds = new Set(allCategories.map((c) => c.id));
 
     const prodResults = await Promise.all(
@@ -753,7 +751,6 @@ export default function App() {
     navigate(pathForModule(moduleId));
     if (moduleId === "admin") loadAdmin().catch((e) => toast(e.message));
     if (moduleId === "analytics") loadAnalytics().catch((e) => toast(e.message));
-    if (moduleId === "dashboard") loadPortfolio().catch((e) => toast(e.message));
   }
 
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
@@ -812,10 +809,18 @@ export default function App() {
           <div className={`content${editorLayoutId ? " content--editor" : ""}`}>
             {page === "dashboard" && (
               <DashboardPage
-                portfolio={portfolio}
                 layouts={layouts}
                 token={token}
+                role={role}
                 onOpenLayout={openLayout}
+                onNewLayout={() => {
+                  navigate(pathForModule("layouts"));
+                  setCreateOpen(true);
+                }}
+                onNavigateLayouts={(status) => {
+                  setStatusFilter(status);
+                  navigate(pathForModule("layouts"));
+                }}
               />
             )}
 
@@ -1127,7 +1132,60 @@ export default function App() {
                       )}
                     </div>
                   )}
-                  {adminTab === "stores" && <div className="muted">Store master records sync from layout portfolio ({layouts.length} projects).</div>}
+                  {adminTab === "stores" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      <div className="field" style={{ maxWidth: 280 }}>
+                        <label>Store type</label>
+                        <select
+                          value={vertical}
+                          onChange={(e) => setVertical(e.target.value)}
+                          style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #e5e7eb", width: "100%" }}
+                        >
+                          {Object.entries(VERTICALS).map(([key, meta]) => (
+                            <option key={key} value={key}>
+                              {meta.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{ fontWeight: 700 }}>Shelf types — {vMeta.label}</div>
+                      <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+                        Add shelf types such as <strong>Ambient</strong>, <strong>Chilled</strong>, and{" "}
+                        <strong>Frozen</strong>, or create custom types with dimensions and levels. The layout palette,
+                        Smart Generate mix, and autogenerate all use these templates (
+                        {layouts.filter((l) => l.vertical === vertical).length} layout
+                        {layouts.filter((l) => l.vertical === vertical).length === 1 ? "" : "s"} for this store type).
+                      </p>
+                      <FixtureTemplatesEditor
+                        templates={
+                          configForm.fixtureTemplates?.length
+                            ? configForm.fixtureTemplates
+                            : fixtureTemplatesForVertical(config, vertical)
+                        }
+                        disabled={!canManageUsers(role)}
+                        onChange={(fixtureTemplates) => {
+                          setConfigForm({ ...configForm, fixtureTemplates });
+                          if (configSaveError) setConfigSaveError("");
+                        }}
+                      />
+                      {configSaveError ? (
+                        <AlertBanner variant="error" onDismiss={() => setConfigSaveError("")}>
+                          {configSaveError}
+                        </AlertBanner>
+                      ) : null}
+                      {canManageUsers(role) ? (
+                        <button
+                          className="btn-primary"
+                          style={{ padding: "10px 14px", width: "fit-content" }}
+                          onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
+                        >
+                          Save shelf types
+                        </button>
+                      ) : (
+                        <div className="muted">Only Admin can save store master shelf types.</div>
+                      )}
+                    </div>
+                  )}
                   {adminTab === "approval" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                       <div style={{ fontWeight: 700 }}>Layouts require Approver sign-off before publishing</div>
@@ -1164,27 +1222,10 @@ export default function App() {
                           ))}
                         </select>
                       </div>
-                      <div style={{ fontWeight: 700 }}>Store setup — {vMeta.label}</div>
                       <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                        Set the shared shelf layer here before creating layouts. Each new layout inherits these fixture templates.
+                        Shelf types and dimensions are managed in <strong>Store Master</strong>. This tab controls aisle
+                        rules for {vMeta.label}.
                       </p>
-                      <FixtureTemplatesEditor
-                        templates={
-                          configForm.fixtureTemplates?.length
-                            ? configForm.fixtureTemplates
-                            : fixtureTemplatesForVertical(config, vertical)
-                        }
-                        disabled={!canManageUsers(role)}
-                        onChange={(fixtureTemplates) => {
-                          setConfigForm({ ...configForm, fixtureTemplates });
-                          if (configSaveError) setConfigSaveError("");
-                        }}
-                      />
-                      {configSaveError ? (
-                        <AlertBanner variant="error" onDismiss={() => setConfigSaveError("")}>
-                          {configSaveError}
-                        </AlertBanner>
-                      ) : null}
                       <div className="field">
                         <label>Min aisle width (m)</label>
                         <input

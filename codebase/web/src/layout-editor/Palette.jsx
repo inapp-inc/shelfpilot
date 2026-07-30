@@ -15,9 +15,6 @@ export default function Palette({
 }) {
   return (
     <div className="palette">
-      <div className="section-label" style={{ padding: "2px 4px 6px" }}>
-        Tools
-      </div>
       <button
         type="button"
         className={`tool-btn ${paletteTool === "select" ? "active" : ""}`}
@@ -128,7 +125,7 @@ export default function Palette({
         Shelves
       </div>
       <div className="mono" style={{ fontSize: 10, color: "#9aa1ab", padding: "0 4px 6px" }}>
-        From Admin store configuration
+        From Admin → Store Master
       </div>
       {fixtureTypes.map((t) => (
         <button
@@ -144,7 +141,10 @@ export default function Palette({
           }}
           onClick={() => setPaletteTool(t.type)}
         >
-          <div style={{ fontSize: 13, fontWeight: 700 }}>{t.label}</div>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>
+            {t.temperatureZone === "chilled" ? "🧊 " : t.temperatureZone === "frozen" ? "❄️ " : ""}
+            {t.label}
+          </div>
           <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
             {t.defaultWidthMeters} × {t.defaultDepthMeters} m · {t.defaultLevels} lvl
           </div>

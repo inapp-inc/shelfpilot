@@ -106,7 +106,14 @@ export function validateImportFile(file) {
 
 export function validateFixtureTemplates(templates) {
   const errors = [];
+  const seenTypes = new Set();
   (templates || []).forEach((row, idx) => {
+    const label = String(row.label || row.type || "").trim();
+    if (!label) errors.push(`Row ${idx + 1}: Shelf name is required.`);
+    const type = String(row.type || "").trim();
+    if (!type) errors.push(`Row ${idx + 1}: Shelf type id is required.`);
+    else if (seenTypes.has(type)) errors.push(`Row ${idx + 1}: Duplicate shelf type "${type}".`);
+    else seenTypes.add(type);
     const w = positiveNumber(row.defaultWidthMeters, "Width", { min: 0.3, max: 50 });
     const d = positiveNumber(row.defaultDepthMeters, "Depth", { min: 0.3, max: 50 });
     const h = positiveNumber(row.defaultHeightMeters, "Height", { min: 0.5, max: 20 });

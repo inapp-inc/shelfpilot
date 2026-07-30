@@ -1,4 +1,49 @@
 /** Client-side shelf face normalization (mirrors API shelfFaces). */
+import { gondolaCanvasAabb } from "./polygonCanvas.js";
+
+const SHELF_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+export function shelfLetter(index) {
+  const i = Math.max(0, Math.floor(Number(index) || 0));
+  return SHELF_LETTERS[i] ?? String(i + 1);
+}
+
+/** Aisle-centric label, e.g. aisle 4, unit B → "4B" */
+export function aisleShelfLabel(aisleNumber, shelfIndexAlongAisle) {
+  const n = Number(aisleNumber);
+  if (!Number.isFinite(n) || n < 1) return "—";
+  return `${n}${shelfLetter(shelfIndexAlongAisle ?? 0)}`;
+}
+
+export function shelfFaceDisplayLabel(shelf, aisles) {
+  const aisle = (aisles || []).find((a) => a.id === shelf?.aisleId);
+  const n = aisle?.aisleNumber;
+  const idx = shelf?.shelfIndexAlongAisle;
+  if (n != null && idx != null) return aisleShelfLabel(n, idx);
+  return null;
+}
+
+export function aisleDisplayLabel(aisle) {
+  const n = aisle?.aisleNumber;
+  return n != null ? String(n) : aisle?.name || "—";
+}
+
+export function shelfCanvasFaceLabel(shelf, faceId, aisles, allShelves) {
+  if (shelf?.pairDisplay && shelf?.pairShelfIds) {
+    const physId = faceId === "B" ? shelf.pairShelfIds.back : shelf.pairShelfIds.front;
+    const phys = (allShelves || []).find((s) => s.id === physId);
+    if (phys) {
+      const lbl = shelfFaceDisplayLabel(phys, aisles);
+      if (lbl) return lbl;
+    }
+  }
+  const lbl = shelfFaceDisplayLabel(shelf, aisles);
+  if (lbl) return lbl;
+  if (shelf?.displayNumber) {
+    return shelfFaceLabel(shelf.displayNumber, faceId === "B" ? "B" : "A");
+  }
+  return faceDigit(faceId);
+}
 
 export function displayNumberToLetter(displayNumber) {
   let n = Math.max(1, Math.floor(Number(displayNumber) || 1));
@@ -38,7 +83,9 @@ export function isDoubleSided(shelf) {
   return shelf?.doubleSided !== false;
 }
 
-export function shelfDisplayLabel(shelf) {
+export function shelfDisplayLabel(shelf, aisles) {
+  const aisleLabel = shelfFaceDisplayLabel(shelf, aisles);
+  if (aisleLabel) return aisleLabel;
   const num = shelf?.displayNumber;
   if (!num) return "—";
   if (shelf?.pairDisplay) return shelfUnitLabel(num);
@@ -81,17 +128,22 @@ export function normalizeShelfUI(shelf) {
   };
 }
 
-/** Merge front+back pair into one joined gondola unit (A1 | spine | A2). */
+/** Merge front+back pair into one joined gondola unit (4A | spine | 5A). */
 export function mergePairedShelfForCanvas(front, back) {
   const f = normalizeShelfUI(front);
   const b = normalizeShelfUI(back);
   const faceA = faceFromShelf(f, "A");
   const faceB = faceFromShelf(b, "A");
   faceB.id = "B";
+  const aabb = gondolaCanvasAabb(f, b);
   return {
     ...f,
-    x: f.x,
-    y: f.y,
+    x: aabb.x,
+    y: aabb.y,
+    canvasOriginX: aabb.originX,
+    canvasOriginY: aabb.originY,
+    canvasAabbW: aabb.w,
+    canvasAabbD: aabb.d,
     rotationDeg: f.rotationDeg,
     doubleSided: true,
     pairDisplay: true,
@@ -152,6 +204,112 @@ export function countGondolaUnits(shelves) {
     units += 1;
   }
   return units;
+}
+
+/** Parse aisle-centric label e.g. "4A" → { aisleNumber, shelfIndex }. */
+export function parseShelfLabel(label) {
+  const m = String(label || "")
+    .trim()
+    .toUpperCase()
+    .match(/^(\d+)([A-Z])$/);
+  if (!m) return null;
+  return { aisleNumber: Number(m[1]), shelfIndex: m[2].charCodeAt(0) - 65 };
+}
+
+/** All aisle-centric labels in layout for go-to typeahead. */
+export function listShelfLabels(layout) {
+  const aisles = layout?.aisles || [];
+  const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+  const labels = [];
+  for (const s of shelves) {
+    let lbl = shelfFaceDisplayLabel(s, aisles);
+    if (!lbl && s.displayNumber != null) {
+      lbl = isPairedShelf(s)
+        ? shelfFaceLabel(s.displayNumber, pairFaceId(s))
+        : shelfUnitLabel(s.displayNumber);
+    }
+    if (lbl && !labels.some((x) => x.label === lbl)) {
+      labels.push({ label: lbl, shelfId: s.id });
+    }
+  }
+  return labels.sort((a, b) => {
+    const pa = parseShelfLabel(a.label);
+    const pb = parseShelfLabel(b.label);
+    if (!pa || !pb) return a.label.localeCompare(b.label);
+    return pa.aisleNumber - pb.aisleNumber || pa.shelfIndex - pb.shelfIndex;
+  });
+}
+
+function resolveShelfFromPhysical(layout, phys) {
+  if (!phys) return null;
+  let frontId = phys.id;
+  let backId = null;
+  let mergedGondola = false;
+  const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+  if (phys.pairId) {
+    const mate = shelves.find((s) => s.pairId === phys.pairId && s.id !== phys.id);
+    if (mate) {
+      mergedGondola = true;
+      const front = phys.pairRole === "back" ? mate : phys;
+      const back = phys.pairRole === "back" ? phys : mate;
+      frontId = front.id;
+      backId = back.id;
+    }
+  }
+  const aisles = layout?.aisles || [];
+  return {
+    shelfId: phys.id,
+    frontId,
+    backId,
+    mergedGondola,
+    displayLabel: shelfFaceDisplayLabel(phys, aisles) || shelfDisplayLabel(phys, aisles),
+  };
+}
+
+/** Resolve "4A" → physical shelf + optional gondola pair ids. */
+export function resolveShelfByLabel(layout, label) {
+  const normalized = String(label || "").trim().toUpperCase();
+  if (!normalized) return null;
+
+  const parsed = parseShelfLabel(normalized);
+  if (parsed) {
+    const aisles = layout?.aisles || [];
+    const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+    const aisleIds = new Set(
+      aisles.filter((a) => Number(a.aisleNumber) === parsed.aisleNumber).map((a) => a.id)
+    );
+    if (!aisleIds.size) return null;
+
+    const phys = shelves.find(
+      (s) =>
+        aisleIds.has(s.aisleId) && Number(s.shelfIndexAlongAisle) === parsed.shelfIndex
+    );
+    if (!phys) return null;
+    return resolveShelfFromPhysical(layout, phys);
+  }
+
+  const fromList = listShelfLabels(layout).find((o) => o.label.toUpperCase() === normalized);
+  if (fromList) {
+    const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+    const phys = shelves.find((s) => s.id === fromList.shelfId);
+    return resolveShelfFromPhysical(layout, phys);
+  }
+
+  return null;
+}
+
+/** Group planogram rows by levelIndex for tooltip display. */
+export function groupPlanogramByLevel(planogram, levels) {
+  const levelList =
+    levels?.length > 0
+      ? levels.map((lv) => Number(lv.levelIndex ?? 0))
+      : [...new Set((planogram || []).map((p) => Number(p.levelIndex) || 0))].sort((a, b) => a - b);
+  if (!levelList.length) levelList.push(0);
+
+  return levelList.map((levelIndex) => ({
+    levelIndex,
+    products: (planogram || []).filter((p) => Number(p.levelIndex) === levelIndex),
+  }));
 }
 
 /** Shelves to render in 3D — one entry per gondola unit. */

@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FIXTURE_TYPES, ZONE_TYPES } from "../referenceCatalog.js";
 import ShelfBadge from "./ShelfBadge.jsx";
-import { isDoubleSided, isPairedShelf, mergePairedShelfForCanvas, normalizeShelfUI, shelfFaceLabel, faceDigit } from "./shelfFaces.js";
+import ShelfHoverTooltip from "./ShelfHoverTooltip.jsx";
+import { isDoubleSided, isPairedShelf, mergePairedShelfForCanvas, normalizeShelfUI, shelfCanvasFaceLabel } from "./shelfFaces.js";
+import { emojiForCategory } from "../storeTypes.js";
 import {
   entityFitsPolygon,
   entityPlacementValid,
   fromStageCoords,
   layoutCanvasBounds,
+  layoutFixtureZoneRect,
+  normalizeFixtureRectangle,
   pointInPolygon,
+  polygonAabb,
+  rectanglePolygon,
+  resizeFixtureRectCorner,
+  resizeFixtureRectEdge,
+  shelfCanvasAabb,
   shelfFitsPolygon,
   shelfLocalMeters,
   toStageCoords,
@@ -43,36 +52,59 @@ function edgeCursor(dir) {
 }
 
 const HANDLE_DIRS = [
-  ["nw", { left: -5, top: -5, cursor: "nwse-resize" }],
-  ["n", { left: "calc(50% - 5px)", top: -5, cursor: "ns-resize" }],
-  ["ne", { right: -5, top: -5, cursor: "nesw-resize" }],
-  ["e", { right: -5, top: "calc(50% - 5px)", cursor: "ew-resize" }],
-  ["se", { right: -5, bottom: -5, cursor: "nwse-resize" }],
-  ["s", { left: "calc(50% - 5px)", bottom: -5, cursor: "ns-resize" }],
-  ["sw", { left: -5, bottom: -5, cursor: "nesw-resize" }],
-  ["w", { left: -5, top: "calc(50% - 5px)", cursor: "ew-resize" }],
+  ["nw", { left: -6, top: -6, cursor: "nwse-resize" }],
+  ["n", { left: "calc(50% - 6px)", top: -6, cursor: "ns-resize" }],
+  ["ne", { right: -6, top: -6, cursor: "nesw-resize" }],
+  ["e", { right: -6, top: "calc(50% - 6px)", cursor: "ew-resize" }],
+  ["se", { right: -6, bottom: -6, cursor: "nwse-resize" }],
+  ["s", { left: "calc(50% - 6px)", bottom: -6, cursor: "ns-resize" }],
+  ["sw", { left: -6, bottom: -6, cursor: "nesw-resize" }],
+  ["w", { left: -6, top: "calc(50% - 6px)", cursor: "ew-resize" }],
 ];
 
+function boostedHandleStyle(style, half) {
+  const out = { ...style };
+  for (const key of ["left", "right", "top", "bottom"]) {
+    const v = out[key];
+    if (v === -6) out[key] = -half;
+    else if (typeof v === "string" && v.includes("calc(50% - 6px)")) {
+      out[key] = `calc(50% - ${half}px)`;
+    }
+  }
+  return out;
+}
+
 /** 8 resize grips rendered as children of a selected, absolutely-positioned entity. */
-function ResizeHandles({ onStart }) {
+function ResizeHandles({ onStart, boost = 1 }) {
+  const half = Math.max(6, Math.round(6 * boost));
+  const size = half * 2;
+  const slop = Math.max(8, Math.round(8 * boost));
   return HANDLE_DIRS.map(([dir, style]) => (
     <div
       key={dir}
       className="resize-handle"
-      style={{ position: "absolute", ...style }}
+      style={{
+        position: "absolute",
+        width: size,
+        height: size,
+        ...boostedHandleStyle(style, half),
+      }}
       onMouseDown={(e) => {
         e.stopPropagation();
         e.preventDefault();
         onStart(dir, e);
       }}
       onClick={(e) => e.stopPropagation()}
-    />
+    >
+      <span className="resize-handle-slop" style={{ inset: -slop }} aria-hidden />
+    </div>
   ));
 }
 
 /** Any tool that drops something onto the floor (fixtures, aisle, zones, entry). */
-function isPlacerTool(tool) {
+function isPlacerTool(tool, fixtureTypeKeys) {
   return (
+    (fixtureTypeKeys && fixtureTypeKeys.has(tool)) ||
     !!FIXTURE_TYPES[tool] ||
     tool === "aisle" ||
     tool === "aisle-h" ||
@@ -92,6 +124,18 @@ function screenDeltaToLocal(dx, dy, rotationDeg) {
 
 function shelfDrawSize(shelf) {
   return shelfLocalMeters(shelf);
+}
+
+function clampPointToEnvelope(x, y, envelope) {
+  if (!envelope) return { x, y };
+  const minX = Number(envelope.x) || 0;
+  const minY = Number(envelope.y) || 0;
+  const maxX = minX + (Number(envelope.widthMeters) || 0);
+  const maxY = minY + (Number(envelope.depthMeters) || 0);
+  return {
+    x: Math.max(minX, Math.min(maxX, x)),
+    y: Math.max(minY, Math.min(maxY, y)),
+  };
 }
 
 function normalizeDeg(deg) {
@@ -118,6 +162,87 @@ function snapDeg(deg, shiftKey) {
   return Math.round(n / 15) * 15;
 }
 
+function pointInAabb(pt, aabb, pad = 0) {
+  return (
+    pt.x >= aabb.x - pad &&
+    pt.x <= aabb.x + aabb.w + pad &&
+    pt.y >= aabb.y - pad &&
+    pt.y <= aabb.y + aabb.d + pad
+  );
+}
+
+/** Pick front/back from layout point within shelf AABB (matches axis-aligned render). */
+function pickGondolaFaceFromAabb(pt, aabb, rotDeg) {
+  const lx = pt.x - aabb.x;
+  const ly = pt.y - aabb.y;
+  const splitAlongWidth = gondolaSplitAlongWidth(rotDeg);
+  if (splitAlongWidth) return lx >= aabb.w / 2 ? "B" : "A";
+  return ly >= aabb.d / 2 ? "B" : "A";
+}
+
+function shelfRenderBox(live, rp, rotatePreview, rotateActive) {
+  const logicalW = rp ? rp.w : shelfDrawSize(live).w;
+  const logicalD = rp ? rp.h : shelfDrawSize(live).d;
+  const drawX = rp ? rp.x : live.x;
+  const drawY = rp ? rp.y : live.y;
+  const rot = rotatePreview != null && rotateActive ? rotatePreview : normalizeDeg(live.rotationDeg);
+  const probe = {
+    ...live,
+    x: drawX,
+    y: drawY,
+    rotationDeg: rot,
+    usableWidthMeters: logicalW,
+    widthMeters: logicalW,
+    depthMeters: logicalD,
+  };
+  const aabb =
+    live.pairDisplay && live.canvasAabbW
+      ? {
+          x: live.x,
+          y: live.y,
+          w: live.canvasAabbW,
+          d: live.canvasAabbD,
+          originX: live.canvasOriginX ?? drawX,
+          originY: live.canvasOriginY ?? drawY,
+        }
+      : shelfCanvasAabb(probe);
+  return {
+    logicalW,
+    logicalD,
+    w: aabb.w,
+    d: aabb.d,
+    drawX,
+    drawY,
+    rot,
+    aabb,
+  };
+}
+
+function gondolaFaceLayout(splitAlongWidth) {
+  if (splitAlongWidth) {
+    return {
+      front: { left: 0, top: 0, width: "50%", height: "100%" },
+      back: { left: "50%", top: 0, width: "50%", height: "100%" },
+      spine: { left: "50%", top: "6%", width: 3, height: "88%", transform: "translateX(-50%)" },
+      frontArrow: { left: 4, top: "50%", transform: "translateY(-50%)" },
+      backArrow: { right: 4, top: "50%", transform: "translateY(-50%)" },
+    };
+  }
+  return {
+    front: { left: 0, top: 0, width: "100%", height: "50%" },
+    back: { left: 0, top: "50%", width: "100%", height: "50%" },
+    spine: { left: "6%", top: "50%", width: "88%", height: 3, transform: "translateY(-50%)" },
+    frontArrow: { top: 3, left: "50%", transform: "translateX(-50%)" },
+    backArrow: { bottom: 3, left: "50%", transform: "translateX(-50%)" },
+  };
+}
+
+/** Arrow hint showing which way each gondola face points toward its aisle. */
+function gondolaAisleArrow(splitAlongWidth, faceRole) {
+  if (splitAlongWidth) return faceRole === "front" ? "◀" : "▶";
+  return faceRole === "front" ? "▲" : "▼";
+}
+
 /**
  * 2D floor canvas: DnD, draw polygon area, aisle + shelf layers.
  * Strict mode: viewport = polygon AABB; fixtures only inside drawn zone.
@@ -142,27 +267,59 @@ export default function Canvas2D({
   onDraftPolygonChange,
   onCloseDraw,
   onPolygonChange,
+  onPolygonPreviewChange,
+  products,
+  webglBackground = false,
+  previewFixturePolygon = null,
+  canvasBounds: canvasBoundsProp = null,
+  fixtureTypeKeys = null,
 }) {
   const floorRef = useRef(null);
+  const editPreviewRef = useRef(null);
+  const hoverTimerRef = useRef(null);
+  const [hover, setHover] = useState(null);
+  const [hoverAnchor, setHoverAnchor] = useState(null);
   const CLOSE_VERTEX_M = 0.45;
-  const bounds = layoutCanvasBounds(layout);
+  const drawing = paletteTool === "draw";
+  const editingArea = paletteTool === "edit-area";
+  const computedBounds = useMemo(
+    () =>
+      layoutCanvasBounds(layout, {
+        expandToEnvelope: drawing,
+        previewPoly: previewFixturePolygon,
+      }),
+    [layout, drawing, previewFixturePolygon]
+  );
+  const bounds = canvasBoundsProp ?? computedBounds;
+  const fixtureZone = useMemo(
+    () => layoutFixtureZoneRect(layout, previewFixturePolygon),
+    [layout, previewFixturePolygon]
+  );
   const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
   const outsideIds = new Set(
     (layout.validation?.containmentViolations || []).map((v) => `${v.kind}:${v.id}`)
   );
-  const drawing = paletteTool === "draw";
-  const editingArea = paletteTool === "edit-area";
   const canDragFixtures = !editDisabled && !drawing && !editingArea;
-  const poly = bounds.polygon;
+  const savedPoly = bounds.polygon;
   const envelope = bounds.storeEnvelope;
-  const hasBoundaries = Boolean(poly?.length >= 3 && envelope);
+  const activeFixturePoly = useMemo(() => {
+    if (savedPoly?.length >= 3) return savedPoly;
+    if (previewFixturePolygon?.length >= 3) return previewFixturePolygon;
+    return rectanglePolygon(
+      fixtureZone.x,
+      fixtureZone.y,
+      fixtureZone.widthMeters,
+      fixtureZone.depthMeters
+    );
+  }, [savedPoly, previewFixturePolygon, fixtureZone]);
+  const poly = activeFixturePoly;
 
   const visibleShelves = useMemo(() => {
     const list = shelves.map((s) => normalizeShelfUI(s));
     const filtered = poly ? list.filter((s) => shelfFitsPolygon(s, poly)) : list;
 
     const byPair = new Map();
-    for (const s of filtered) {
+    for (const s of list) {
       if (!s.pairId) continue;
       if (!byPair.has(s.pairId)) byPair.set(s.pairId, {});
       byPair.get(s.pairId)[s.pairRole === "back" ? "back" : "front"] = s;
@@ -188,9 +345,17 @@ export default function Canvas2D({
   const visibleAisles = layout.aisles || [];
 
   function layoutPointFromEvent(e) {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = (floorRef.current || e.currentTarget).getBoundingClientRect();
     const sx = snap((e.clientX - rect.left) / scale);
     const sy = snap((e.clientY - rect.top) / scale);
+    return fromStageCoords(sx, sy, bounds);
+  }
+
+  function layoutPointFromClient(clientX, clientY) {
+    const rect = floorRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    const sx = snap((clientX - rect.left) / scale);
+    const sy = snap((clientY - rect.top) / scale);
     return fromStageCoords(sx, sy, bounds);
   }
 
@@ -370,17 +535,17 @@ export default function Canvas2D({
   useEffect(() => {
     if (!vertexDrag) return undefined;
     const onMove = (e) => {
-      const rect = vertexDrag.rect;
-      const sx = snap((e.clientX - rect.left) / scale);
-      const sy = snap((e.clientY - rect.top) / scale);
-      const { x, y } = fromStageCoords(sx, sy, bounds);
-      const next = vertexDrag.vertices.map((p, i) =>
-        i === vertexDrag.index ? { x: Math.max(0, x), y: Math.max(0, y) } : p
-      );
+      const { x, y } = layoutPointFromClient(e.clientX, e.clientY);
+      const aabb = polygonAabb(vertexDrag.vertices);
+      const next = resizeFixtureRectCorner(aabb, vertexDrag.index, x, y, envelope);
+      if (!next) return;
+      editPreviewRef.current = next;
       setVertexDrag((v) => (v ? { ...v, preview: next } : v));
+      onPolygonPreviewChange?.(next);
     };
     const onUp = () => {
-      const preview = vertexDrag.preview;
+      const preview = editPreviewRef.current ?? vertexDrag.preview;
+      editPreviewRef.current = null;
       setVertexDrag(null);
       if (preview?.length >= 3) onPolygonChange?.(preview);
     };
@@ -391,30 +556,22 @@ export default function Canvas2D({
       window.removeEventListener("mouseup", onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vertexDrag, scale, bounds]);
+  }, [vertexDrag, scale, bounds, envelope]);
 
   useEffect(() => {
     if (!edgeDrag) return undefined;
     const onMove = (e) => {
-      const rect = edgeDrag.rect;
-      const sx = snap((e.clientX - rect.left) / scale);
-      const sy = snap((e.clientY - rect.top) / scale);
-      const { x, y } = fromStageCoords(sx, sy, bounds);
-      const dx = x - edgeDrag.startX;
-      const dy = y - edgeDrag.startY;
-      const n = edgeDrag.baseVertices.length;
-      const i = edgeDrag.edgeIndex;
-      const j = (i + 1) % n;
-      const next = edgeDrag.baseVertices.map((p, idx) => {
-        if (idx === i || idx === j) {
-          return { x: Math.max(0, p.x + dx), y: Math.max(0, p.y + dy) };
-        }
-        return { ...p };
-      });
+      const { x, y } = layoutPointFromClient(e.clientX, e.clientY);
+      const aabb = polygonAabb(edgeDrag.baseVertices);
+      const next = resizeFixtureRectEdge(aabb, edgeDrag.edgeIndex, x, y, envelope);
+      if (!next) return;
+      editPreviewRef.current = next;
       setEdgeDrag((v) => (v ? { ...v, preview: next } : v));
+      onPolygonPreviewChange?.(next);
     };
     const onUp = () => {
-      const preview = edgeDrag.preview;
+      const preview = editPreviewRef.current ?? edgeDrag.preview;
+      editPreviewRef.current = null;
       setEdgeDrag(null);
       if (preview?.length >= 3) onPolygonChange?.(preview);
     };
@@ -425,15 +582,12 @@ export default function Canvas2D({
       window.removeEventListener("mouseup", onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edgeDrag, scale, bounds]);
+  }, [edgeDrag, scale, bounds, envelope]);
 
   useEffect(() => {
     if (!draftDrag) return undefined;
     const onMove = (e) => {
-      const rect = draftDrag.rect;
-      const sx = snap((e.clientX - rect.left) / scale);
-      const sy = snap((e.clientY - rect.top) / scale);
-      const { x, y } = fromStageCoords(sx, sy, bounds);
+      const { x, y } = layoutPointFromClient(e.clientX, e.clientY);
       const next = draftDrag.vertices.map((p, i) =>
         i === draftDrag.index ? { x: Math.max(0, x), y: Math.max(0, y) } : p
       );
@@ -461,22 +615,142 @@ export default function Canvas2D({
     return () => el.removeEventListener("wheel", onWheel, { capture: true });
   }, [onWheelZoom]);
 
+  function scheduleShelfHover(payload, e) {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setHover(payload);
+      setHoverAnchor({ x: e.clientX, y: e.clientY });
+    }, 500);
+  }
+
+  function clearShelfHover() {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    setHover(null);
+    setHoverAnchor(null);
+  }
+
+  useEffect(() => () => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+  }, []);
+
+  function pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState) {
+    const pt = layoutPointFromClient(e.clientX, e.clientY);
+    const { aabb, rot } = shelfRenderBox(live, rp, rotatePreview, rotState);
+    if (!pointInAabb(pt, aabb, 0.02)) return null;
+    if (f.pairDisplay && backId) {
+      const faceId = pickGondolaFaceFromAabb(pt, aabb, rot);
+      return { shelfId: faceId === "B" ? backId : frontId, faceId, mergedShelf: f };
+    }
+    return { shelfId: f.id, faceId: "A", mergedShelf: null };
+  }
+
+  function handleShelfSlotMouseDown(e, f, frontId, backId) {
+    e.stopPropagation();
+    if (drawing || editDisabled) return;
+    const live = dragPos && dragPos.id === frontId ? dragPos : f;
+    const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
+    const rotState = rotate?.id === frontId || rotate?.id === f.id;
+    const hit = pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState);
+    if (!hit) return;
+
+    setSelection({ kind: "shelf", id: hit.shelfId, faceId: hit.faceId });
+    if (!canDragFixtures) return;
+    const origX = f.pairOrigins?.front?.x ?? f.canvasOriginX ?? f.x;
+    const origY = f.pairOrigins?.front?.y ?? f.canvasOriginY ?? f.y;
+    setDragging({
+      kind: "shelf",
+      id: f.pairDisplay && backId ? frontId : f.id,
+      layoutId: layout.id,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      origX,
+      origY,
+    });
+  }
+
+  function handleShelfSlotMouseMove(e, f, frontId, backId) {
+    if (drawing) return;
+    const live = dragPos && dragPos.id === frontId ? dragPos : f;
+    const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
+    const rotState = rotate?.id === frontId || rotate?.id === f.id;
+    const hit = pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState);
+    if (hit) {
+      scheduleShelfHover({ shelfId: hit.shelfId, faceId: hit.faceId, mergedShelf: hit.mergedShelf }, e);
+    } else {
+      clearShelfHover();
+    }
+  }
+
   const showHandles = !editDisabled && !drawing && !editingArea;
-  const editVertices = edgeDrag?.preview || vertexDrag?.preview || poly;
+  const editBasePoly = useMemo(() => {
+    if (savedPoly?.length >= 3) return normalizeFixtureRectangle(savedPoly);
+    if (editingArea) {
+      return rectanglePolygon(
+        fixtureZone.x,
+        fixtureZone.y,
+        fixtureZone.widthMeters,
+        fixtureZone.depthMeters
+      );
+    }
+    return null;
+  }, [savedPoly, editingArea, fixtureZone]);
+  const editVertices = edgeDrag?.preview || vertexDrag?.preview || editBasePoly;
   const draftVertices = draftDrag?.preview || draftPolygon;
+
+  const liveFixtureZone = useMemo(() => {
+    const poly = edgeDrag?.preview || vertexDrag?.preview;
+    if (poly?.length >= 3) {
+      const aabb = polygonAabb(poly);
+      if (aabb) {
+        return {
+          x: aabb.minX,
+          y: aabb.minY,
+          widthMeters: aabb.width,
+          depthMeters: aabb.height,
+        };
+      }
+    }
+    return fixtureZone;
+  }, [edgeDrag?.preview, vertexDrag?.preview, fixtureZone]);
+
+  const editPolyPoints =
+    editVertices?.length >= 3
+      ? editVertices
+          .map((p) => {
+            const st = toStageCoords(p.x, p.y, bounds);
+            return `${st.x * scale},${st.y * scale}`;
+          })
+          .join(" ")
+      : "";
+
+  const showBoundaryLayer =
+    drawing || editingArea || (draftPolygon?.length ?? 0) > 0;
+  const showStoreEnvelopeOutline = Boolean(envelope && (drawing || editingArea));
+  const showStoreFloor = !webglBackground && !drawing;
+  const showFixtureFloor = showStoreFloor && !drawing;
+  const floorPxW = bounds.width * scale;
+  const floorPxH = bounds.height * scale;
+  const fixtureLeft = (liveFixtureZone.x - bounds.minX) * scale;
+  const fixtureTop = (liveFixtureZone.y - bounds.minY) * scale;
+  const fixturePxW = liveFixtureZone.widthMeters * scale;
+  const fixturePxH = liveFixtureZone.depthMeters * scale;
 
   return (
     <div
       ref={floorRef}
-      className="floor-plan floor-plan-strict"
+      className={`floor-plan${showStoreFloor ? " floor-plan-store" : ""}${webglBackground ? " floor-plan-webgl-overlay" : ""}`}
       style={{
-        width: bounds.width * scale,
-        height: bounds.height * scale,
-        backgroundSize: `${scale}px ${scale}px`,
-        background: hasBoundaries ? "transparent" : undefined,
-        backgroundImage: hasBoundaries ? "none" : undefined,
-        border: hasBoundaries ? "none" : undefined,
-        cursor: drawing || editingArea || isPlacerTool(paletteTool) ? "crosshair" : "default",
+        ...(webglBackground
+          ? { position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 1, pointerEvents: "auto" }
+          : { width: floorPxW, height: floorPxH }),
+        ...(showStoreFloor
+          ? {}
+          : {
+              background: "transparent",
+              backgroundImage: "none",
+              border: "none",
+            }),
+        cursor: drawing || editingArea || isPlacerTool(paletteTool, fixtureTypeKeys) ? "crosshair" : "default",
       }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -527,12 +801,28 @@ export default function Canvas2D({
           return;
         }
         if (paletteTool === "select") return;
-        if (!isPlacerTool(paletteTool)) return;
+        if (!isPlacerTool(paletteTool, fixtureTypeKeys)) return;
         if (!insideZone(x, y)) return;
         onPlaceClick(paletteTool, x, y);
       }}
     >
-      {hasBoundaries || draftPolygon?.length ? (
+      {showFixtureFloor ? (
+        <div
+          className="fixture-zone-floor"
+          style={{
+            position: "absolute",
+            left: fixtureLeft,
+            top: fixtureTop,
+            width: fixturePxW,
+            height: fixturePxH,
+            backgroundSize: `${scale}px ${scale}px`,
+            zIndex: editingArea ? 1 : 0,
+            pointerEvents: "none",
+          }}
+          aria-hidden
+        />
+      ) : null}
+      {showBoundaryLayer ? (
         <svg
           width={bounds.width * scale}
           height={bounds.height * scale}
@@ -540,86 +830,47 @@ export default function Canvas2D({
           style={{
             position: "absolute",
             inset: 0,
-            pointerEvents: editingArea ? "auto" : "none",
-            zIndex: 0,
+            pointerEvents: "none",
+            zIndex: editingArea || drawing ? 8 : 0,
           }}
         >
-          {hasBoundaries ? (
-            <>
-              <defs>
-                <pattern
-                  id={`fixture-grid-${layout.id}`}
-                  width={scale}
-                  height={scale}
-                  patternUnits="userSpaceOnUse"
-                >
-                  <path
-                    d={`M ${scale} 0 L 0 0 0 ${scale}`}
-                    fill="none"
-                    stroke="#e5e7eb"
-                    strokeWidth="1"
-                  />
-                </pattern>
-              </defs>
-              <rect
-                className="store-envelope-rect"
-                x={(envelope.x - bounds.minX) * scale}
-                y={(envelope.y - bounds.minY) * scale}
-                width={envelope.widthMeters * scale}
-                height={envelope.depthMeters * scale}
-              />
-              <polygon
-                className="fixture-zone-poly"
-                points={poly
-                  .map((p) => {
-                    const st = toStageCoords(p.x, p.y, bounds);
-                    return `${st.x * scale},${st.y * scale}`;
-                  })
-                  .join(" ")}
-              />
-              <polygon
-                className="fixture-zone-grid"
-                points={poly
-                  .map((p) => {
-                    const st = toStageCoords(p.x, p.y, bounds);
-                    return `${st.x * scale},${st.y * scale}`;
-                  })
-                  .join(" ")}
-                fill={`url(#fixture-grid-${layout.id})`}
-                stroke="none"
-              />
-            </>
+          {showStoreEnvelopeOutline ? (
+            <rect
+              className="store-envelope-rect"
+              x={(envelope.x - bounds.minX) * scale}
+              y={(envelope.y - bounds.minY) * scale}
+              width={envelope.widthMeters * scale}
+              height={envelope.depthMeters * scale}
+            />
+          ) : null}
+          {editingArea && editPolyPoints ? (
+            <polygon className="fixture-zone-poly fixture-zone-editing" points={editPolyPoints} />
           ) : null}
           {editingArea && editVertices?.length >= 2
             ? editVertices.map((p, i) => {
                 const next = editVertices[(i + 1) % editVertices.length];
                 const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
                 const st = toStageCoords(mid.x, mid.y, bounds);
+                const edgeHit = Math.max(12, Math.min(24, 320 / Math.max(scale, 8)));
                 return (
                   <rect
                     key={`edge-${i}`}
                     className="polygon-edge-handle"
-                    x={st.x * scale - 5}
-                    y={st.y * scale - 5}
-                    width="10"
-                    height="10"
+                    x={st.x * scale - edgeHit / 2}
+                    y={st.y * scale - edgeHit / 2}
+                    width={edgeHit}
+                    height={edgeHit}
                     rx="2"
                     onMouseDown={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
-                      const rect = e.currentTarget.closest(".floor-plan")?.getBoundingClientRect();
-                      if (!rect) return;
-                      const sx = snap((e.clientX - rect.left) / scale);
-                      const sy = snap((e.clientY - rect.top) / scale);
-                      const { x, y } = fromStageCoords(sx, sy, bounds);
+                      const { x, y } = layoutPointFromClient(e.clientX, e.clientY);
                       setEdgeDrag({
                         edgeIndex: i,
                         baseVertices: editVertices.map((v) => ({ ...v })),
                         preview: editVertices.map((v) => ({ ...v })),
-                        rect,
-                        startX: x,
-                        startY: y,
                       });
+                      editPreviewRef.current = editVertices.map((v) => ({ ...v }));
                     }}
                   />
                 );
@@ -628,26 +879,34 @@ export default function Canvas2D({
           {editingArea && editVertices?.length
             ? editVertices.map((p, i) => {
                 const st = toStageCoords(p.x, p.y, bounds);
+                const vertexHit = Math.max(12, Math.min(26, 360 / Math.max(scale, 8)));
+                const vertexR = Math.max(5, Math.min(9, vertexHit * 0.38));
                 return (
-                  <circle
-                    key={i}
-                    className="polygon-vertex-handle"
-                    cx={st.x * scale}
-                    cy={st.y * scale}
-                    r="6"
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      const rect = e.currentTarget.closest(".floor-plan")?.getBoundingClientRect();
-                      if (!rect) return;
-                      setVertexDrag({
-                        index: i,
-                        vertices: editVertices.map((v) => ({ ...v })),
-                        preview: editVertices.map((v) => ({ ...v })),
-                        rect,
-                      });
-                    }}
-                  />
+                  <g key={i}>
+                    <circle
+                      className="polygon-vertex-handle-hit"
+                      cx={st.x * scale}
+                      cy={st.y * scale}
+                      r={vertexHit}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setVertexDrag({
+                          index: i,
+                          vertices: editVertices.map((v) => ({ ...v })),
+                          preview: editVertices.map((v) => ({ ...v })),
+                        });
+                        editPreviewRef.current = editVertices.map((v) => ({ ...v }));
+                      }}
+                    />
+                    <circle
+                      className="polygon-vertex-handle"
+                      cx={st.x * scale}
+                      cy={st.y * scale}
+                      r={vertexR}
+                      pointerEvents="none"
+                    />
+                  </g>
                 );
               })
             : null}
@@ -699,30 +958,35 @@ export default function Canvas2D({
                 const st = toStageCoords(p.x, p.y, bounds);
                 const isStart = i === 0 && draftVertices.length >= 3;
                 return (
-                  <circle
-                    key={`draft-${i}`}
-                    className={`polygon-vertex-handle draft-vertex-handle${isStart ? " draft-close-handle" : ""}`}
-                    cx={st.x * scale}
-                    cy={st.y * scale}
-                    r={isStart ? 9 : 7}
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      if (isStart && draftVertices.length >= 3) {
-                        onCloseDraw?.();
-                        setDrawCursor(null);
-                        return;
-                      }
-                      const rect = e.currentTarget.closest(".floor-plan")?.getBoundingClientRect();
-                      if (!rect) return;
-                      setDraftDrag({
-                        index: i,
-                        vertices: draftVertices.map((v) => ({ ...v })),
-                        preview: draftVertices.map((v) => ({ ...v })),
-                        rect,
-                      });
-                    }}
-                  />
+                  <g key={`draft-${i}`}>
+                    <circle
+                      className={`polygon-vertex-handle-hit draft-vertex-handle${isStart ? " draft-close-handle" : ""}`}
+                      cx={st.x * scale}
+                      cy={st.y * scale}
+                      r={isStart ? 14 : 12}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (isStart && draftVertices.length >= 3) {
+                          onCloseDraw?.();
+                          setDrawCursor(null);
+                          return;
+                        }
+                        setDraftDrag({
+                          index: i,
+                          vertices: draftVertices.map((v) => ({ ...v })),
+                          preview: draftVertices.map((v) => ({ ...v })),
+                        });
+                      }}
+                    />
+                    <circle
+                      className={`polygon-vertex-handle draft-vertex-handle${isStart ? " draft-close-handle" : ""}`}
+                      cx={st.x * scale}
+                      cy={st.y * scale}
+                      r={isStart ? 9 : 7}
+                      pointerEvents="none"
+                    />
+                  </g>
                 );
               })}
             </>
@@ -754,6 +1018,7 @@ export default function Canvas2D({
               boxShadow: selected ? `0 0 0 3px ${color}55` : "none",
               zIndex: selected ? 8 : 0,
               cursor: editDisabled || drawing ? "default" : selected ? "move" : "pointer",
+              pointerEvents: drawing || editDisabled ? "none" : "auto",
             }}
             onMouseMove={(e) => {
               if (!selected || editDisabled || drawing || paletteTool !== "select") return;
@@ -833,7 +1098,7 @@ export default function Canvas2D({
         return (
           <div
             key={a.id}
-            className={`aisle ${bad ? "bad" : ""} ${vertical ? "aisle-vertical" : ""}`}
+            className={`aisle aisle-interactive ${bad ? "bad" : ""} ${vertical ? "aisle-vertical" : ""}`}
             title={`${a.name || "Aisle"} · ${Number(a.widthMeters || 0).toFixed(1)} m wide`}
             style={{
               left: stA.x * scale,
@@ -849,6 +1114,7 @@ export default function Canvas2D({
                     : "rgba(148,163,184,0.38)",
               boxShadow: selected ? "0 0 0 3px rgba(31,41,51,0.28)" : vertical ? "inset 0 0 0 1px rgba(71,85,105,0.35)" : "none",
               cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
+              pointerEvents: drawing || editDisabled ? "none" : "auto",
               zIndex: selected ? 4 : vertical ? 2 : 1,
             }}
             onMouseDown={(e) => {
@@ -870,7 +1136,7 @@ export default function Canvas2D({
           >
             {bad ? <span className="bang">!</span> : null}
             <span className="aisle-label mono aisle-walk-label">
-              {a.name?.startsWith("Walk") ? a.name : `Walk · ${a.name || `aisle ${idx + 1}`}`}
+              {a.aisleNumber != null ? `Aisle ${a.aisleNumber}` : a.name?.startsWith("Walk") ? a.name : `Walk · ${a.name || `aisle ${idx + 1}`}`}
             </span>
             <span className="aisle-dim mono">
               {vertical
@@ -902,19 +1168,20 @@ export default function Canvas2D({
         const frontId = f.pairShelfIds?.front ?? f.id;
         const backId = f.pairShelfIds?.back;
         const pairIds = backId ? [frontId, backId] : [f.id];
-        const selectedFront = (selection?.kind === "shelf" || selection?.kind === "fixture") && selection.id === frontId;
-        const selectedBack = backId && (selection?.kind === "shelf" || selection?.kind === "fixture") && selection.id === backId;
+        const selectedFront =
+          (selection?.kind === "shelf" || selection?.kind === "fixture") &&
+          (selection.id === frontId || (selection.id === backId && (selection.faceId || "A") === "A"));
+        const selectedBack =
+          backId &&
+          (selection?.kind === "shelf" || selection?.kind === "fixture") &&
+          (selection.id === backId || (selection.id === frontId && selection.faceId === "B"));
         const selected = selectedFront || selectedBack;
         const dragId = dragPos && pairIds.includes(dragPos.id) ? frontId : dragPos?.id;
         const live = dragPos && dragPos.id === frontId ? dragPos : f;
-        const outside = outsideIds.has(`shelf:${f.id}`);
-        const rp = resizePreview && resizePreview.id === f.id ? resizePreview : null;
-        const drawX = rp ? rp.x : live.x;
-        const drawY = rp ? rp.y : live.y;
-        const w = rp ? rp.w : shelfDrawSize(live).w;
-        const d = rp ? rp.h : shelfDrawSize(live).d;
-        const st = toStageCoords(drawX, drawY, bounds);
-        const rot = rotatePreview != null && rotate?.id === f.id ? rotatePreview : normalizeDeg(live.rotationDeg);
+        const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
+        const rotState = rotate?.id === frontId || rotate?.id === f.id;
+        const { w, d, rot, aabb, logicalW, logicalD } = shelfRenderBox(live, rp, rotatePreview, rotState);
+        const st = toStageCoords(aabb.x, aabb.y, bounds);
         const zone = f.temperatureZone || "ambient";
         const zoneClass =
           zone === "chilled" ? "shelf-chilled" : zone === "frozen" ? "shelf-frozen" : "";
@@ -923,142 +1190,136 @@ export default function Canvas2D({
         const dual = isDoubleSided(f) || f.pairDisplay;
         const paired = isPairedShelf(f) && !f.pairDisplay;
         const splitAlongWidth = gondolaSplitAlongWidth(rot);
+        const faceLayout = gondolaFaceLayout(splitAlongWidth);
         const fillColor =
-          paired && f.pairRole === "back"
-            ? f.color || faceA?.color
-              ? `${f.color || faceA.color}55`
-              : "rgba(14,165,233,0.22)"
-            : paired
+          f.pairDisplay
+            ? "transparent"
+            : paired && f.pairRole === "back"
               ? f.color || faceA?.color
                 ? `${f.color || faceA.color}55`
-                : "rgba(163,10,42,0.18)"
-          : dual && faceA?.color && faceB?.color
-            ? splitAlongWidth
-              ? `linear-gradient(to right, ${faceA.color}44 50%, ${faceB.color}44 50%)`
-              : `linear-gradient(to bottom, ${faceA.color}44 50%, ${faceB.color}44 50%)`
-            : dual && faceA?.color
-              ? `${faceA.color}33`
-              : f.color || (zone === "chilled" ? "rgba(14,165,233,0.18)" : zone === "frozen" ? "rgba(56,189,248,0.22)" : "rgba(163,10,42,0.12)");
+                : "rgba(14,165,233,0.22)"
+              : paired
+                ? f.color || faceA?.color
+                  ? `${f.color || faceA.color}55`
+                  : "rgba(163,10,42,0.18)"
+                : dual && faceA?.color && faceB?.color
+                  ? splitAlongWidth
+                    ? `linear-gradient(to right, ${faceA.color}44 50%, ${faceB.color}44 50%)`
+                    : `linear-gradient(to bottom, ${faceA.color}44 50%, ${faceB.color}44 50%)`
+                  : dual && faceA?.color
+                    ? `${faceA.color}33`
+                    : f.color ||
+                      (zone === "chilled"
+                        ? "rgba(14,165,233,0.18)"
+                        : zone === "frozen"
+                          ? "rgba(56,189,248,0.22)"
+                          : "rgba(163,10,42,0.12)");
         const segments =
           (dual && f.pairDisplay
             ? f.faces?.find((face) => face.segments?.length)?.segments
             : f.faces?.find((face) => face.id === "A")?.segments) ||
           f.segments ||
           [];
-        const usable = w;
-
-        function selectGondolaFace(e, shelfId) {
-          e.stopPropagation();
-          if (drawing) return;
-          setSelection({ kind: "shelf", id: shelfId });
-          if (!canDragFixtures) return;
-          setDragging({
-            kind: "shelf",
-            id: frontId,
-            layoutId: layout.id,
-            startClientX: e.clientX,
-            startClientY: e.clientY,
-            origX: f.pairOrigins?.front?.x ?? f.x,
-            origY: f.pairOrigins?.front?.y ?? f.y,
-          });
-        }
+        const usable = logicalW;
+        const outside =
+          outsideIds.has(`shelf:${f.id}`) ||
+          (backId && outsideIds.has(`shelf:${backId}`));
+        const pixelMin = Math.min(aabb.w * scale, aabb.d * scale);
+        const handleBoost = pixelMin < 56 ? Math.min(3.5, 56 / Math.max(pixelMin, 10)) : 1;
 
         return (
           <div
             key={f.id}
-            className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}`}
+            className={`fx-slot fx-slot-interactive ${f.pairDisplay ? "fx-slot-gondola" : ""}${selected ? " fx-slot-selected" : ""}`}
             style={{
+              position: "absolute",
               left: st.x * scale,
               top: st.y * scale,
-              width: w * scale,
-              height: d * scale,
-              background: fillColor,
-              borderColor: outside
-                ? "#dc2626"
-                : selected
-                  ? "#A30A2A"
-                  : paired && f.pairRole === "back"
-                    ? "#0284c7"
-                    : zone === "chilled"
-                      ? "#0ea5e9"
-                      : zone === "frozen"
-                        ? "#38bdf8"
-                        : "#1f2933",
-              borderStyle: paired && f.pairRole === "back" ? "dashed" : "solid",
-              boxShadow: selected ? "0 0 0 3px rgba(163,10,42,0.25)" : "none",
-              cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
+              width: aabb.w * scale,
+              height: aabb.d * scale,
               zIndex: selected ? 6 : paired && f.pairRole === "back" ? 4 : 5,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              overflow: selected ? "visible" : "hidden",
-              transform: `rotate(${rot}deg)`,
-              transformOrigin: "top left",
-              opacity: paired && !selected ? 0.92 : 1,
-              pointerEvents: f.pairDisplay ? "none" : "auto",
+              pointerEvents: drawing || editDisabled ? "none" : "auto",
+              overflow: "visible",
+              cursor: canDragFixtures ? "pointer" : "default",
             }}
-            onMouseDown={
-              f.pairDisplay
-                ? undefined
-                : (e) => {
-                    e.stopPropagation();
-                    if (drawing) return;
-                    setSelection({ kind: "shelf", id: f.id });
-                    if (!canDragFixtures) return;
-                    setDragging({
-                      kind: "shelf",
-                      id: f.id,
-                      layoutId: layout.id,
-                      startClientX: e.clientX,
-                      startClientY: e.clientY,
-                      origX: f.x,
-                      origY: f.y,
-                    });
-                  }
-            }
+            onMouseDown={(e) => handleShelfSlotMouseDown(e, f, frontId, backId)}
+            onMouseMove={(e) => handleShelfSlotMouseMove(e, f, frontId, backId)}
+            onMouseLeave={clearShelfHover}
             onClick={(e) => e.stopPropagation()}
           >
+            <div
+              className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}`}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                width: "100%",
+                height: "100%",
+                background: fillColor,
+                borderColor: outside
+                  ? "#dc2626"
+                  : selected && !f.pairDisplay
+                    ? "#A30A2A"
+                    : paired && f.pairRole === "back"
+                      ? "#0284c7"
+                      : f.pairDisplay
+                        ? "#334155"
+                        : zone === "chilled"
+                          ? "#0ea5e9"
+                          : zone === "frozen"
+                            ? "#38bdf8"
+                            : "#1f2933",
+                borderStyle: paired && f.pairRole === "back" ? "dashed" : "solid",
+                boxShadow:
+                  selected && !f.pairDisplay ? "0 0 0 3px rgba(163,10,42,0.25)" : f.pairDisplay ? "0 2px 8px rgba(15,23,42,0.14)" : "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: selected ? "visible" : "hidden",
+                opacity: paired && !selected ? 0.92 : 1,
+                pointerEvents: "none",
+              }}
+            >
             {f.pairDisplay && backId ? (
               <>
-                <button
-                  type="button"
-                  className={`gondola-face-hit gondola-face-front${selectedFront ? " selected" : ""}`}
-                  title={`Select ${shelfFaceLabel(f.displayNumber, "A")} (front)`}
-                  style={{
-                    position: "absolute",
-                    zIndex: 2,
-                    padding: 0,
-                    border: selectedFront ? "2px solid #A30A2A" : "2px solid transparent",
-                    borderRadius: 2,
-                    background: selectedFront ? "rgba(163,10,42,0.1)" : "transparent",
-                    cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
-                    ...(splitAlongWidth
-                      ? { left: 0, top: 0, width: "50%", height: "100%" }
-                      : { left: 0, top: 0, width: "100%", height: "50%" }),
-                  }}
-                  onMouseDown={(e) => selectGondolaFace(e, frontId)}
-                />
-                <button
-                  type="button"
-                  className={`gondola-face-hit gondola-face-back${selectedBack ? " selected" : ""}`}
-                  title={`Select ${shelfFaceLabel(f.displayNumber, "B")} (back)`}
-                  style={{
-                    position: "absolute",
-                    zIndex: 2,
-                    padding: 0,
-                    border: selectedBack ? "2px solid #0284c7" : "2px solid transparent",
-                    borderRadius: 2,
-                    background: selectedBack ? "rgba(14,165,233,0.12)" : "transparent",
-                    cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
-                    ...(splitAlongWidth
-                      ? { left: "50%", top: 0, width: "50%", height: "100%" }
-                      : { left: 0, top: "50%", width: "100%", height: "50%" }),
-                  }}
-                  onMouseDown={(e) => selectGondolaFace(e, backId)}
-                />
+                <div
+                  className={`gondola-face-pane gondola-face-a${selectedFront ? " selected" : ""}`}
+                  title={`${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)} · front aisle`}
+                  style={faceLayout.front}
+                >
+                  <span className="gondola-aisle-arrow" style={faceLayout.frontArrow} aria-hidden>
+                    {gondolaAisleArrow(splitAlongWidth, "front")}
+                  </span>
+                  <span className="gondola-face-label mono">
+                    {shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)}
+                  </span>
+                  {faceA?.categoryId ? (
+                    <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
+                      {emojiForCategory(faceA.categoryId, null, f.temperatureZone)}
+                    </span>
+                  ) : null}
+                </div>
+                <div
+                  className={`gondola-face-pane gondola-face-b${selectedBack ? " selected" : ""}`}
+                  title={`${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)} · back aisle`}
+                  style={faceLayout.back}
+                >
+                  <span className="gondola-aisle-arrow" style={faceLayout.backArrow} aria-hidden>
+                    {gondolaAisleArrow(splitAlongWidth, "back")}
+                  </span>
+                  <span className="gondola-face-label mono">
+                    {shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)}
+                  </span>
+                  {faceB?.categoryId ? (
+                    <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
+                      {emojiForCategory(faceB.categoryId, null, f.temperatureZone)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="gondola-spine" aria-hidden style={faceLayout.spine} />
               </>
             ) : null}
-            {dual ? (
+            {dual && !f.pairDisplay ? (
               <div
                 aria-hidden
                 style={{
@@ -1082,21 +1343,21 @@ export default function Canvas2D({
                 }}
               />
             ) : null}
-            {dual && d * scale >= 18 ? (
+            {dual && !f.pairDisplay && d * scale >= 18 ? (
               <>
                 <span
                   className="face-edge-label face-a-edge mono"
                   style={splitAlongWidth ? { left: 4, top: "50%", transform: "translateY(-50%)" } : { top: 4, left: "50%", transform: "translateX(-50%)" }}
-                  title={`Face A (${shelfFaceLabel(f.displayNumber, "A")})`}
+                  title={`Face A (${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)})`}
                 >
-                  {f.pairDisplay ? shelfFaceLabel(f.displayNumber, "A") : faceDigit("A")}
+                  {shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)}
                 </span>
                 <span
                   className="face-edge-label face-b-edge mono"
                   style={splitAlongWidth ? { right: 4, top: "50%", transform: "translateY(-50%)" } : { bottom: 4, left: "50%", transform: "translateX(-50%)" }}
-                  title={`Face B (${shelfFaceLabel(f.displayNumber, "B")})`}
+                  title={`Face B (${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)})`}
                 >
-                  {f.pairDisplay ? shelfFaceLabel(f.displayNumber, "B") : faceDigit("B")}
+                  {shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)}
                 </span>
                 {f.pairDisplay ? (
                   <span className="facing-tick mono" aria-hidden style={{ position: "absolute", fontSize: 9, color: "#475569", ...facingTickStyle(rot) }}>
@@ -1132,30 +1393,34 @@ export default function Canvas2D({
               : null}
             {selected ? (
               <span className="fixture-dim mono">
-                {w.toFixed(1)}×{d.toFixed(1)} m
+                {logicalW.toFixed(1)}×{logicalD.toFixed(1)} m
               </span>
             ) : null}
-            <ShelfBadge
-              shelf={
-                f.pairDisplay && selectedBack
-                  ? { ...f, pairRole: "back", categoryId: faceB?.categoryId, faces: [{ id: "A", categoryId: faceB?.categoryId }] }
-                  : f.pairDisplay && selectedFront
-                    ? { ...f, pairRole: "front", categoryId: faceA?.categoryId, faces: [{ id: "A", categoryId: faceA?.categoryId }] }
-                    : f
-              }
-              pixelWidth={w * scale}
-              categories={categories}
-            />
+            {!f.pairDisplay ? (
+              <ShelfBadge
+                shelf={f}
+                pixelWidth={w * scale}
+                categories={categories}
+                aisles={layout.aisles}
+                allShelves={layout.shelves}
+              />
+            ) : null}
             {selected && showHandles ? (
               <>
                 <ResizeHandles
+                  boost={handleBoost}
                   onStart={(dir, e) =>
                     startResize(
                       {
                         kind: "shelf",
-                        id: f.id,
+                        id: frontId,
                         rotationDeg: rot,
-                        orig: { x: drawX, y: drawY, w, h: d },
+                        orig: {
+                          x: f.pairOrigins?.front?.x ?? aabb.originX,
+                          y: f.pairOrigins?.front?.y ?? aabb.originY,
+                          w,
+                          h: d,
+                        },
                         min: { w: 0.4, h: 0.3 },
                       },
                       dir,
@@ -1176,7 +1441,7 @@ export default function Canvas2D({
                       setRotatePreview(null);
                       rotatePreviewRef.current = null;
                       setRotate({
-                        id: f.id,
+                        id: frontId,
                         origDeg: normalizeDeg(f.rotationDeg),
                         startAngle: Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI),
                         cx,
@@ -1187,6 +1452,7 @@ export default function Canvas2D({
                 ) : null}
               </>
             ) : null}
+            </div>
           </div>
         );
       })}
@@ -1219,6 +1485,13 @@ export default function Canvas2D({
           </div>
         );
       })}
+      <ShelfHoverTooltip
+        hover={hover}
+        layout={layout}
+        categories={categories}
+        products={products}
+        anchor={hoverAnchor}
+      />
     </div>
   );
 }

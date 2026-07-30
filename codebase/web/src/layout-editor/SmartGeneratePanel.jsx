@@ -1,5 +1,6 @@
 import CategoryMixSliders from "./CategoryMixSliders.jsx";
 import AlertBanner from "../components/AlertBanner.jsx";
+import { categoryLabel } from "../catalog/buildCategoryTree.js";
 
 export default function SmartGeneratePanel({
   open,
@@ -15,6 +16,9 @@ export default function SmartGeneratePanel({
   onGenerate,
   generating,
   disabled,
+  lastGenStats,
+  categories,
+  fixtureTypes,
 }) {
   if (!open) return null;
 
@@ -58,10 +62,15 @@ export default function SmartGeneratePanel({
         </div>
       </div>
       <p className="muted smart-gen-hint" style={{ fontSize: 12, margin: 0 }}>
-        Each gondola is a <strong>front + back</strong> shelf pair (A1 / A2) between two walk aisles. Mixed layouts fill cross-aisles across the whole floor.
+        Each gondola is a <strong>front + back</strong> shelf pair between two walk aisles. Shelves are labelled by aisle number (e.g. <strong>4A</strong>, <strong>4B</strong>).
       </p>
       <div className="smart-gen-scroll">
-        <CategoryMixSliders mix={categoryMix} onChange={onCategoryMixChange} disabled={disabled} />
+        <CategoryMixSliders
+          mix={categoryMix}
+          onChange={onCategoryMixChange}
+          disabled={disabled}
+          fixtureTypes={fixtureTypes}
+        />
       </div>
       {total !== 100 ? (
         <AlertBanner variant="warning">
@@ -77,6 +86,38 @@ export default function SmartGeneratePanel({
         />
         Auto-fill planogram with catalog products (matched to each shelf category)
       </label>
+      {lastGenStats?.generated ? (
+        <div className="smart-gen-results" style={{ fontSize: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          <div>
+            ✓ {lastGenStats.generated.gondolaUnits ?? lastGenStats.generated.shelves} gondola units ·{" "}
+            {lastGenStats.generated.walkAisles ?? lastGenStats.generated.aisles} aisles
+            {lastGenStats.generated.skippedOutsideCount
+              ? ` · ${lastGenStats.generated.skippedOutsideCount} skipped outside`
+              : " · 0 outside polygon"}
+          </div>
+          {lastGenStats.shelfMappings?.length ? (
+            <div className="muted" style={{ fontSize: 11 }}>
+              Categories assigned:{" "}
+              {Object.entries(
+                lastGenStats.shelfMappings.reduce((acc, m) => {
+                  if (!m.categoryId) return acc;
+                  acc[m.categoryId] = (acc[m.categoryId] || 0) + 1;
+                  return acc;
+                }, {})
+              )
+                .map(([id, n]) => `${categoryLabel(categories, id) || id} ×${n}`)
+                .join(", ")}
+            </div>
+          ) : null}
+          {lastGenStats.coverage ? (
+            <div>
+              ✓ {lastGenStats.coverage.placedCount}/{lastGenStats.coverage.totalProducts} products placed (
+              {lastGenStats.coverage.coveragePercent}%)
+              {lastGenStats.coverage.missingCount ? ` · ${lastGenStats.coverage.missingCount} SKUs unmatched` : ""}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="smart-gen-actions">
         <span className="muted" style={{ fontSize: 12, flex: 1 }}>
           Assigns categories to gondola faces and places matching products on shelf levels

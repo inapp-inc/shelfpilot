@@ -9,6 +9,8 @@ import {
   syncLegacyFromFaces,
 } from "./shelfFaces.js";
 import { normalizeEntryPoint, normalizeZone } from "./zones.js";
+import { finalizeAisleLabeling } from "./aisleLabeling.js";
+import { alignLayoutGeometry } from "./polygonContainment.js";
 
 export function fixtureToShelf(f) {
   const usable = Number(f.usableWidthMeters ?? f.widthMeters) || 1.2;
@@ -26,6 +28,8 @@ export function fixtureToShelf(f) {
     y: Number(f.y) || 0,
     rotationDeg: Number(f.rotationDeg) || 0,
     aisleId: f.aisleId || null,
+    shelfIndexAlongAisle:
+      f.shelfIndexAlongAisle != null ? Number(f.shelfIndexAlongAisle) : null,
     categoryId: f.categoryId,
     color: f.color,
     temperatureZone: f.temperatureZone || "ambient",
@@ -78,6 +82,7 @@ function normalizeStoreEnvelope(layout) {
 
 export function normalizeLayout(layout) {
   if (!layout) return layout;
+  layout = alignLayoutGeometry(layout);
   layout.storeEnvelope = normalizeStoreEnvelope(layout);
   layout.contentRevision = Number(layout.contentRevision) || 0;
   layout.submittedRevision =
@@ -123,7 +128,21 @@ export function normalizeLayout(layout) {
     x: a.x != null ? Number(a.x) : 0,
     y: a.y != null ? Number(a.y) : 0,
     orientation: a.orientation === "vertical" ? "vertical" : "horizontal",
+    aisleNumber: a.aisleNumber != null ? Number(a.aisleNumber) : null,
   }));
+  layout.shelves = (layout.shelves || []).map((s) => ({
+    ...s,
+    shelfIndexAlongAisle:
+      s.shelfIndexAlongAisle != null ? Number(s.shelfIndexAlongAisle) : null,
+  }));
+  if (
+    layout.shelves.some((s) => s.aisleId) &&
+    layout.aisles.some((a) => a.aisleNumber == null)
+  ) {
+    const labeled = finalizeAisleLabeling(layout.shelves, layout.aisles, layout);
+    layout.shelves = labeled.shelves;
+    layout.aisles = labeled.aisles;
+  }
   layout.zones = (layout.zones || []).map(normalizeZone);
   layout.entryPoints = (layout.entryPoints || []).map(normalizeEntryPoint);
   return layout;

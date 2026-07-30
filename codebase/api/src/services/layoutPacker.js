@@ -20,6 +20,11 @@ import {
 } from "./polygonContainment.js";
 import { assignDisplayNumbers, countGondolaUnits, oppositeShelfOrigin } from "./shelfFaces.js";
 import { finalizeAisleShelfBinding, shelfCenter } from "./aisleBinding.js";
+import {
+  finalizeAisleLabeling,
+  quantizeAislePositions,
+  quantizeFixturePositions,
+} from "./aisleLabeling.js";
 
 export function levelsForType(type, heightMeters, defaultLevels) {
   const h = Number(heightMeters) || 2;
@@ -663,11 +668,18 @@ export function packAislesAndShelves(layout, options = {}) {
     }
     finalAisles.push(a);
   }
-  const { shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
+  let { shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
     boundShelves,
     finalAisles,
     layoutForCheck
   );
+  finalShelves = quantizeFixturePositions(finalShelves);
+  prunedAisles = quantizeAislePositions(prunedAisles);
+  ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleLabeling(
+    finalShelves,
+    prunedAisles,
+    layoutForCheck
+  ));
 
   const durationMs = Number((performance.now() - started).toFixed(3));
   console.log(

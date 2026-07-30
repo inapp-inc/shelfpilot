@@ -8,14 +8,131 @@ export function layoutBoundaryPolygon(layout) {
   if (layout?.shape === "polygon" && Array.isArray(layout.polygon) && layout.polygon.length >= 3) {
     return layout.polygon.map((p) => ({ x: Number(p.x), y: Number(p.y) }));
   }
-  const w = Number(layout?.widthMeters) || 0;
-  const d = Number(layout?.depthMeters) || 0;
+  const raw = layout?.storeEnvelope;
+  const x = raw && typeof raw === "object" ? Number(raw.x) || 0 : 0;
+  const y = raw && typeof raw === "object" ? Number(raw.y) || 0 : 0;
+  const w =
+    raw && typeof raw === "object"
+      ? Number(raw.widthMeters) || Number(layout?.widthMeters) || 0
+      : Number(layout?.widthMeters) || 0;
+  const d =
+    raw && typeof raw === "object"
+      ? Number(raw.depthMeters) || Number(layout?.depthMeters) || 0
+      : Number(layout?.depthMeters) || 0;
   return [
-    { x: 0, y: 0 },
-    { x: w, y: 0 },
-    { x: w, y: d },
-    { x: 0, y: d },
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + d },
+    { x, y: y + d },
   ];
+}
+
+export function polygonAabb(poly) {
+  if (!poly?.length) return null;
+  const xs = poly.map((p) => Number(p.x));
+  const ys = poly.map((p) => Number(p.y));
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(0.1, maxX - minX),
+    height: Math.max(0.1, maxY - minY),
+  };
+}
+
+export function storeEnvelopeFromLayout(layout) {
+  const w = Number(layout?.widthMeters) || 10;
+  const d = Number(layout?.depthMeters) || 8;
+  const raw = layout?.storeEnvelope;
+  if (raw && typeof raw === "object") {
+    return {
+      x: Number(raw.x) || 0,
+      y: Number(raw.y) || 0,
+      widthMeters: Number(raw.widthMeters) || w,
+      depthMeters: Number(raw.depthMeters) || d,
+    };
+  }
+  return { x: 0, y: 0, widthMeters: w, depthMeters: d };
+}
+
+export function rectanglePolygon(x, y, widthMeters, depthMeters) {
+  const w = Number(widthMeters) || 0;
+  const d = Number(depthMeters) || 0;
+  return [
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + d },
+    { x, y: y + d },
+  ];
+}
+
+export function polygonInsideEnvelope(poly, envelope) {
+  if (!poly?.length || !envelope) return false;
+  const maxX = envelope.x + envelope.widthMeters;
+  const maxY = envelope.y + envelope.depthMeters;
+  return poly.every((p) => {
+    const px = Number(p.x);
+    const py = Number(p.y);
+    return px >= envelope.x && px <= maxX && py >= envelope.y && py <= maxY;
+  });
+}
+
+/** Resize a rectangle inside an envelope, keeping its centre fixed. */
+export function fitRectanglePolygonInEnvelope(envelope, widthMeters, depthMeters, existingPoly) {
+  if (!envelope) return null;
+  const ex = Number(envelope.x) || 0;
+  const ey = Number(envelope.y) || 0;
+  const ew = Number(envelope.widthMeters) || 10;
+  const ed = Number(envelope.depthMeters) || 8;
+  const w = Math.min(Math.max(0.5, Number(widthMeters) || 0.5), ew);
+  const d = Math.min(Math.max(0.5, Number(depthMeters) || 0.5), ed);
+
+  let cx = ex + ew / 2;
+  let cy = ey + ed / 2;
+  if (existingPoly?.length >= 3) {
+    const aabb = polygonAabb(existingPoly);
+    if (aabb) {
+      cx = (aabb.minX + aabb.maxX) / 2;
+      cy = (aabb.minY + aabb.maxY) / 2;
+    }
+  }
+
+  let ox = cx - w / 2;
+  let oy = cy - d / 2;
+  ox = Math.max(ex, Math.min(ox, ex + ew - w));
+  oy = Math.max(ey, Math.min(oy, ey + ed - d));
+
+  return rectanglePolygon(ox, oy, w, d);
+}
+
+/** Keep fixture polygon inside the store envelope; sync layout dimensions. */
+export function alignLayoutGeometry(layout) {
+  if (!layout) return layout;
+  const env = storeEnvelopeFromLayout(layout);
+  layout.storeEnvelope = env;
+  layout.widthMeters = env.widthMeters;
+  layout.depthMeters = env.depthMeters;
+
+  const poly = layout.polygon;
+  if (poly?.length >= 3 && !polygonInsideEnvelope(poly, env)) {
+    const aabb = polygonAabb(poly);
+    const fitted = fitRectanglePolygonInEnvelope(
+      env,
+      aabb?.width ?? env.widthMeters,
+      aabb?.height ?? env.depthMeters,
+      poly
+    );
+    if (fitted) {
+      layout.polygon = fitted;
+      layout.shape = "polygon";
+    }
+  }
+  return layout;
 }
 
 export function validatePolygonRing(polygon) {

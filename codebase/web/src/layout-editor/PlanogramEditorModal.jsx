@@ -4,7 +4,7 @@ import AlertBanner from "../components/AlertBanner.jsx";
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import { filterProductsForShelf } from "./categoryFilter.js";
-import { isDoubleSided, normalizeShelfUI, resolveGondolaForEditor, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import { isDoubleSided, normalizeShelfUI, resolveGondolaForEditor, shelfCanvasFaceLabel, shelfFaceDisplayLabel, shelfDisplayLabel } from "./shelfFaces.js";
 import {
   buildEqualSegmentsClient,
   defaultSegmentId,
@@ -337,6 +337,13 @@ export default function PlanogramEditorModal({
     };
   }, [levels, planogram, shelf, faceId]);
 
+  const planogramTitle =
+    shelfRaw && layout?.aisles
+      ? shelfFaceDisplayLabel(shelfRaw, layout.aisles) || shelfDisplayLabel(shelfRaw, layout.aisles)
+      : shelf
+        ? shelfDisplayLabel(shelf, layout?.aisles)
+        : "—";
+
   if (!open || !shelf) return null;
 
   const pickerOpen = addCell || editPlacement;
@@ -353,10 +360,10 @@ export default function PlanogramEditorModal({
         <header className="planogram-editor-header">
           <div>
             <h2 id="planogram-editor-title" style={{ margin: 0, fontSize: 18 }}>
-              Planogram · {shelf.displayNumber != null ? shelfFaceLabel(shelf.displayNumber, faceId) : "—"}
+              Planogram · {planogramTitle}
             </h2>
             <div className="muted mono" style={{ fontSize: 12, marginTop: 4 }}>
-              {shelfUnitLabel(shelf.displayNumber)} · {typeLabel} · {usable.toFixed(1)} m × {Number(shelf.depthMeters ?? 0.6).toFixed(1)} m
+              {planogramTitle} · {typeLabel} · {usable.toFixed(1)} m × {Number(shelf.depthMeters ?? 0.6).toFixed(1)} m
               {faceCategory ? (
                 <span className="cat-chip" style={{ marginLeft: 8 }}>
                   {categoryLabel(categories, faceCategory)}
@@ -368,10 +375,10 @@ export default function PlanogramEditorModal({
             {dualFace ? (
               <div className="merch-face-toggle">
                 <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
-                  {shelfFaceLabel(shelf.displayNumber, "A")}
+                  {shelfCanvasFaceLabel(shelf, "A", layout?.aisles, layout?.shelves)}
                 </button>
                 <button type="button" className={faceId === "B" ? "active" : ""} onClick={() => setFaceId("B")}>
-                  {shelfFaceLabel(shelf.displayNumber, "B")}
+                  {shelfCanvasFaceLabel(shelf, "B", layout?.aisles, layout?.shelves)}
                 </button>
               </div>
             ) : null}
@@ -383,7 +390,7 @@ export default function PlanogramEditorModal({
 
         {!faceCategory ? (
           <div className="planogram-editor-empty muted">
-            Assign a category to {shelfFaceLabel(shelf.displayNumber, faceId)} in the Merchandising panel before adding products.
+            Assign a category to {shelfCanvasFaceLabel(shelf, faceId, layout?.aisles, layout?.shelves)} in the Merchandising panel before adding products.
           </div>
         ) : null}
 

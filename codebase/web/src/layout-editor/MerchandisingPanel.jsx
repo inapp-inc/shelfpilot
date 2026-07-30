@@ -3,7 +3,7 @@ import { api } from "../api.js";
 import CategoryTreePicker from "../catalog/CategoryTreePicker.jsx";
 import { filterProductsForShelf } from "./categoryFilter.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
-import { isDoubleSided, isPairedShelf, normalizeShelfUI, shelfDisplayLabel, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import { isDoubleSided, normalizeShelfUI, shelfDisplayLabel, shelfCanvasFaceLabel, shelfFaceDisplayLabel, resolveGondolaForEditor } from "./shelfFaces.js";
 import { isShelfLike } from "./planogramSegments.js";
 
 function activeFace(shelf, faceId) {
@@ -26,6 +26,7 @@ export default function MerchandisingPanel({
   onRefreshCatalog,
   onOpenPlanogram,
   toast,
+  onShelfFaceChange,
 }) {
   const [levelIndex, setLevelIndex] = useState(0);
   const [faceId, setFaceId] = useState("A");
@@ -44,8 +45,9 @@ export default function MerchandisingPanel({
   }
 
   const shelfRaw = kind === "shelf" ? entity : null;
-  const shelf = shelfRaw ? normalizeShelfUI(shelfRaw) : null;
-  const dualFace = shelf ? isDoubleSided(shelf) : false;
+  const gondolaCtx = shelfRaw ? resolveGondolaForEditor(layout, shelfRaw.id) : null;
+  const shelf = gondolaCtx?.shelf ?? (shelfRaw ? normalizeShelfUI(shelfRaw) : null);
+  const dualFace = gondolaCtx?.mode === "gondola" || (shelf ? isDoubleSided(shelf) : false);
   const face = shelf ? activeFace(shelf, faceId) : null;
   const faceCategory = face?.categoryId || null;
   const levels = shelf?.levels?.length
@@ -54,14 +56,32 @@ export default function MerchandisingPanel({
 
   const list = faceCategory ? filterProductsForShelf(products, faceCategory, categories) : [];
 
+  function merchApiTarget(currentFaceId = faceId) {
+    if (!shelfRaw) return { shelfId: "", faceId: "A" };
+    if (gondolaCtx?.mode === "gondola") {
+      return {
+        shelfId: gondolaCtx.physicalShelfId(currentFaceId),
+        faceId: gondolaCtx.apiFaceId(currentFaceId),
+      };
+    }
+    return { shelfId: shelfRaw.id, faceId: currentFaceId };
+  }
+
+  const activeAisleLabel =
+    shelf && kind === "shelf"
+      ? shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves) ||
+        shelfFaceDisplayLabel(shelfRaw, layout.aisles) ||
+        shelfDisplayLabel(shelfRaw, layout.aisles)
+      : null;
+
   useEffect(() => {
     setProductId("");
     setPreview(null);
     setFacings("");
     setLevelIndex(0);
-    setFaceId("A");
+    setFaceId(selection?.faceId || "A");
     if (kind === "shelf" && onRefreshCatalog) onRefreshCatalog();
-  }, [entity?.id]);
+  }, [entity?.id, selection?.faceId]);
 
   useEffect(() => {
     setProductId("");
@@ -74,10 +94,11 @@ export default function MerchandisingPanel({
     setPreview(null);
     setFacings("");
     if (!faceCategory || !productId || !token || !shelf) return;
+    const { shelfId, faceId: apiFaceId } = merchApiTarget();
     api(`/layouts/${layout.id}/planogram/preview`, {
       token,
       method: "POST",
-      body: { shelfId: shelf.id, productId, levelIndex, faceId },
+      body: { shelfId, productId, levelIndex, faceId: apiFaceId },
     })
       .then((p) => {
         setPreview(p);
@@ -99,28 +120,34 @@ export default function MerchandisingPanel({
     const cat = categories.find((c) => c.id === categoryId);
     if (!cat) return;
     if (kind === "aisle") onMapAisle(entity.id, cat.id, cat.color);
-    else onMapShelf(entity.id, cat.id, cat.color, faceId);
+    else {
+      const { shelfId, faceId: apiFaceId } = merchApiTarget();
+      onMapShelf(shelfId, cat.id, cat.color, apiFaceId);
+    }
   }
 
   async function addPlacement() {
-    if (!productId || !shelf) return;
-    const updated = await api(`/layouts/${layout.id}/shelves/${shelf.id}/planogram`, {
+    if (!productId || !shelfRaw) return;
+    const { shelfId, faceId: apiFaceId } = merchApiTarget();
+    const updated = await api(`/layouts/${layout.id}/shelves/${shelfId}/planogram`, {
       token,
       method: "POST",
       body: {
         productId,
         levelIndex,
-        faceId,
+        faceId: apiFaceId,
         facings: facings !== "" ? Number(facings) : undefined,
       },
     });
     onLayoutUpdated(updated);
-    toast?.(`Product placed on ${shelfFaceLabel(shelf.displayNumber, faceId)}, level ${levelIndex}`);
+    onRefreshCatalog?.();
+    toast?.(`Product placed on ${activeAisleLabel || "shelf"}, level ${levelIndex}`);
   }
 
   async function removePlacement(placementId) {
+    const { shelfId } = merchApiTarget();
     const updated = await api(
-      `/layouts/${layout.id}/shelves/${shelf.id}/planogram/${placementId}`,
+      `/layouts/${layout.id}/shelves/${shelfId}/planogram/${placementId}`,
       { token, method: "DELETE" }
     );
     onLayoutUpdated(updated);
@@ -136,29 +163,44 @@ export default function MerchandisingPanel({
           type="button"
           className="btn-primary"
           style={{ padding: "10px 12px", width: "100%", marginBottom: 4 }}
-          onClick={() => onOpenPlanogram?.(shelf.id, faceId)}
+          onClick={() => {
+            const { shelfId } = merchApiTarget();
+            onOpenPlanogram?.(shelfId, faceId);
+          }}
         >
           Open Planogram
         </button>
       ) : null}
 
-      {kind === "shelf" && shelf?.displayNumber ? (
+      {kind === "shelf" && shelf ? (
         <div className="mono" style={{ fontSize: 12, fontWeight: 700, marginBottom: 10, color: "#374151" }}>
-          {isPairedShelf(shelf)
-            ? `${shelfDisplayLabel(shelf)} · ${shelf.pairRole === "back" ? "back face" : "front face"}`
-            : dualFace
-              ? `Shelf ${shelfUnitLabel(shelf.displayNumber)} · ${shelfFaceLabel(shelf.displayNumber, "A")} / ${shelfFaceLabel(shelf.displayNumber, "B")}`
-              : `Shelf ${shelfUnitLabel(shelf.displayNumber)} · ${shelfFaceLabel(shelf.displayNumber, "A")}`}
+          {activeAisleLabel || shelfDisplayLabel(shelfRaw, layout.aisles)}
         </div>
       ) : null}
 
       {kind === "shelf" && dualFace ? (
         <div className="merch-face-toggle">
-          <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
-            {shelfFaceLabel(shelf.displayNumber, "A")}
+          <button
+            type="button"
+            className={faceId === "A" ? "active" : ""}
+            onClick={() => {
+              setFaceId("A");
+              const { shelfId } = merchApiTarget("A");
+              onShelfFaceChange?.(shelfId, "A");
+            }}
+          >
+            {shelfCanvasFaceLabel(shelf, "A", layout.aisles, layout.shelves)}
           </button>
-          <button type="button" className={faceId === "B" ? "active" : ""} onClick={() => setFaceId("B")}>
-            {shelfFaceLabel(shelf.displayNumber, "B")}
+          <button
+            type="button"
+            className={faceId === "B" ? "active" : ""}
+            onClick={() => {
+              setFaceId("B");
+              const { shelfId } = merchApiTarget("B");
+              onShelfFaceChange?.(shelfId, "B");
+            }}
+          >
+            {shelfCanvasFaceLabel(shelf, "B", layout.aisles, layout.shelves)}
           </button>
         </div>
       ) : null}
@@ -166,7 +208,7 @@ export default function MerchandisingPanel({
       <div className="merch-step">
         <div className="merch-step-label">
           <span className="merch-step-num">1</span>           Category
-          {kind === "shelf" && dualFace ? ` (${shelfFaceLabel(shelf.displayNumber, faceId)})` : ""}
+          {kind === "shelf" && dualFace ? ` (${shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves)})` : ""}
         </div>
         <div className="muted" style={{ fontSize: 11.5, marginBottom: 6 }}>
           Target: <strong>{kind}</strong>
@@ -192,7 +234,7 @@ export default function MerchandisingPanel({
         <div className="merch-step">
           <div className="merch-step-label">
             <span className="merch-step-num">2</span>             Planogram
-            {dualFace ? ` · ${shelfFaceLabel(shelf.displayNumber, faceId)}` : ""}
+            {dualFace ? ` · ${shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves)}` : ""}
           </div>
           {!faceCategory ? (
             <div className="muted" style={{ fontSize: 12.5 }}>

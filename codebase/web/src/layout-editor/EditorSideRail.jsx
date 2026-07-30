@@ -12,6 +12,9 @@ export default function EditorSideRail({
   editDisabled,
   minAisle,
   verticalLabel,
+  storeTypeLabel,
+  storeTypeEmoji,
+  fixtureTypes = [],
   categories,
   products,
   token,
@@ -34,6 +37,10 @@ export default function EditorSideRail({
   planogramCoverage,
   coverageLoading,
   onRefreshCoverage,
+  onGoToShelf,
+  selectedShelfId,
+  onShelfFaceChange,
+  merchTabFocus = 0,
 }) {
   const [tab, setTab] = useState("merch");
 
@@ -43,6 +50,10 @@ export default function EditorSideRail({
     else if (selection?.kind === "aisle") setTab("props");
     else if (selection?.kind === "shelf" || selection?.kind === "fixture") setTab("merch");
   }, [selection?.kind, selection?.id]);
+
+  useEffect(() => {
+    if (merchTabFocus > 0) setTab("merch");
+  }, [merchTabFocus]);
 
   return (
     <div className="props-col editor-side-rail">
@@ -76,6 +87,9 @@ export default function EditorSideRail({
             editDisabled={editDisabled}
             minAisle={minAisle}
             verticalLabel={verticalLabel}
+            storeTypeLabel={storeTypeLabel}
+            storeTypeEmoji={storeTypeEmoji}
+            fixtureTypes={fixtureTypes}
             onPatchAisle={onPatchAisle}
             onPatchShelf={onPatchShelf}
             onDeleteAisle={onDeleteAisle}
@@ -98,14 +112,23 @@ export default function EditorSideRail({
               onRefreshCatalog={onRefreshCatalog}
               onOpenPlanogram={onOpenPlanogram}
               toast={toast}
+              onShelfFaceChange={onShelfFaceChange}
             />
             <MissingProductsPanel
               coverage={planogramCoverage}
               loading={coverageLoading}
               onRefresh={onRefreshCoverage}
               categories={categories}
+              alwaysShow={Boolean((layout.shelves || layout.fixtures || []).length)}
+              defaultOpen={Boolean(planogramCoverage?.missingCount)}
+              title="Products not on shelves"
             />
-            <ShelfNumberLegend layout={layout} categories={categories} />
+            <ShelfNumberLegend
+              layout={layout}
+              categories={categories}
+              onGoToShelf={onGoToShelf}
+              selectedShelfId={selectedShelfId}
+            />
           </>
         )}
       </div>

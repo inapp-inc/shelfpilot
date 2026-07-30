@@ -9,7 +9,7 @@ function rebalanceMix(rows, changedIndex, nextPercent) {
   const budget = 100 - clamped;
   if (otherTotal <= 0) {
     const each = budget / Math.max(others.length, 1);
-    others.forEach((r, i) => {
+    others.forEach((r) => {
       const idx = next.findIndex((x) => x.categoryId === r.categoryId);
       next[idx] = { ...next[idx], percent: Math.round(each) };
     });
@@ -29,9 +29,12 @@ function rebalanceMix(rows, changedIndex, nextPercent) {
 
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
 
-export default function CategoryMixSliders({ mix, onChange, disabled }) {
+export default function CategoryMixSliders({ mix, onChange, disabled, fixtureTypes = [] }) {
   const total = mix.reduce((s, r) => s + Number(r.percent || 0), 0);
   const valid = total === 100;
+  const typeOptions = fixtureTypes.length
+    ? fixtureTypes
+    : Object.entries(FIXTURE_TYPES).map(([type, t]) => ({ type, label: t.label }));
 
   return (
     <div className="category-mix-panel">
@@ -41,10 +44,13 @@ export default function CategoryMixSliders({ mix, onChange, disabled }) {
       </div>
       {mix.map((row, idx) => (
         <div key={row.categoryId} className="mix-row">
-          <span className="mix-emoji">{row.emoji || "📦"}</span>
+          <span className="mix-emoji" title={row.label || row.categoryId}>
+            {row.emoji || "📦"}
+          </span>
           <span className="mix-label">{row.label || row.categoryId}</span>
           <select
-            value={row.fixtureType || "shelf"}
+            className="mix-fixture-select"
+            value={row.fixtureType || typeOptions[0]?.type || "shelf"}
             disabled={disabled}
             onChange={(e) => {
               const next = mix.map((r, i) =>
@@ -52,16 +58,20 @@ export default function CategoryMixSliders({ mix, onChange, disabled }) {
               );
               onChange(next);
             }}
-            style={{ fontSize: 10, padding: "2px 4px", borderRadius: 6, border: "1px solid #e5e7eb", maxWidth: 72 }}
-            title="Fixture type"
+            title="Shelf type from store master"
           >
-            {Object.entries(FIXTURE_TYPES).map(([key, t]) => (
-              <option key={key} value={key}>
-                {t.label}
+            {typeOptions.map((t) => (
+              <option key={t.type} value={t.type}>
+                {t.temperatureZone === "chilled" ? "🧊 " : t.temperatureZone === "frozen" ? "❄️ " : t.temperatureZone === "ambient" && t.type === "ambient" ? "🛒 " : ""}
+                {t.label || FIXTURE_TYPES[t.type]?.label || t.type}
+                {t.defaultWidthMeters != null
+                  ? ` · ${t.defaultWidthMeters}×${t.defaultDepthMeters}m · ${t.defaultLevels} lvl`
+                  : ""}
               </option>
             ))}
           </select>
           <input
+            className="mix-range"
             type="range"
             min="0"
             max="100"
@@ -71,8 +81,6 @@ export default function CategoryMixSliders({ mix, onChange, disabled }) {
             onChange={(e) => onChange(rebalanceMix(mix, idx, e.target.value))}
           />
           <span className="mono mix-pct">{row.percent}%</span>
-          {row.temperatureZone === "chilled" ? <span className="zone-tag chilled">🧊</span> : null}
-          {row.temperatureZone === "frozen" ? <span className="zone-tag frozen">❄️</span> : null}
         </div>
       ))}
     </div>

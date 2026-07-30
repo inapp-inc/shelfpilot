@@ -3,28 +3,50 @@ import { api } from "../api.js";
 import AlertBanner from "../components/AlertBanner.jsx";
 import FieldError from "../components/FieldError.jsx";
 import { friendlyError } from "../validationMessages.js";
-import { shelfUnitLabel, countGondolaUnits } from "./shelfFaces.js";
+import { shelfUnitLabel, countGondolaUnits, resolveShelfByLabel, listShelfLabels, shelfFaceDisplayLabel, shelfCanvasFaceLabel, resolveGondolaForEditor } from "./shelfFaces.js";
 import { FIXTURE_TYPES, VERTICALS, ZONE_TYPES } from "../referenceCatalog.js";
 import { fixtureForType, fixturePaletteEntries } from "../fixtureCatalog.js";
 import Scene3D from "../Scene3D.jsx";
 import Palette from "./Palette.jsx";
 import Canvas2D from "./Canvas2D.jsx";
+import FloorPlan2D from "./FloorPlan2D.jsx";
 import SmartGeneratePanel from "./SmartGeneratePanel.jsx";
 import MissingProductsPanel from "./MissingProductsPanel.jsx";
 import EditorSideRail from "./EditorSideRail.jsx";
+import EditorPanelShell from "./EditorPanelShell.jsx";
 import PlanogramEditorModal from "./PlanogramEditorModal.jsx";
-import { mixForVertical, mixFromCategories, storeTypeForVertical, withFixtureTypeDefaults } from "../storeTypes.js";
-import { layoutCanvasBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, shelfLocalMeters, aisleFootprintMeters, defaultAisleRun } from "./polygonCanvas.js";
+import ShelfGotoInput from "./ShelfGotoInput.jsx";
+import { mixForVertical, buildCategoryMix, storeTypeForVertical } from "../storeTypes.js";
+import { layoutCanvasBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, layoutFixturePolygon, fixtureZoneDistinctFromEnvelope, polygonDimensions, normalizeFixtureRectangle, shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb, aisleFootprintMeters, defaultAisleRun, fitRectanglePolygonInEnvelope, polygonInsideEnvelope, centeredStoreEnvelope } from "./polygonCanvas.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
 
+/** Hybrid WebGL 2D disabled — CSS floor grid is reliable for demo. Set VITE_USE_WEBGL_2D=true to re-enable. */
+const USE_WEBGL_2D = import.meta.env.VITE_USE_WEBGL_2D === "true";
+
 const DEFAULT_CANVAS_BOUNDS = { minX: 0, minY: 0, maxX: 10, maxY: 8, width: 10, height: 8 };
+
+const EDITOR_PANELS_STORAGE_KEY = "shelfpilot.editorPanels";
+
+function readEditorPanelPrefs() {
+  try {
+    const raw = localStorage.getItem(EDITOR_PANELS_STORAGE_KEY);
+    if (!raw) return { palette: false, sideRail: false };
+    const parsed = JSON.parse(raw);
+    return {
+      palette: Boolean(parsed.palette),
+      sideRail: Boolean(parsed.sideRail),
+    };
+  } catch {
+    return { palette: false, sideRail: false };
+  }
+}
 
 function layoutBoundsKey(layout) {
   if (!layout) return "";
   const env = layout.storeEnvelope || {};
   const poly =
-    layout.shape === "polygon" && layout.polygon?.length >= 3
+    layout.polygon?.length >= 3
       ? layout.polygon.map((p) => `${Number(p.x).toFixed(3)},${Number(p.y).toFixed(3)}`).join(";")
       : "";
   return [
@@ -73,8 +95,19 @@ export default function LayoutEditor({
   const [genMinAisle, setGenMinAisle] = useState("");
   const [categoryMix, setCategoryMix] = useState(() => mixForVertical(vertical));
   const [genFillPlanogram, setGenFillPlanogram] = useState(true);
+  const [lastGenStats, setLastGenStats] = useState(null);
+  const [storeW, setStoreW] = useState("");
+  const [storeD, setStoreD] = useState("");
+  const [fixtureW, setFixtureW] = useState("");
+  const [fixtureD, setFixtureD] = useState("");
+  const envelopePatchRef = useRef(null);
+  const fixturePatchRef = useRef(null);
+  const pendingFrameRef = useRef(null);
+  const prevPaletteToolRef = useRef(paletteTool);
+  const [focus3dRequest, setFocus3dRequest] = useState(0);
   const [planogramCoverage, setPlanogramCoverage] = useState(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
+  const [merchTabFocus, setMerchTabFocus] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -83,18 +116,31 @@ export default function LayoutEditor({
   const [dismissedAlerts, setDismissedAlerts] = useState(() => new Set());
   const [planogramEditor, setPlanogramEditor] = useState(null);
   const stageRef = useRef(null);
+  const editorRootRef = useRef(null);
   const zoomRef = useRef(zoom);
   const lastAutoFitLayoutId = useRef(null);
   const pendingViewPreserveRef = useRef(null);
+  const [editorFullscreen, setEditorFullscreen] = useState(false);
+  const [paletteCollapsed, setPaletteCollapsed] = useState(() => readEditorPanelPrefs().palette);
+  const [sideRailCollapsed, setSideRailCollapsed] = useState(() => readEditorPanelPrefs().sideRail);
   zoomRef.current = zoom;
 
   const editDisabled = !["Designer", "Admin"].includes(role);
-  const vMeta = VERTICALS[vertical] || VERTICALS.retail;
+  const layoutVertical = layout?.vertical || vertical;
+  const vMeta = VERTICALS[layoutVertical] || VERTICALS.retail;
+  const activeStoreType = storeTypeForVertical(layoutVertical);
   const minAisle = config?.minAisleWidthMeters ?? vMeta.minAisle;
-  const fixtureTypes = useMemo(() => fixturePaletteEntries(config), [config]);
+  const fixtureTypes = useMemo(
+    () => fixturePaletteEntries(config, layoutVertical),
+    [config, layoutVertical]
+  );
   const fixtureTypeKeys = useMemo(() => new Set(fixtureTypes.map((t) => t.type)), [fixtureTypes]);
 
   const catSig = useMemo(() => (categories || []).map((c) => c.id).join("|"), [categories]);
+  const fixtureSig = useMemo(
+    () => fixtureTypes.map((t) => `${t.type}:${t.defaultWidthMeters}:${t.defaultDepthMeters}:${t.defaultLevels}`).join("|"),
+    [fixtureTypes]
+  );
 
   const violationSig = useMemo(
     () =>
@@ -109,6 +155,11 @@ export default function LayoutEditor({
     setDismissedAlerts(new Set());
   }, [violationSig]);
 
+  useEffect(() => {
+    if (view3d) onRefreshCatalog?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view3d, layout?.id]);
+
   const dismissAlert = useCallback((key) => {
     setDismissedAlerts((prev) => new Set([...prev, key]));
   }, []);
@@ -121,11 +172,10 @@ export default function LayoutEditor({
   const notifySuccess = useCallback((text) => toast(text, { type: "success" }), [toast]);
 
   useEffect(() => {
-    const mix = mixFromCategories(categories) || mixForVertical(vertical);
-    setCategoryMix(withFixtureTypeDefaults(mix, categories));
+    setCategoryMix(buildCategoryMix(categories, vertical, fixtureTypes));
     setGenMinAisle(String(config?.minAisleWidthMeters ?? vMeta.minAisle));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout?.id, vertical, catSig, config?.minAisleWidthMeters, vMeta.minAisle]);
+  }, [vertical, catSig, fixtureSig, config?.minAisleWidthMeters, vMeta.minAisle]);
 
   const refreshPlanogramCoverage = useCallback(async () => {
     if (!layout?.id || !token) return;
@@ -150,14 +200,106 @@ export default function LayoutEditor({
   );
 
   const fixtureZoneSize = useMemo(() => {
-    if (!layout?.polygon?.length || layout.polygon.length < 3) return null;
-    const xs = layout.polygon.map((p) => p.x);
-    const ys = layout.polygon.map((p) => p.y);
-    return {
-      w: Math.max(...xs) - Math.min(...xs),
-      d: Math.max(...ys) - Math.min(...ys),
-    };
-  }, [layout?.polygon]);
+    if (layout?.polygon?.length >= 3) return polygonDimensions(layout.polygon);
+    if (envelope) {
+      const w = Number(layout?.widthMeters) || envelope.widthMeters;
+      const d = Number(layout?.depthMeters) || envelope.depthMeters;
+      return { w, d };
+    }
+    return null;
+  }, [layout?.polygon, layout?.widthMeters, layout?.depthMeters, envelope]);
+
+  useEffect(() => {
+    if (!envelope) return;
+    setStoreW(String(envelope.widthMeters ?? ""));
+    setStoreD(String(envelope.depthMeters ?? ""));
+  }, [envelope?.widthMeters, envelope?.depthMeters, layout?.id]);
+
+  useEffect(() => {
+    if (fixtureZoneSize) {
+      setFixtureW(String(Number(fixtureZoneSize.w.toFixed(1))));
+      setFixtureD(String(Number(fixtureZoneSize.d.toFixed(1))));
+    } else if (envelope) {
+      setFixtureW(String(envelope.widthMeters ?? ""));
+      setFixtureD(String(envelope.depthMeters ?? ""));
+    }
+  }, [fixtureZoneSize?.w, fixtureZoneSize?.d, envelope?.widthMeters, envelope?.depthMeters, layout?.id, layout?.polygon]);
+
+  const previewFixturePolygon = useMemo(() => {
+    if (layoutFixturePolygon(layout)) return null;
+    if (!envelope) return null;
+    const w = Number(fixtureW);
+    const d = Number(fixtureD);
+    if (!Number.isFinite(w) || !Number.isFinite(d) || w <= 0 || d <= 0) return null;
+    const poly = fitRectanglePolygonInEnvelope(envelope, w, d, layout?.polygon);
+    if (!poly || !fixtureZoneDistinctFromEnvelope(poly, envelope)) return null;
+    return poly;
+  }, [layout, envelope, fixtureW, fixtureD]);
+
+  const useWebGlFloor =
+    USE_WEBGL_2D && paletteTool !== "draw" && paletteTool !== "edit-area";
+
+  function scheduleEnvelopePatch(widthMeters, depthMeters) {
+    if (envelopePatchRef.current) clearTimeout(envelopePatchRef.current);
+    envelopePatchRef.current = setTimeout(async () => {
+      const w = Number(widthMeters);
+      const d = Number(depthMeters);
+      if (!Number.isFinite(w) || !Number.isFinite(d) || w < 1 || d < 1) return;
+      const oldEnv = layoutStoreEnvelope(layout);
+      const env = centeredStoreEnvelope(oldEnv, w, d);
+      const body = {
+        widthMeters: w,
+        depthMeters: d,
+        storeEnvelope: env,
+      };
+      const fw = Number(fixtureW);
+      const fd = Number(fixtureD);
+      if (Number.isFinite(fw) && Number.isFinite(fd) && fw > 0 && fd > 0) {
+        const clampedW = Math.min(fw, w);
+        const clampedD = Math.min(fd, d);
+        if (clampedW !== fw || clampedD !== fd) {
+          setFixtureW(String(clampedW));
+          setFixtureD(String(clampedD));
+        }
+        const poly = fitRectanglePolygonInEnvelope(env, clampedW, clampedD, layout.polygon);
+        if (poly) {
+          body.shape = "polygon";
+          body.polygon = poly;
+        }
+      }
+      try {
+        await patchLayout(body);
+      } catch (e) {
+        toast(e.message);
+      }
+    }, 400);
+  }
+
+  function scheduleFixtureZonePatch(widthMeters, depthMeters) {
+    if (fixturePatchRef.current) clearTimeout(fixturePatchRef.current);
+    fixturePatchRef.current = setTimeout(async () => {
+      const env = envelope || layoutStoreEnvelope(layout);
+      const w = Number(widthMeters);
+      const d = Number(depthMeters);
+      if (!Number.isFinite(w) || !Number.isFinite(d) || w < 0.5 || d < 0.5) return;
+      if (w > env.widthMeters || d > env.depthMeters) {
+        toast(`Fixture zone must fit inside store (${env.widthMeters}×${env.depthMeters} m)`);
+        return;
+      }
+      const poly = fitRectanglePolygonInEnvelope(env, w, d, layout.polygon);
+      if (!poly || !polygonInsideEnvelope(poly, env)) {
+        toast("Fixture zone must stay inside the store envelope");
+        return;
+      }
+      try {
+        await patchLayout({ shape: "polygon", polygon: poly, storeEnvelope: env });
+        setDraftPolygon([]);
+        toast("Fixture zone updated");
+      } catch (e) {
+        toast(e.message === "invalid_polygon" ? "Invalid fixture zone shape." : e.message);
+      }
+    }, 400);
+  }
 
   const dirtySinceSubmit =
     (Number(layout?.contentRevision) || 0) > (Number(layout?.submittedRevision) ?? -1);
@@ -179,8 +321,8 @@ export default function LayoutEditor({
 
   const canvasBounds = useMemo(() => {
     if (!layout) return DEFAULT_CANVAS_BOUNDS;
-    return layoutCanvasBounds(layout);
-  }, [boundsKey]);
+    return layoutCanvasBounds(layout, { previewPoly: previewFixturePolygon });
+  }, [boundsKey, previewFixturePolygon]);
 
   const fitToView = useCallback(() => {
     const stage = stageRef.current;
@@ -193,10 +335,65 @@ export default function LayoutEditor({
     const nextZoom = Math.min(5, Math.max(0.5, fitScale / baseScale));
     setZoom(Number(nextZoom.toFixed(2)));
     requestAnimationFrame(() => {
-      stage.scrollLeft = 0;
-      stage.scrollTop = 0;
+      const innerPad = 24;
+      const innerScale = baseCanvasScale(canvasBounds) * nextZoom;
+      const w = canvasBounds.width * innerScale + innerPad * 2;
+      const h = canvasBounds.height * innerScale + innerPad * 2;
+      stage.scrollLeft = Math.max(0, (w - stage.clientWidth) / 2);
+      stage.scrollTop = Math.max(0, (h - stage.clientHeight) / 2);
     });
   }, [canvasBounds.width, canvasBounds.height, layout]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      EDITOR_PANELS_STORAGE_KEY,
+      JSON.stringify({ palette: paletteCollapsed, sideRail: sideRailCollapsed })
+    );
+  }, [paletteCollapsed, sideRailCollapsed]);
+
+  useEffect(() => {
+    if (selection?.id) setSideRailCollapsed(false);
+  }, [selection?.id, selection?.kind]);
+
+  const toggleEditorFullscreen = useCallback(async () => {
+    const el = editorRootRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen();
+      } else {
+        await el.requestFullscreen();
+      }
+    } catch {
+      toast("Fullscreen is not available in this browser.");
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const active = document.fullscreenElement === editorRootRef.current;
+      setEditorFullscreen(active);
+      if (active) {
+        requestAnimationFrame(() => fitToView());
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [fitToView]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "f" && e.key !== "F") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) return;
+      e.preventDefault();
+      toggleEditorFullscreen();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleEditorFullscreen]);
 
   useEffect(() => {
     if (!layout?.id || view3d) return;
@@ -268,6 +465,14 @@ export default function LayoutEditor({
     e.preventDefault();
     e.stopPropagation();
     const stage = stageRef.current;
+    if (!stage) return;
+
+    if (e.ctrlKey || e.metaKey) {
+      stage.scrollLeft += e.deltaX;
+      stage.scrollTop += e.deltaY;
+      return;
+    }
+
     const currentZoom = zoomRef.current;
     const step = e.deltaMode === 1 ? 0.35 : e.deltaMode === 2 ? 0.5 : 0.12;
     const delta = e.deltaY > 0 ? -step : step;
@@ -294,6 +499,68 @@ export default function LayoutEditor({
     stage.addEventListener("wheel", onWheel, { passive: false, capture: true });
     return () => stage.removeEventListener("wheel", onWheel, { capture: true });
   }, [view3d, layout?.id, handleCanvasWheel]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || view3d || !layout) return undefined;
+
+    let pan = null;
+
+    const startPan = (e) => {
+      pan = {
+        x: e.clientX,
+        y: e.clientY,
+        scrollLeft: stage.scrollLeft,
+        scrollTop: stage.scrollTop,
+      };
+      stage.classList.add("canvas-panning");
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const onDown = (e) => {
+      if (
+        e.target.closest?.(
+          ".resize-handle, .polygon-vertex-handle, .polygon-vertex-handle-hit, .polygon-edge-handle, .rotate-handle, .draft-vertex-handle, .draft-close-handle"
+        )
+      ) {
+        return;
+      }
+      const panWithCtrl = (e.ctrlKey || e.metaKey) && e.button === 0;
+      const panWithMiddle = e.button === 1;
+      if (!panWithCtrl && !panWithMiddle) return;
+      startPan(e);
+    };
+
+    const onAuxClick = (e) => {
+      if (e.button === 1) e.preventDefault();
+    };
+
+    const onMove = (e) => {
+      if (!pan) return;
+      stage.scrollLeft = pan.scrollLeft - (e.clientX - pan.x);
+      stage.scrollTop = pan.scrollTop - (e.clientY - pan.y);
+      e.preventDefault();
+    };
+
+    const onUp = () => {
+      if (!pan) return;
+      pan = null;
+      stage.classList.remove("canvas-panning");
+    };
+
+    stage.addEventListener("mousedown", onDown, { capture: true });
+    stage.addEventListener("auxclick", onAuxClick, { capture: true });
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      stage.removeEventListener("mousedown", onDown, { capture: true });
+      stage.removeEventListener("auxclick", onAuxClick, { capture: true });
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      stage.classList.remove("canvas-panning");
+    };
+  }, [view3d, layout?.id]);
 
   useEffect(() => {
     if (!dragging || !layout) return undefined;
@@ -369,7 +636,7 @@ export default function LayoutEditor({
   }
 
   async function addShelf(type, x, y) {
-    const t = fixtureForType(config, type);
+    const t = fixtureForType(config, type, layoutVertical);
     const w = t.defaultWidthMeters;
     const d = t.defaultDepthMeters;
     const tentative = {
@@ -389,7 +656,7 @@ export default function LayoutEditor({
         token,
         method: "POST",
         body: {
-          type: FIXTURE_TYPES[type] ? type : "shelf",
+          type,
           usableWidthMeters: w,
           widthMeters: w,
           depthMeters: d,
@@ -537,13 +804,12 @@ export default function LayoutEditor({
       toast("Need at least 3 vertices");
       return;
     }
+    const env = layoutStoreEnvelope(layout);
+    if (!polygonInsideEnvelope(draftPolygon, env)) {
+      toast("Fixture zone must stay inside the store envelope — redraw inside the dashed border");
+      return;
+    }
     try {
-      const env = layout.storeEnvelope || {
-        x: 0,
-        y: 0,
-        widthMeters: layout.widthMeters,
-        depthMeters: layout.depthMeters,
-      };
       const updated = await api(`/layouts/${layout.id}`, {
         token,
         method: "PATCH",
@@ -564,20 +830,154 @@ export default function LayoutEditor({
     }
   }
 
-  async function savePolygon(polygon) {
-    if (!polygon?.length || polygon.length < 3) return;
+  async function savePolygon(polygon, { silent = false } = {}) {
+    const normalized = normalizeFixtureRectangle(polygon) || polygon;
+    if (!normalized?.length || normalized.length < 3) return;
+    const env = layoutStoreEnvelope(layout);
+    if (!polygonInsideEnvelope(normalized, env)) {
+      toast("Fixture zone must stay inside the store envelope");
+      return;
+    }
+    const dims = polygonDimensions(normalized);
     try {
       const updated = await api(`/layouts/${layout.id}`, {
         token,
         method: "PATCH",
-        body: { shape: "polygon", polygon },
+        body: {
+          shape: "polygon",
+          polygon: normalized,
+          storeEnvelope: env,
+        },
       });
       setLayout(updated);
-      toast("Floor area updated");
+      if (dims) {
+        setFixtureW(String(Number(dims.w.toFixed(1))));
+        setFixtureD(String(Number(dims.d.toFixed(1))));
+      }
+      if (!silent) toast("Fixture zone updated");
     } catch (e) {
       toast(e.message === "invalid_polygon" ? "Invalid polygon shape." : e.message);
     }
   }
+
+  function handlePolygonPreview(polygon) {
+    const normalized = normalizeFixtureRectangle(polygon) || polygon;
+    const dims = polygonDimensions(normalized);
+    if (!dims) return;
+    setFixtureW(String(Number(dims.w.toFixed(1))));
+    setFixtureD(String(Number(dims.d.toFixed(1))));
+    setLayout((prev) =>
+      prev ? { ...prev, polygon: normalized, shape: "polygon" } : prev
+    );
+  }
+
+  function frameRect(minX, minY, maxX, maxY, padM = 1.5) {
+    const stage = stageRef.current;
+    if (!stage || !layout) return;
+    minX -= padM;
+    minY -= padM;
+    maxX += padM;
+    maxY += padM;
+    const bw = Math.max(0.5, maxX - minX);
+    const bh = Math.max(0.5, maxY - minY);
+    const pad = 32;
+    const availW = Math.max(120, stage.clientWidth - pad * 2);
+    const availH = Math.max(120, stage.clientHeight - pad * 2);
+    const baseScale = baseCanvasScale(canvasBounds);
+    const fitScale = Math.min(availW / bw, availH / bh);
+    const nextZoom = Math.min(5, Math.max(0.5, fitScale / baseScale));
+    pendingFrameRef.current = { minX, minY, maxX, maxY, zoom: nextZoom };
+    setZoom(Number(nextZoom.toFixed(2)));
+  }
+
+  function frameShelfIds(shelfIds) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const shelves = layout.shelves || [];
+
+    for (const id of shelfIds) {
+      const s = shelves.find((x) => x.id === id);
+      if (!s) continue;
+      let aabb;
+      if (s.pairId) {
+        const mate = shelves.find((x) => x.pairId === s.pairId && x.id !== s.id);
+        if (mate) {
+          const front = s.pairRole === "back" ? mate : s;
+          const back = s.pairRole === "back" ? s : mate;
+          aabb = gondolaCanvasAabb(front, back);
+        } else {
+          aabb = shelfCanvasAabb(s);
+        }
+      } else {
+        aabb = shelfCanvasAabb(s);
+      }
+      minX = Math.min(minX, aabb.x);
+      minY = Math.min(minY, aabb.y);
+      maxX = Math.max(maxX, aabb.x + aabb.w);
+      maxY = Math.max(maxY, aabb.y + aabb.d);
+    }
+
+    if (!Number.isFinite(minX)) return;
+    frameRect(minX, minY, maxX, maxY);
+  }
+
+  function focusFixtureZone() {
+    const fz = layoutFixtureZoneRect(layout, previewFixturePolygon);
+    frameRect(fz.x, fz.y, fz.x + fz.widthMeters, fz.y + fz.depthMeters, 0.6);
+  }
+
+  useLayoutEffect(() => {
+    const frame = pendingFrameRef.current;
+    if (!frame || view3d) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    pendingFrameRef.current = null;
+    const baseScale = baseCanvasScale(canvasBounds);
+    const cx = (frame.minX + frame.maxX) / 2 - canvasBounds.minX;
+    const cy = (frame.minY + frame.maxY) / 2 - canvasBounds.minY;
+    stage.scrollLeft = Math.max(0, cx * baseScale * frame.zoom - stage.clientWidth / 2);
+    stage.scrollTop = Math.max(0, cy * baseScale * frame.zoom - stage.clientHeight / 2);
+  }, [zoom, canvasBounds, view3d]);
+
+  useEffect(() => {
+    const prev = prevPaletteToolRef.current;
+    prevPaletteToolRef.current = paletteTool;
+    if (paletteTool !== "edit-area" || prev === "edit-area" || view3d || editDisabled) return;
+    if (scale < 22) focusFixtureZone();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteTool, view3d, editDisabled]);
+
+  function goToShelf(label) {
+    const resolved = resolveShelfByLabel(layout, label);
+    if (!resolved) {
+      toast(`Shelf "${String(label).trim()}" not found — try e.g. 4A`);
+      return;
+    }
+    setSelection({
+      kind: "shelf",
+      id: resolved.shelfId,
+      faceId: resolved.mergedGondola && resolved.shelfId === resolved.backId ? "B" : "A",
+    });
+    setFocus3dRequest((n) => n + 1);
+    if (view3d) return;
+    const ids =
+      resolved.mergedGondola && resolved.backId
+        ? [resolved.frontId, resolved.backId]
+        : [resolved.shelfId];
+    frameShelfIds(ids);
+  }
+
+  const shelfLabelOptions = useMemo(() => listShelfLabels(layout), [layout?.shelves, layout?.aisles, layout?.contentRevision]);
+
+  const highlightShelf3d = useMemo(() => {
+    if (!selection || (selection.kind !== "shelf" && selection.kind !== "fixture")) return null;
+    const shelves = layout?.shelves || [];
+    const s = shelves.find((x) => x.id === selection.id);
+    if (!s) return { shelfId: selection.id, pairId: null };
+    return { shelfId: selection.id, pairId: s.pairId || null };
+  }, [selection, layout?.shelves]);
 
   function focusCanvasTarget(target) {
     const stage = stageRef.current;
@@ -597,8 +997,13 @@ export default function LayoutEditor({
       if (selection.kind === "shelf" || selection.kind === "fixture") {
         const s = (layout.shelves || []).find((x) => x.id === selection.id);
         if (s) {
-          const { w, d } = shelfLocalMeters(s);
-          expandRect(Number(s.x) || 0, Number(s.y) || 0, w, d);
+          const ids = [s.id];
+          if (s.pairId) {
+            const mate = (layout.shelves || []).find((x) => x.pairId === s.pairId && x.id !== s.id);
+            if (mate) ids.push(mate.id);
+          }
+          frameShelfIds(ids);
+          return;
         }
       } else if (selection.kind === "aisle") {
         const a = (layout.aisles || []).find((x) => x.id === selection.id);
@@ -707,13 +1112,25 @@ export default function LayoutEditor({
   }
 
   async function runGenerate() {
-    const hasPolygon = layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3;
+    let activeLayout = layout;
+    const hasPolygon = (activeLayout.polygon?.length ?? 0) >= 3;
     if (!hasPolygon) {
-      toast("Draw and apply a floor area first (3+ vertices), then Generate.");
-      setPaletteTool("draw");
-      return;
+      if (previewFixturePolygon) {
+        try {
+          activeLayout = await patchLayout({ shape: "polygon", polygon: previewFixturePolygon });
+          setLayout(activeLayout);
+        } catch (e) {
+          toast(e.message === "invalid_polygon" ? "Invalid fixture zone shape." : e.message);
+          setPaletteTool("draw");
+          return;
+        }
+      } else {
+        toast("Draw and apply a floor area first (3+ vertices), then Generate.");
+        setPaletteTool("draw");
+        return;
+      }
     }
-    const hasContent = (layout.aisles || []).length > 0 || (layout.shelves || []).length > 0;
+    const hasContent = (activeLayout.aisles || []).length > 0 || (activeLayout.shelves || []).length > 0;
     if (hasContent && !window.confirm("Replace existing aisles and shelves with generated layout?")) {
       return;
     }
@@ -725,7 +1142,7 @@ export default function LayoutEditor({
         temperatureZone,
         fixtureType,
       }));
-      const updated = await api(`/layouts/${layout.id}/autogenerate`, {
+      const updated = await api(`/layouts/${activeLayout.id}/autogenerate`, {
         token,
         method: "POST",
         body: {
@@ -738,6 +1155,11 @@ export default function LayoutEditor({
       });
       setLayout(updated);
       if (updated.coverage) setPlanogramCoverage(updated.coverage);
+      setLastGenStats({
+        generated: updated.generated,
+        coverage: updated.coverage,
+        shelfMappings: updated.shelfMappings,
+      });
       setGenOpen(false);
       onRefreshCatalog?.();
       const g = updated.generated || {};
@@ -861,13 +1283,31 @@ export default function LayoutEditor({
     }
     if (kind === "shelf" || kind === "fixture") {
       const s = (layout.shelves || layout.fixtures || []).find((x) => x.id === id);
-      const unit = s?.displayNumber != null ? shelfUnitLabel(s.displayNumber) : "";
       if (!s) return null;
+      const gondola = resolveGondolaForEditor(layout, id);
+      const faceId = selection.faceId || "A";
+      const aisleLabel =
+        gondola?.mode === "gondola"
+          ? shelfCanvasFaceLabel(gondola.shelf, faceId, layout.aisles, layout.shelves)
+          : shelfFaceDisplayLabel(s, layout.aisles);
+      const unit = aisleLabel || (s.displayNumber != null ? shelfUnitLabel(s.displayNumber) : "");
       const uw = Number(s.usableWidthMeters ?? s.widthMeters) || 0;
       const dep = Number(s.depthMeters) || 0;
       const ht = Number(s.heightMeters) || 0;
       const dim = `${uw.toFixed(1)}×${dep.toFixed(1)}×${ht.toFixed(1)} m`;
-      return { kind: "shelf", id, label: unit ? `Shelf ${unit}` : "Shelf", detail: dim, run: () => deleteShelf(id) };
+      const shelfType =
+        fixtureTypes.find((t) => t.type === s.type)?.label ||
+        FIXTURE_TYPES[s.type]?.label ||
+        s.type ||
+        "Shelf";
+      return {
+        kind: "shelf",
+        id,
+        label: unit ? `Shelf ${unit}` : "Shelf",
+        detail: dim,
+        shelfType,
+        run: () => deleteShelf(id),
+      };
     }
     if (kind === "zone") {
       const z = (layout.zones || []).find((x) => x.id === id);
@@ -879,7 +1319,7 @@ export default function LayoutEditor({
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection, layout]);
+  }, [selection, selection?.faceId, layout, fixtureTypes]);
 
   function selectContainmentViolation() {
     const v = (layout.validation?.containmentViolations || [])[0];
@@ -946,7 +1386,7 @@ export default function LayoutEditor({
   }
 
   return (
-    <section className="fade editor-layout-root">
+    <section ref={editorRootRef} className={`fade editor-layout-root${editorFullscreen ? " editor-layout-fullscreen" : ""}`}>
       <div className="editor-toolbar-row">
         <div className="editor-toolbar-left">
           <button className="btn-secondary" style={{ border: "none", background: "none", color: "#6b7280" }} onClick={onBack}>
@@ -960,7 +1400,7 @@ export default function LayoutEditor({
             {statusMeta(layout.status).label}
           </span>
           <span className="catalog-vertical-badge">
-            {storeTypeForVertical(vertical)?.emoji} {(VERTICALS[vertical] || VERTICALS.retail).label}
+            {activeStoreType?.emoji} {activeStoreType?.label || vMeta.label}
           </span>
           {!view3d && zoomCategories.length > 0 ? (
             <select
@@ -982,6 +1422,12 @@ export default function LayoutEditor({
               ))}
             </select>
           ) : null}
+          <ShelfGotoInput
+            options={shelfLabelOptions}
+            onGo={goToShelf}
+            disabled={editDisabled}
+            listId="shelf-goto-list-toolbar"
+          />
         </div>
         <div className="editor-toolbar-right">
           {canApproveReject ? (
@@ -1021,6 +1467,15 @@ export default function LayoutEditor({
             </button>
           ) : null}
           <div className="mode-toggle">
+            <button
+              type="button"
+              className="btn-secondary editor-fullscreen-btn"
+              style={{ padding: "9px 12px", marginRight: 8 }}
+              onClick={() => toggleEditorFullscreen()}
+              title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen layout design (F)"}
+            >
+              {editorFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            </button>
             <button
               className={!view3d ? "active" : ""}
               onClick={() => {
@@ -1100,38 +1555,113 @@ export default function LayoutEditor({
       ) : null}
 
       <div className="editor-layout">
-        <Palette
-          paletteTool={paletteTool}
-          setPaletteTool={setPaletteTool}
-          editDisabled={editDisabled}
-          minAisle={minAisle}
-          fixtureTypes={fixtureTypes}
-          draftCount={draftPolygon.length}
-          hasAppliedPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
-          onApplyArea={() => applyArea()}
-          onClearDraft={() => setDraftPolygon([])}
-          onOpenGenerate={() => {
-            if (layout.shape !== "polygon" || (layout.polygon?.length ?? 0) < 3) {
-              toast("Draw floor area first: click vertices, then Apply area.");
-              setPaletteTool("draw");
-              return;
-            }
-            setGenOpen(true);
-          }}
-        />
+        <EditorPanelShell
+          side="left"
+          label="Tools"
+          collapsed={paletteCollapsed}
+          onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
+        >
+          <Palette
+            paletteTool={paletteTool}
+            setPaletteTool={setPaletteTool}
+            editDisabled={editDisabled}
+            minAisle={minAisle}
+            fixtureTypes={fixtureTypes}
+            draftCount={draftPolygon.length}
+            hasAppliedPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
+            onApplyArea={() => applyArea()}
+            onClearDraft={() => setDraftPolygon([])}
+            onOpenGenerate={() => {
+              if (layout.shape !== "polygon" || (layout.polygon?.length ?? 0) < 3) {
+                toast("Draw floor area first: click vertices, then Apply area.");
+                setPaletteTool("draw");
+                return;
+              }
+              setGenOpen(true);
+            }}
+          />
+        </EditorPanelShell>
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
           <div className="meter-bar">
-            <div className="mono" style={{ fontSize: 13, fontWeight: 500 }}>
-              {envelope
-                ? `Store ${envelope.widthMeters.toFixed(1)}×${envelope.depthMeters.toFixed(1)} m`
-                : `${layout.widthMeters.toFixed(1)}×${layout.depthMeters.toFixed(1)} m`}
-              {fixtureZoneSize
-                ? ` · Fixture zone ${fixtureZoneSize.w.toFixed(1)}×${fixtureZoneSize.d.toFixed(1)} m`
-                : canvasBounds.strict
-                  ? ` · ${canvasBounds.width.toFixed(1)}×${canvasBounds.height.toFixed(1)} m fixture zone`
-                  : ""}
-              {layout.shape === "polygon" ? " · polygon" : ""}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                Store W
+                <input
+                  className="mono"
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  disabled={editDisabled}
+                  value={storeW}
+                  onChange={(e) => {
+                    setStoreW(e.target.value);
+                    scheduleEnvelopePatch(e.target.value, storeD);
+                  }}
+                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
+                />
+                m
+              </label>
+              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                Store D
+                <input
+                  className="mono"
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  disabled={editDisabled}
+                  value={storeD}
+                  onChange={(e) => {
+                    setStoreD(e.target.value);
+                    scheduleEnvelopePatch(storeW, e.target.value);
+                  }}
+                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
+                />
+                m
+              </label>
+              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                Fixture W
+                <input
+                  className="mono"
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  max={envelope ? envelope.widthMeters : undefined}
+                  disabled={editDisabled}
+                  value={fixtureW}
+                  title="Fixture zone width — must fit inside store envelope"
+                  onChange={(e) => {
+                    setFixtureW(e.target.value);
+                    scheduleFixtureZonePatch(e.target.value, fixtureD);
+                  }}
+                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
+                />
+                m
+              </label>
+              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                Fixture D
+                <input
+                  className="mono"
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  max={envelope ? envelope.depthMeters : undefined}
+                  disabled={editDisabled}
+                  value={fixtureD}
+                  title="Fixture zone depth — must fit inside store envelope"
+                  onChange={(e) => {
+                    setFixtureD(e.target.value);
+                    scheduleFixtureZonePatch(fixtureW, e.target.value);
+                  }}
+                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
+                />
+                m
+              </label>
+              {layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3 ? (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  Fixture zone resizes from centre — all four edges move equally
+                </span>
+              ) : null}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               {!view3d && zoomCategories.length > 0 ? (
@@ -1154,6 +1684,21 @@ export default function LayoutEditor({
                   ))}
                 </select>
               ) : null}
+              <ShelfGotoInput
+                options={shelfLabelOptions}
+                onGo={goToShelf}
+                disabled={editDisabled}
+                listId="shelf-goto-list-canvas"
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "6px 10px", fontSize: 12 }}
+                onClick={() => toggleEditorFullscreen()}
+                title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen layout design (F)"}
+              >
+                {editorFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              </button>
               <button
                 type="button"
                 className="btn-secondary"
@@ -1184,6 +1729,9 @@ export default function LayoutEditor({
                 >
                   Reset
                 </button>
+                <span className="muted" style={{ fontSize: 11, marginLeft: 6 }} title="Hold Ctrl and scroll or drag, or middle-drag, to pan the canvas">
+                  Ctrl / middle-drag to pan
+                </span>
               </div>
               <button
                 className="btn-secondary"
@@ -1191,16 +1739,33 @@ export default function LayoutEditor({
                 disabled={editDisabled}
                 onClick={() => {
                   pendingViewPreserveRef.current = { ...canvasBounds };
-                  patchLayout({
-                    widthMeters: layout.widthMeters + 2,
-                    depthMeters: layout.depthMeters + 2,
-                    storeEnvelope: {
-                      ...(layout.storeEnvelope || { x: 0, y: 0 }),
-                      widthMeters: (layout.storeEnvelope?.widthMeters ?? layout.widthMeters) + 2,
-                      depthMeters: (layout.storeEnvelope?.depthMeters ?? layout.depthMeters) + 2,
-                    },
-                  }).then(() => {
-                    toast("Store envelope expanded");
+                  const oldEnv = layoutStoreEnvelope(layout);
+                  const nextEnv = centeredStoreEnvelope(
+                    oldEnv,
+                    oldEnv.widthMeters + 2,
+                    oldEnv.depthMeters + 2
+                  );
+                  const body = {
+                    widthMeters: nextEnv.widthMeters,
+                    depthMeters: nextEnv.depthMeters,
+                    storeEnvelope: nextEnv,
+                  };
+                  const fw = Number(fixtureW);
+                  const fd = Number(fixtureD);
+                  if (Number.isFinite(fw) && Number.isFinite(fd) && fw > 0 && fd > 0) {
+                    const poly = fitRectanglePolygonInEnvelope(
+                      nextEnv,
+                      Math.min(fw, nextEnv.widthMeters),
+                      Math.min(fd, nextEnv.depthMeters),
+                      layout.polygon
+                    );
+                    if (poly) {
+                      body.shape = "polygon";
+                      body.polygon = poly;
+                    }
+                  }
+                  patchLayout(body).then(() => {
+                    toast("Store envelope expanded (+1 m each side)");
                   });
                 }}
               >
@@ -1233,6 +1798,21 @@ export default function LayoutEditor({
               }}
             >
               {(layout.validation.containmentViolations || []).length} item(s) outside floor area — click to select
+            </AlertBanner>
+          ) : null}
+          {!view3d && planogramCoverage?.missingCount > 0 && !dismissedAlerts.has("missing-products") ? (
+            <AlertBanner
+              variant="warning"
+              role="button"
+              style={{ cursor: "pointer" }}
+              onDismiss={() => dismissAlert("missing-products")}
+              onClick={() => {
+                setMerchTabFocus((n) => n + 1);
+                setSideRailCollapsed(false);
+              }}
+            >
+              {planogramCoverage.missingCount} catalog product{planogramCoverage.missingCount === 1 ? "" : "s"} not placed on any shelf
+              — click to view in Merchandising
             </AlertBanner>
           ) : null}
           {!view3d && paletteTool === "edit-area" && !dismissedAlerts.has("hint:edit-area") ? (
@@ -1275,6 +1855,9 @@ export default function LayoutEditor({
               onGenerate={() => runGenerate()}
               generating={generating}
               disabled={editDisabled}
+              lastGenStats={lastGenStats}
+              categories={categories}
+              fixtureTypes={fixtureTypes}
             />
           ) : null}
 
@@ -1282,6 +1865,9 @@ export default function LayoutEditor({
             <div className="selection-bar">
               <span className="selection-bar-kind">{selectionInfo.kind}</span>
               <span className="selection-bar-label">{selectionInfo.label}</span>
+              {selectionInfo.shelfType ? (
+                <span className="selection-bar-type">{selectionInfo.shelfType}</span>
+              ) : null}
               {selectionInfo.detail ? (
                 <span className="selection-bar-dim mono">{selectionInfo.detail}</span>
               ) : null}
@@ -1310,9 +1896,18 @@ export default function LayoutEditor({
           ) : null}
 
           <div className="canvas-stage" ref={stageRef}>
+            <div className="canvas-stage-inner">
             {view3d ? (
               <div className="scene3d-wrap" style={{ width: "100%", height: "100%", minHeight: 420 }}>
-                <Scene3D layout={layout} products={products} walkMode={walkMode} />
+                <Scene3D
+                  layout={layout}
+                  products={products}
+                  walkMode={walkMode}
+                  highlightShelfId={highlightShelf3d?.shelfId}
+                  highlightPairId={highlightShelf3d?.pairId}
+                  focusRequest={focus3dRequest}
+                  contentRevision={layout.contentRevision}
+                />
                 {walkMode ? (
                   <div className="muted" style={{ fontSize: 12, marginTop: 8, textAlign: "center" }}>
                     Click canvas to start · WASD walk · mouse look · Esc to release
@@ -1323,10 +1918,11 @@ export default function LayoutEditor({
                   </div>
                 )}
               </div>
-            ) : (
-              <Canvas2D
+            ) : useWebGlFloor ? (
+              <FloorPlan2D
                 layout={layout}
                 scale={scale}
+                previewFixturePolygon={previewFixturePolygon}
                 selection={selection}
                 setSelection={setSelection}
                 paletteTool={paletteTool}
@@ -1339,53 +1935,98 @@ export default function LayoutEditor({
                 onRotateShelf={(id, deg) => rotateShelf(id, deg)}
                 onWheelZoom={handleCanvasWheel}
                 categories={categories}
+                products={products}
                 draftPolygon={draftPolygon}
                 onDrawVertex={(x, y) => setDraftPolygon((pts) => [...pts, { x, y }])}
                 onDraftPolygonChange={setDraftPolygon}
                 onCloseDraw={() => applyArea()}
                 onPolygonChange={(polygon) => savePolygon(polygon)}
+                onPolygonPreviewChange={handlePolygonPreview}
+              />
+            ) : (
+              <Canvas2D
+                layout={layout}
+                scale={scale}
+                previewFixturePolygon={previewFixturePolygon}
+                fixtureTypeKeys={fixtureTypeKeys}
+                selection={selection}
+                setSelection={setSelection}
+                paletteTool={paletteTool}
+                editDisabled={editDisabled}
+                dragPos={dragPos}
+                setDragging={setDragging}
+                onDropTool={onDropTool}
+                onPlaceClick={onPlaceClick}
+                onResize={resizeEntity}
+                onRotateShelf={(id, deg) => rotateShelf(id, deg)}
+                onWheelZoom={handleCanvasWheel}
+                categories={categories}
+                products={products}
+                draftPolygon={draftPolygon}
+                onDrawVertex={(x, y) => setDraftPolygon((pts) => [...pts, { x, y }])}
+                onDraftPolygonChange={setDraftPolygon}
+                onCloseDraw={() => applyArea()}
+                onPolygonChange={(polygon) => savePolygon(polygon)}
+                onPolygonPreviewChange={handlePolygonPreview}
               />
             )}
+            </div>
           </div>
         </div>
 
-        <EditorSideRail
-          selection={selection}
-          layout={layout}
-          editDisabled={editDisabled}
-          minAisle={minAisle}
-          verticalLabel={vMeta.label}
-          categories={categories}
-          products={products}
-          token={token}
-          onPatchAisle={(id, body) => patchAisle(id, body).catch((e) => notifyError(e))}
-          onPatchShelf={(id, body) => patchShelf(id, body).catch((e) => notifyError(e))}
-          onDeleteAisle={() => deleteSelection()}
-          onDeleteShelf={() => deleteSelection()}
-          onMapAisle={(id, cat, color) => mapAisle(id, cat, color).catch((e) => notifyError(e))}
-          onMapShelf={(id, cat, color, faceId) => mapShelf(id, cat, color, faceId).catch((e) => notifyError(e))}
-          onLayoutUpdated={setLayout}
-          onQuickAddProduct={onQuickAddProduct}
-          onPatchZone={(id, body) =>
-            patchZone(id, body).catch((e) =>
-              toast(
-                e.message === "zone_not_found"
-                  ? "Zone was removed or is out of sync. Reselect the zone and try again."
-                  : e.message
+        <EditorPanelShell
+          side="right"
+          label="Inspector"
+          collapsed={sideRailCollapsed}
+          onToggleCollapse={() => setSideRailCollapsed((v) => !v)}
+        >
+          <EditorSideRail
+            selection={selection}
+            layout={layout}
+            editDisabled={editDisabled}
+            minAisle={minAisle}
+            verticalLabel={vMeta.label}
+            storeTypeLabel={activeStoreType?.label || vMeta.label}
+            storeTypeEmoji={activeStoreType?.emoji}
+            fixtureTypes={fixtureTypes}
+            categories={categories}
+            products={products}
+            token={token}
+            onPatchAisle={(id, body) => patchAisle(id, body).catch((e) => notifyError(e))}
+            onPatchShelf={(id, body) => patchShelf(id, body).catch((e) => notifyError(e))}
+            onDeleteAisle={() => deleteSelection()}
+            onDeleteShelf={() => deleteSelection()}
+            onMapAisle={(id, cat, color) => mapAisle(id, cat, color).catch((e) => notifyError(e))}
+            onMapShelf={(id, cat, color, faceId) => mapShelf(id, cat, color, faceId).catch((e) => notifyError(e))}
+            onLayoutUpdated={setLayout}
+            onQuickAddProduct={onQuickAddProduct}
+            onPatchZone={(id, body) =>
+              patchZone(id, body).catch((e) =>
+                toast(
+                  e.message === "zone_not_found"
+                    ? "Zone was removed or is out of sync. Reselect the zone and try again."
+                    : e.message
+                )
               )
-            )
-          }
-          onSelectZone={(id) => setSelection({ kind: "zone", id })}
-          onDeleteZone={(id) => deleteZone(id).catch((e) => notifyError(e))}
-          onPatchEntry={(id, body) => patchEntry(id, body).catch((e) => notifyError(e))}
-          onDeleteEntry={(id) => deleteEntry(id).catch((e) => notifyError(e))}
-          onRefreshCatalog={onRefreshCatalog}
-          onOpenPlanogram={(shelfId, faceId) => setPlanogramEditor({ shelfId, faceId: faceId || "A" })}
-          toast={toast}
-          planogramCoverage={planogramCoverage}
-          coverageLoading={coverageLoading}
-          onRefreshCoverage={refreshPlanogramCoverage}
-        />
+            }
+            onSelectZone={(id) => setSelection({ kind: "zone", id })}
+            onDeleteZone={(id) => deleteZone(id).catch((e) => notifyError(e))}
+            onPatchEntry={(id, body) => patchEntry(id, body).catch((e) => notifyError(e))}
+            onDeleteEntry={(id) => deleteEntry(id).catch((e) => notifyError(e))}
+            onRefreshCatalog={onRefreshCatalog}
+            onOpenPlanogram={(shelfId, faceId) => setPlanogramEditor({ shelfId, faceId: faceId || "A" })}
+            toast={toast}
+            planogramCoverage={planogramCoverage}
+            coverageLoading={coverageLoading}
+            onRefreshCoverage={refreshPlanogramCoverage}
+            onGoToShelf={goToShelf}
+            selectedShelfId={
+              selection?.kind === "shelf" || selection?.kind === "fixture" ? selection.id : null
+            }
+            onShelfFaceChange={(shelfId, faceId) => setSelection({ kind: "shelf", id: shelfId, faceId })}
+            merchTabFocus={merchTabFocus}
+          />
+        </EditorPanelShell>
       </div>
 
       <PlanogramEditorModal

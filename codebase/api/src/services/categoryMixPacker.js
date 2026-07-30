@@ -118,6 +118,17 @@ function assignLegacyDoubleSided(shelves, categoryMix, categories) {
   return { shelves: updated, shelfMappings: shelfMappingsFrom(updated) };
 }
 
+function backMixSlot(slots, unitIndex) {
+  if (!slots?.length) return null;
+  if (slots.length === 1) return slots[0];
+  const front = slots[unitIndex];
+  for (let i = 1; i < slots.length; i += 1) {
+    const candidate = slots[(unitIndex + i) % slots.length];
+    if (candidate.categoryId !== front.categoryId) return candidate;
+  }
+  return front;
+}
+
 function assignPairedUnits(shelves, categoryMix, categories) {
   const totalPct = categoryMix.reduce((s, m) => s + Number(m.percent || 0), 0);
   const normalized =
@@ -136,7 +147,7 @@ function assignPairedUnits(shelves, categoryMix, categories) {
 
   for (let u = 0; u < units.length; u += 1) {
     const mixA = slots[u];
-    const mixB = slots[(u + 1) % slots.length];
+    const mixB = backMixSlot(slots, u);
     const unit = units[u];
     if (unit.type === "pair") {
       byId.set(unit.front.id, applyMixToPairedShelf(unit.front, mixA, categories));

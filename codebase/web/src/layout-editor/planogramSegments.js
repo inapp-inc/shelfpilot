@@ -134,7 +134,7 @@ export function resizeDivider(segments, dividerIndex, boundaryMeters, usableWidt
   return next;
 }
 
-export function isShelfLike(type) {
-  return !type || ["shelf", "rack", "gondola", "storage"].includes(type);
+export function isShelfLike(_type) {
+  return true;
 }
 

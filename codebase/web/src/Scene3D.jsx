@@ -1,17 +1,14 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { resolveAssetUrl } from "./assetUrl.js";
-import { pointInPolygon } from "./layout-editor/polygonCanvas.js";
+import { pointInPolygon, shelfCanvasAabb, gondolaCanvasAabb } from "./layout-editor/polygonCanvas.js";
 import { isDoubleSided, normalizeShelfUI, shelvesForScene3D } from "./layout-editor/shelfFaces.js";
-
-function productFacingColor(productId) {
-  let hash = 0;
-  const s = String(productId || "x");
-  for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
-  return new THREE.Color(`hsl(${hue}, 62%, 48%)`);
-}
+import {
+  buildProductLookup,
+  productDimensions,
+  productImageUrl,
+  resolveCatalogProduct,
+} from "./productCatalog.js";
 
 function insideFloor(x, z, layout) {
   if (layout.shape === "polygon" && layout.polygon?.length >= 3) {
@@ -127,45 +124,87 @@ function buildWalkerAvatar() {
   };
 }
 
+function loadProductTexture(texLoader, texCache, url, mat, disposables, alive) {
+  const cached = texCache.get(url);
+  if (cached) {
+    mat.map = cached;
+    mat.color.set(0xffffff);
+    mat.needsUpdate = true;
+    return;
+  }
+  texLoader.load(
+    url,
+    (tex) => {
+      if (!alive()) return;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      texCache.set(url, tex);
+      disposables.push(tex);
+      mat.map = tex;
+      mat.color.set(0xffffff);
+      mat.needsUpdate = true;
+    },
+    undefined,
+    () => {
+      if (!alive()) return;
+      mat.color.set(0xe5e7eb);
+      mat.needsUpdate = true;
+    }
+  );
+}
+
+function addProductFacing(group, opts) {
+  const {
+    x,
+    y,
+    z,
+    rotY,
+    width,
+    height,
+    product,
+    imageUrl,
+    texLoader,
+    texCache,
+    disposables,
+    alive,
+  } = opts;
+  const geo = new THREE.PlaneGeometry(Math.max(0.08, width), Math.max(0.1, height));
+  const mat = new THREE.MeshStandardMaterial({
+    color: imageUrl ? 0xffffff : 0xe5e7eb,
+    roughness: 0.55,
+    side: THREE.DoubleSide,
+  });
+  if (imageUrl) loadProductTexture(texLoader, texCache, imageUrl, mat, disposables, alive);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.y = rotY;
+  mesh.userData.productId = product?.id || null;
+  mesh.userData.productName = product?.name || null;
+  group.add(mesh);
+  disposables.push(geo, mat);
+}
+
 /** Immersive Three.js: Orbit (zoom/pan) or Walk; shelves, levels, planogram facings. */
-export default function Scene3D({ layout, products = [], walkMode = false }) {
+export default function Scene3D({
+  layout,
+  products = [],
+  walkMode = false,
+  highlightShelfId = null,
+  highlightPairId = null,
+  focusRequest = 0,
+  contentRevision = 0,
+}) {
   const ref = useRef(null);
 
   useEffect(() => {
     const el = ref.current;
     if (!el || !layout) return undefined;
 
-    const productImages = new Map();
-    for (const p of products || []) {
-      const url = p.imageUrl || p.attributes?.imageUrl;
-      if (url) productImages.set(p.id, resolveAssetUrl(url));
-    }
+    let alive = true;
+    const isAlive = () => alive;
+
+    const productLookup = buildProductLookup(products);
     const texLoader = new THREE.TextureLoader();
     const texCache = new Map();
-    const applyTexture = (mat, url, disposables) => {
-      const cached = texCache.get(url);
-      if (cached) {
-        mat.map = cached;
-        mat.color.set(0xffffff);
-        mat.needsUpdate = true;
-        return;
-      }
-      texLoader.load(
-        url,
-        (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace;
-          texCache.set(url, tex);
-          disposables.push(tex);
-          mat.map = tex;
-          mat.color.set(0xffffff);
-          mat.needsUpdate = true;
-        },
-        undefined,
-        () => {
-          /* broken/CORS image → keep color fallback */
-        }
-      );
-    };
 
     const width = el.clientWidth || 640;
     const height = el.clientHeight || 420;
@@ -259,7 +298,9 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       layout.shelves?.length ? layout.shelves : layout.fixtures || []
     );
     let facingBudget = 0;
-    const MAX_FACINGS = 500;
+    const MAX_FACINGS = 800;
+
+    let highlightCenter = null;
 
     for (const raw of shelves) {
       const f = normalizeShelfUI(raw);
@@ -270,6 +311,14 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       const dual = isDoubleSided(f);
       const faceA = f.faces?.find((face) => face.id === "A");
       const faceB = f.faces?.find((face) => face.id === "B");
+
+      const isHighlighted =
+        highlightShelfId &&
+        (f.id === highlightShelfId ||
+          f.pairShelfIds?.front === highlightShelfId ||
+          f.pairShelfIds?.back === highlightShelfId ||
+          (highlightPairId && f.pairId === highlightPairId));
+
       let baseColor = new THREE.Color("#A30A2A");
       try {
         baseColor = new THREE.Color(f.color || faceA?.color || "#A30A2A");
@@ -280,13 +329,43 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
       const group = new THREE.Group();
       group.position.set(Number(f.x) || 0, 0, Number(f.y) || 0);
       group.rotation.y = -rot;
+      group.userData.shelfId = f.id;
+      group.userData.pairId = f.pairId || null;
 
       const frameGeo = new THREE.BoxGeometry(w, 0.08, d);
-      const frameMat = new THREE.MeshStandardMaterial({ color: baseColor, roughness: 0.7 });
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: baseColor,
+        roughness: 0.7,
+        transparent: Boolean(highlightShelfId && !isHighlighted),
+        opacity: highlightShelfId && !isHighlighted ? 0.72 : 1,
+      });
+      if (isHighlighted) {
+        frameMat.emissive = new THREE.Color(0xa30a2a);
+        frameMat.emissiveIntensity = 0.45;
+      }
       const frame = new THREE.Mesh(frameGeo, frameMat);
       frame.position.set(w / 2, 0.04, d / 2);
       group.add(frame);
       disposables.push(frameGeo, frameMat);
+
+      if (isHighlighted) {
+        let aabb = shelfCanvasAabb(f);
+        if (f.pairShelfIds?.front && f.pairShelfIds?.back) {
+          const shelfList = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+          const front = shelfList.find((s) => s.id === f.pairShelfIds.front) || f;
+          const back = shelfList.find((s) => s.id === f.pairShelfIds.back);
+          if (back) aabb = gondolaCanvasAabb(front, back);
+        } else if (f.pairId && highlightPairId) {
+          const shelfList = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+          const mate = shelfList.find((s) => s.pairId === f.pairId && s.id !== f.id);
+          if (mate) {
+            const front = f.pairRole === "back" ? mate : f;
+            const back = f.pairRole === "back" ? f : mate;
+            aabb = gondolaCanvasAabb(front, back);
+          }
+        }
+        highlightCenter = { x: aabb.x + aabb.w / 2, z: aabb.y + aabb.d / 2 };
+      }
 
       if (dual) {
         const spineGeo = new THREE.BoxGeometry(w * 0.96, h * 0.92, Math.max(0.06, d * 0.1));
@@ -359,28 +438,40 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
 
       const facePlanograms = dual
         ? [
-            { id: "A", planogram: faceA?.planogram || f.planogram || [], z: d * 0.12 },
-            { id: "B", planogram: faceB?.planogram || [], z: d * 0.88 },
+            { id: "A", planogram: faceA?.planogram || f.planogram || [], z: d * 0.1, rotY: Math.PI },
+            { id: "B", planogram: faceB?.planogram || [], z: d * 0.9, rotY: 0 },
           ]
-        : [{ id: "A", planogram: f.planogram || [], z: d * 0.35 }];
+        : [{ id: "A", planogram: f.planogram || faceA?.planogram || [], z: d * 0.5, rotY: Math.PI }];
 
       for (const face of facePlanograms) {
-        for (const p of face.planogram || []) {
+        for (const placement of face.planogram || []) {
           if (facingBudget >= MAX_FACINGS) break;
-          const lv = levels.find((l) => l.levelIndex === p.levelIndex) || levels[0];
-          const y = (Number(lv?.heightFromFloorMeters) || 0.4) + 0.12;
-          const facings = Math.max(1, Number(p.facings) || 1);
-          const boxW = Math.min(w / facings, 0.22);
-          const imageUrl = productImages.get(p.productId);
-          for (let i = 0; i < facings && facingBudget < MAX_FACINGS; i++) {
-            const geo = new THREE.BoxGeometry(boxW * 0.9, 0.2, d * 0.22);
-            const facingColor = productFacingColor(p.productId);
-            const mat = new THREE.MeshStandardMaterial({ color: facingColor, roughness: 0.55 });
-            if (imageUrl) applyTexture(mat, imageUrl, disposables);
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(boxW * (i + 0.5) + (Number(p.positionX) || 0), y, face.z);
-            group.add(mesh);
-            disposables.push(geo, mat);
+          const lv = levels.find((l) => l.levelIndex === placement.levelIndex) || levels[0];
+          const y = (Number(lv?.heightFromFloorMeters) || 0.4) + 0.1;
+          const facings = Math.max(1, Number(placement.facings) || 1);
+          const product = resolveCatalogProduct(productLookup, placement.productId);
+          const imageUrl = productImageUrl(product);
+          const dims = productDimensions(product);
+          const slotW = w / facings;
+          const facingW = Math.min(slotW * 0.88, dims.w);
+          const facingH = Math.min(Math.max(dims.h, 0.18), h * 0.35);
+          const startX = Number(placement.positionX) || 0;
+
+          for (let i = 0; i < facings && facingBudget < MAX_FACINGS; i += 1) {
+            addProductFacing(group, {
+              x: startX + slotW * (i + 0.5),
+              y: y + facingH / 2,
+              z: face.z,
+              rotY: face.rotY,
+              width: facingW,
+              height: facingH,
+              product,
+              imageUrl,
+              texLoader,
+              texCache,
+              disposables,
+              alive: isAlive,
+            });
             facingBudget += 1;
           }
         }
@@ -438,10 +529,13 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
         if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
       };
     } else {
-      camera.position.set(cx + maxDim * 0.55, maxDim * 0.75, cz + maxDim * 0.55);
-      camera.lookAt(cx, 0.5, cz);
+      const lookX = highlightCenter?.x ?? cx;
+      const lookZ = highlightCenter?.z ?? cz;
+      const camDist = highlightCenter ? Math.max(4, maxDim * 0.35) : maxDim * 0.55;
+      camera.position.set(lookX + camDist * 0.6, maxDim * 0.45, lookZ + camDist * 0.6);
+      camera.lookAt(lookX, 0.5, lookZ);
       controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.set(cx, 0.5, cz);
+      controls.target.set(lookX, 0.5, lookZ);
       controls.enableDamping = true;
       controls.maxPolarAngle = Math.PI / 2.05;
       controls.minPolarAngle = 0.12;
@@ -539,6 +633,7 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
     animate();
 
     return () => {
+      alive = false;
       cancelAnimationFrame(frame);
       cleanupWalk?.();
       cleanupOrbit?.();
@@ -550,10 +645,11 @@ export default function Scene3D({ layout, products = [], walkMode = false }) {
           /* ignore */
         }
       }
+      texCache.forEach((tex) => tex.dispose?.());
       renderer.dispose();
       el.innerHTML = "";
     };
-  }, [layout, products, walkMode]);
+  }, [layout, products, walkMode, highlightShelfId, highlightPairId, focusRequest, contentRevision]);
 
   return (
     <div

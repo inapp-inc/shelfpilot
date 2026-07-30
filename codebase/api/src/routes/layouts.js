@@ -29,6 +29,7 @@ import {
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../services/zones.js";
 import { packAislesAndShelves } from "../services/layoutPacker.js";
 import { bindShelvesToAisles, finalizeAisleShelfBinding } from "../services/aisleBinding.js";
+import { finalizeAisleLabeling } from "../services/aisleLabeling.js";
 import { assignCategoryMix } from "../services/categoryMixPacker.js";
 import { applyFixtureTypesToShelves } from "../services/categoryFixtureDefaults.js";
 import { listCategoriesForLayout, productAllowedForShelf, resolveCategoryId } from "../services/categoryTree.js";
@@ -1122,6 +1123,11 @@ layoutsRouter.post(
     let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
     layout.shelves = bound.shelves;
     layout.aisles = bound.aisles;
+    ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleLabeling(
+      layout.shelves,
+      layout.aisles,
+      layout
+    ));
 
     layout.fixtures = [];
     layout.mappings = [];
@@ -1138,6 +1144,11 @@ layoutsRouter.post(
       bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
       layout.shelves = bound.shelves;
       layout.aisles = bound.aisles;
+      ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleLabeling(
+        layout.shelves,
+        layout.aisles,
+        layout
+      ));
     }
 
     saveNormalized(layout);

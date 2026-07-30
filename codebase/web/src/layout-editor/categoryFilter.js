@@ -17,12 +17,27 @@ const LEGACY_CATEGORY_ALIASES = {
   "cv-personal": "cat-health",
 };
 
-function normalizeCategoryKey(value) {
+export function normalizeCategoryKey(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/^cat-/, "")
     .replace(/^(hm-|cv-|ph-)/, "")
     .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Merge category lists for a layout vertical (dedupe by id). */
+export function mergeCategoriesForLayout(vertical, listsByVertical) {
+  const seen = new Set();
+  const merged = [];
+  for (const v of catalogVerticalsForLayout(vertical)) {
+    for (const c of listsByVertical[v] || []) {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        merged.push(c);
+      }
+    }
+  }
+  return merged;
 }
 
 export function resolveCategoryId(categoryId, categories) {

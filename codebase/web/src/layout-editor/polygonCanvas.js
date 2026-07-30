@@ -18,6 +18,23 @@ export function polygonAabb(poly) {
   };
 }
 
+/** True when fixture polygon is clearly inset inside the store envelope (nested layout). */
+export function fixtureZoneDistinctFromEnvelope(poly, envelope, marginMeters = 0.5) {
+  if (!poly?.length || !envelope) return false;
+  const aabb = polygonAabb(poly);
+  if (!aabb) return false;
+  const ex = Number(envelope.x) || 0;
+  const ey = Number(envelope.y) || 0;
+  const ew = Number(envelope.widthMeters) || 0;
+  const ed = Number(envelope.depthMeters) || 0;
+  const m = marginMeters;
+  const insetLeft = aabb.minX - ex;
+  const insetTop = aabb.minY - ey;
+  const insetRight = ex + ew - aabb.maxX;
+  const insetBottom = ey + ed - aabb.maxY;
+  return insetLeft > m || insetTop > m || insetRight > m || insetBottom > m;
+}
+
 export function layoutStoreEnvelope(layout) {
   const w = Number(layout?.widthMeters) || 10;
   const d = Number(layout?.depthMeters) || 8;
@@ -33,42 +50,224 @@ export function layoutStoreEnvelope(layout) {
   return { x: 0, y: 0, widthMeters: w, depthMeters: d };
 }
 
-export function layoutCanvasBounds(layout) {
-  const envelope = layoutStoreEnvelope(layout);
-  const poly =
-    layout?.shape === "polygon" && layout.polygon?.length >= 3 ? layout.polygon : null;
-  if (poly) {
-    const aabb = polygonAabb(poly);
-    const envMaxX = envelope.x + envelope.widthMeters;
-    const envMaxY = envelope.y + envelope.depthMeters;
-    const minX = Math.min(envelope.x, aabb.minX);
-    const minY = Math.min(envelope.y, aabb.minY);
-    const maxX = Math.max(envMaxX, aabb.maxX);
-    const maxY = Math.max(envMaxY, aabb.maxY);
-    return {
-      minX,
-      minY,
-      maxX,
-      maxY,
-      width: Math.max(0.1, maxX - minX),
-      height: Math.max(0.1, maxY - minY),
-      polygon: poly,
-      storeEnvelope: envelope,
-      strict: true,
-    };
+/** Axis-aligned rectangle polygon (clockwise from top-left in store coords). */
+export function rectanglePolygon(x, y, widthMeters, depthMeters) {
+  const w = Number(widthMeters) || 0;
+  const d = Number(depthMeters) || 0;
+  return [
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + d },
+    { x, y: y + d },
+  ];
+}
+
+/** True when every vertex of the polygon lies inside the store envelope. */
+export function polygonInsideEnvelope(poly, envelope) {
+  if (!poly?.length || !envelope) return false;
+  const maxX = envelope.x + envelope.widthMeters;
+  const maxY = envelope.y + envelope.depthMeters;
+  return poly.every((p) => {
+    const px = Number(p.x);
+    const py = Number(p.y);
+    return px >= envelope.x && px <= maxX && py >= envelope.y && py <= maxY;
+  });
+}
+
+/**
+ * Resize a rectangle inside an envelope, keeping its centre fixed (all 4 edges move equally).
+ */
+export function fitRectanglePolygonInEnvelope(envelope, widthMeters, depthMeters, existingPoly) {
+  if (!envelope) return null;
+  const ex = Number(envelope.x) || 0;
+  const ey = Number(envelope.y) || 0;
+  const ew = Number(envelope.widthMeters) || 10;
+  const ed = Number(envelope.depthMeters) || 8;
+  const w = Math.min(Math.max(0.5, Number(widthMeters) || 0.5), ew);
+  const d = Math.min(Math.max(0.5, Number(depthMeters) || 0.5), ed);
+
+  let cx = ex + ew / 2;
+  let cy = ey + ed / 2;
+  if (existingPoly?.length >= 3) {
+    const aabb = polygonAabb(existingPoly);
+    if (aabb) {
+      cx = (aabb.minX + aabb.maxX) / 2;
+      cy = (aabb.minY + aabb.maxY) / 2;
+    }
   }
-  const w = envelope.widthMeters;
-  const d = envelope.depthMeters;
+
+  let ox = cx - w / 2;
+  let oy = cy - d / 2;
+
+  // Keep fully inside envelope (centre shifts only when clamped at edges).
+  ox = Math.max(ex, Math.min(ox, ex + ew - w));
+  oy = Math.max(ey, Math.min(oy, ey + ed - d));
+
+  return rectanglePolygon(ox, oy, w, d);
+}
+
+/** Resize store envelope from its centre (± on all four sides). */
+export function centeredStoreEnvelope(oldEnvelope, widthMeters, depthMeters) {
+  const prev = oldEnvelope || { x: 0, y: 0, widthMeters: 10, depthMeters: 8 };
+  const w = Math.max(1, Number(widthMeters) || prev.widthMeters);
+  const d = Math.max(1, Number(depthMeters) || prev.depthMeters);
+  const cx = (Number(prev.x) || 0) + (Number(prev.widthMeters) || w) / 2;
+  const cy = (Number(prev.y) || 0) + (Number(prev.depthMeters) || d) / 2;
   return {
-    minX: envelope.x,
-    minY: envelope.y,
-    maxX: envelope.x + w,
-    maxY: envelope.y + d,
-    width: w,
-    height: d,
-    polygon: null,
+    x: cx - w / 2,
+    y: cy - d / 2,
+    widthMeters: w,
+    depthMeters: d,
+  };
+}
+
+/** Saved fixture-zone polygon (3+ vertices), regardless of layout.shape label. */
+export function layoutFixturePolygon(layout) {
+  return layout?.polygon?.length >= 3 ? layout.polygon : null;
+}
+
+export function polygonDimensions(poly) {
+  const aabb = polygonAabb(poly);
+  if (!aabb) return null;
+  return { w: aabb.width, d: aabb.height };
+}
+
+const MIN_FIXTURE_DIM = 0.5;
+
+/** Force fixture polygon to axis-aligned rectangle (for W×D editing). */
+export function normalizeFixtureRectangle(poly) {
+  const aabb = polygonAabb(poly);
+  if (!aabb) return null;
+  return rectanglePolygon(aabb.minX, aabb.minY, aabb.width, aabb.height);
+}
+
+function clampFixtureAabb(minX, minY, maxX, maxY, envelope) {
+  const ex = Number(envelope?.x) || 0;
+  const ey = Number(envelope?.y) || 0;
+  const eMaxX = ex + (Number(envelope?.widthMeters) || 0);
+  const eMaxY = ey + (Number(envelope?.depthMeters) || 0);
+  let x1 = Math.max(ex, Math.min(minX, eMaxX - MIN_FIXTURE_DIM));
+  let y1 = Math.max(ey, Math.min(minY, eMaxY - MIN_FIXTURE_DIM));
+  let x2 = Math.max(x1 + MIN_FIXTURE_DIM, Math.min(maxX, eMaxX));
+  let y2 = Math.max(y1 + MIN_FIXTURE_DIM, Math.min(maxY, eMaxY));
+  return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
+}
+
+function rectPolyFromBounds(minX, minY, maxX, maxY) {
+  return rectanglePolygon(minX, minY, maxX - minX, maxY - minY);
+}
+
+/** Drag a corner handle — keeps an axis-aligned fixture rectangle. */
+export function resizeFixtureRectCorner(aabb, cornerIndex, x, y, envelope) {
+  if (!aabb) return null;
+  let { minX, minY, maxX, maxY } = aabb;
+  const px = Number(x);
+  const py = Number(y);
+  if (cornerIndex === 0) {
+    minX = px;
+    minY = py;
+  } else if (cornerIndex === 1) {
+    maxX = px;
+    minY = py;
+  } else if (cornerIndex === 2) {
+    maxX = px;
+    maxY = py;
+  } else {
+    minX = px;
+    maxY = py;
+  }
+  const b = clampFixtureAabb(minX, minY, maxX, maxY, envelope);
+  return rectPolyFromBounds(b.minX, b.minY, b.maxX, b.maxY);
+}
+
+/** Drag an edge handle — resizes one side of the fixture rectangle. */
+export function resizeFixtureRectEdge(aabb, edgeIndex, x, y, envelope) {
+  if (!aabb) return null;
+  let { minX, minY, maxX, maxY } = aabb;
+  const px = Number(x);
+  const py = Number(y);
+  if (edgeIndex === 0) minY = py;
+  else if (edgeIndex === 1) maxX = px;
+  else if (edgeIndex === 2) maxY = py;
+  else minX = px;
+  const b = clampFixtureAabb(minX, minY, maxX, maxY, envelope);
+  return rectPolyFromBounds(b.minX, b.minY, b.maxX, b.maxY);
+}
+
+/** Axis-aligned fixture zone (product area) inside the store envelope. */
+export function layoutFixtureZoneRect(layout, previewPoly = null) {
+  const env = layoutStoreEnvelope(layout);
+  const poly = layoutFixturePolygon(layout) || previewPoly;
+  if (poly?.length >= 3) {
+    const aabb = polygonAabb(poly);
+    if (aabb) {
+      return {
+        x: aabb.minX,
+        y: aabb.minY,
+        widthMeters: aabb.width,
+        depthMeters: aabb.height,
+      };
+    }
+  }
+  const w = Number(layout?.widthMeters) || env.widthMeters;
+  const d = Number(layout?.depthMeters) || env.depthMeters;
+  const fitted = fitRectanglePolygonInEnvelope(env, w, d, layout?.polygon);
+  if (fitted?.length >= 3) {
+    const aabb = polygonAabb(fitted);
+    if (aabb) {
+      return {
+        x: aabb.minX,
+        y: aabb.minY,
+        widthMeters: aabb.width,
+        depthMeters: aabb.height,
+      };
+    }
+  }
+  return {
+    x: env.x,
+    y: env.y,
+    widthMeters: Math.min(w, env.widthMeters),
+    depthMeters: Math.min(d, env.depthMeters),
+  };
+}
+
+/** Floor polygon for rendering: saved fixture zone, or layout size when none drawn yet. */
+export function layoutFloorPolygon(layout, previewPoly = null) {
+  const rect = layoutFixtureZoneRect(layout, previewPoly);
+  return rectanglePolygon(rect.x, rect.y, rect.widthMeters, rect.depthMeters);
+}
+
+export function layoutCanvasBounds(layout, options = {}) {
+  const envelope = layoutStoreEnvelope(layout);
+  const savedPoly = layoutFixturePolygon(layout);
+  const previewPoly = options.previewPoly?.length >= 3 ? options.previewPoly : null;
+
+  let minX = envelope.x;
+  let minY = envelope.y;
+  let maxX = envelope.x + envelope.widthMeters;
+  let maxY = envelope.y + envelope.depthMeters;
+
+  const fixturePoly = savedPoly || previewPoly;
+  if (options.expandToEnvelope && fixturePoly?.length >= 3) {
+    const aabb = polygonAabb(fixturePoly);
+    if (aabb) {
+      minX = Math.min(minX, aabb.minX);
+      minY = Math.min(minY, aabb.minY);
+      maxX = Math.max(maxX, aabb.maxX);
+      maxY = Math.max(maxY, aabb.maxY);
+    }
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: Math.max(0.1, maxX - minX),
+    height: Math.max(0.1, maxY - minY),
+    polygon: savedPoly,
     storeEnvelope: envelope,
-    strict: false,
+    strict: Boolean(savedPoly?.length >= 3),
   };
 }
 
@@ -132,6 +331,44 @@ export function shelfRotatedCorners(shelf) {
     x: cx + lx * cos - ly * sin,
     y: cy + lx * sin + ly * cos,
   }));
+}
+
+/** Axis-aligned bounds of a rotated shelf in layout metres. */
+export function shelfCanvasAabb(shelf) {
+  const corners = shelfRotatedCorners(shelf);
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX,
+    y: minY,
+    w: Math.max(0.05, maxX - minX),
+    d: Math.max(0.05, maxY - minY),
+    originX: Number(shelf.x) || 0,
+    originY: Number(shelf.y) || 0,
+  };
+}
+
+/** Union AABB for a gondola front+back pair. */
+export function gondolaCanvasAabb(front, back) {
+  const corners = [...shelfRotatedCorners(front), ...shelfRotatedCorners(back)];
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX,
+    y: minY,
+    w: Math.max(0.05, maxX - minX),
+    d: Math.max(0.05, maxY - minY),
+    originX: Number(front.x) || 0,
+    originY: Number(front.y) || 0,
+  };
 }
 
 export function shelfFitsPolygon(shelf, poly) {

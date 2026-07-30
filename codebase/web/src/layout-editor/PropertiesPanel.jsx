@@ -1,7 +1,49 @@
 /** Properties for aisle corridor vs shelf height/levels/usable width. */
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
-import { isDoubleSided, isPairedShelf, shelfDisplayLabel, shelfFaceLabel, shelfUnitLabel } from "./shelfFaces.js";
+import { isDoubleSided, isPairedShelf, shelfDisplayLabel, shelfCanvasFaceLabel, shelfFaceDisplayLabel } from "./shelfFaces.js";
 import { isShelfLike } from "./planogramSegments.js";
+
+function StoreTypeBanner({ emoji, label }) {
+  if (!label) return null;
+  return (
+    <div className="props-store-type">
+      <span className="props-store-type-kicker">Store type</span>
+      <span className="props-store-type-value">
+        {emoji ? `${emoji} ` : ""}
+        {label}
+      </span>
+    </div>
+  );
+}
+
+const TEMPERATURE_ZONES = {
+  ambient: { emoji: "🌡️", label: "Ambient" },
+  chilled: { emoji: "🧊", label: "Chilled" },
+  frozen: { emoji: "❄️", label: "Frozen" },
+};
+
+function resolveShelfTypeLabel(type, fixtureTypes) {
+  return (
+    fixtureTypes.find((t) => t.type === type)?.label ||
+    FIXTURE_TYPES[type]?.label ||
+    type ||
+    "Shelf"
+  );
+}
+
+function ShelfTypeBanner({ type, fixtureTypes, temperatureZone }) {
+  const typeLabel = resolveShelfTypeLabel(type, fixtureTypes);
+  const zone = TEMPERATURE_ZONES[temperatureZone || "ambient"] || TEMPERATURE_ZONES.ambient;
+  return (
+    <div className="props-shelf-type">
+      <span className="props-store-type-kicker">Shelf type</span>
+      <span className="props-shelf-type-value">{typeLabel}</span>
+      <span className="props-shelf-type-zone">
+        {zone.emoji} {zone.label}
+      </span>
+    </div>
+  );
+}
 
 export default function PropertiesPanel({
   selection,
@@ -9,15 +51,19 @@ export default function PropertiesPanel({
   editDisabled,
   minAisle,
   verticalLabel,
+  storeTypeLabel,
+  storeTypeEmoji,
   onPatchAisle,
   onPatchShelf,
   onDeleteAisle,
   onDeleteShelf,
   onOpenPlanogram,
+  fixtureTypes = [],
 }) {
   if (!selection) {
     return (
       <div className="props-panel">
+        <StoreTypeBanner emoji={storeTypeEmoji} label={storeTypeLabel} />
         <div className="section-label">Properties</div>
         <div className="muted" style={{ fontSize: 12.5, fontStyle: "italic" }}>
           Select an aisle or shelf to configure spacing and height.
@@ -31,8 +77,11 @@ export default function PropertiesPanel({
     if (!a) return null;
     return (
       <div className="props-panel">
+        <StoreTypeBanner emoji={storeTypeEmoji} label={storeTypeLabel} />
         <div className="section-label">Aisle corridor</div>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>{a.name || "Aisle"}</div>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>
+          {a.aisleNumber != null ? `Aisle ${a.aisleNumber}` : a.name || "Aisle"}
+        </div>
         <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
           Width / aisle space (m)
         </label>
@@ -99,18 +148,20 @@ export default function PropertiesPanel({
   const s = (layout.shelves || layout.fixtures || []).find((x) => x.id === selection.id);
   if (!s) return null;
   const levels = s.levels || [];
-  const unitLabel = s.displayNumber != null ? shelfUnitLabel(s.displayNumber) : null;
-  const faceSummary = isPairedShelf(s)
-    ? `${shelfDisplayLabel(s)} (${s.pairRole === "back" ? "back" : "front"})`
-    : unitLabel && isDoubleSided(s)
-      ? `${shelfFaceLabel(s.displayNumber, "A")} / ${shelfFaceLabel(s.displayNumber, "B")}`
-      : unitLabel
-        ? shelfFaceLabel(s.displayNumber, "A")
-        : "—";
-  const typeLabel = (FIXTURE_TYPES[s.type] || FIXTURE_TYPES.shelf)?.label || s.type || "Shelf";
+  const aisles = layout.aisles || [];
+  const aisleLabel = shelfFaceDisplayLabel(s, aisles);
+  const faceSummary = aisleLabel
+    ? aisleLabel
+    : isPairedShelf(s)
+      ? `${shelfDisplayLabel(s, aisles)} (${s.pairRole === "back" ? "back" : "front"})`
+      : isDoubleSided(s)
+        ? `${shelfCanvasFaceLabel(s, "A", aisles, layout.shelves)} / ${shelfCanvasFaceLabel(s, "B", aisles, layout.shelves)}`
+        : shelfDisplayLabel(s, aisles);
 
   return (
     <div className="props-panel">
+      <StoreTypeBanner emoji={storeTypeEmoji} label={storeTypeLabel} />
+      <ShelfTypeBanner type={s.type} fixtureTypes={fixtureTypes} temperatureZone={s.temperatureZone} />
       <div className="section-label">Shelf</div>
       <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 4, display: "block" }}>
         Name
@@ -119,13 +170,32 @@ export default function PropertiesPanel({
         type="text"
         disabled={editDisabled}
         value={s.label || ""}
-        placeholder={unitLabel ? `Shelf ${unitLabel}` : "Shelf"}
+        placeholder={aisleLabel ? `Shelf ${aisleLabel}` : "Shelf"}
         onChange={(e) => onPatchShelf(s.id, { label: e.target.value })}
         style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb", fontWeight: 700 }}
       />
       <div className="mono" style={{ fontSize: 11, marginTop: 8, color: "#6b7280" }}>
-        {faceSummary} · {typeLabel}
+        {faceSummary}
       </div>
+      {fixtureTypes.length > 0 ? (
+        <>
+          <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
+            Shelf type
+          </label>
+          <select
+            disabled={editDisabled}
+            value={s.type || fixtureTypes[0]?.type || "shelf"}
+            onChange={(e) => onPatchShelf(s.id, { type: e.target.value })}
+            style={{ width: "100%", padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb" }}
+          >
+            {fixtureTypes.map((t) => (
+              <option key={t.type} value={t.type}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </>
+      ) : null}
       <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 10, display: "block" }}>
         Usable face width (m)
       </label>
