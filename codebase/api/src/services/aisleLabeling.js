@@ -1,5 +1,5 @@
 /**
- * Aisle-centric shelf labels: aisle 4 → 4A, 4B; back face uses opposite aisle number.
+ * Aisle-centric shelf labels: aisle 4 → 4A, 4B, 4C (unique per physical shelf on that aisle).
  */
 import { aisleFootprint } from "./polygonContainment.js";
 import { shelfCenter } from "./aisleBinding.js";
@@ -11,11 +11,17 @@ export function shelfLetter(index) {
   return SHELF_LETTERS[i] ?? String(i + 1);
 }
 
-/** e.g. aisle 4, second unit → "4B" */
-export function aisleShelfLabel(aisleNumber, shelfIndexAlongAisle) {
+/** Map 0 → AA, 1 → AB, 26 → BA, etc. */
+export function labelIndexToSuffix(labelIndex) {
+  const i = Math.max(0, Math.floor(Number(labelIndex) || 0));
+  return `${shelfLetter(Math.floor(i / 26))}${shelfLetter(i % 26)}`;
+}
+
+/** e.g. aisle 4, label index 0 → "4A"; index 1 → "4B" */
+export function aisleShelfLabel(aisleNumber, labelIndex) {
   const n = Number(aisleNumber);
   if (!Number.isFinite(n) || n < 1) return "—";
-  return `${n}${shelfLetter(shelfIndexAlongAisle ?? 0)}`;
+  return `${n}${shelfLetter(labelIndex)}`;
 }
 
 function aisleSortKey(aisle, layout) {
@@ -54,49 +60,27 @@ export function assignAisleNumbers(aisles, layout) {
   });
 }
 
-/** Assign shelfIndexAlongAisle (0→A) per aisle-bound shelf unit. */
+/** Assign shelfIndexAlongAisle (0→A) per physical shelf on its bound aisle. */
 export function assignAisleShelfLabels(shelves, aisles, layout) {
   const aisleById = new Map((aisles || []).map((a) => [a.id, a]));
-  const units = [];
-  const seenPairs = new Set();
+  const byAisle = new Map();
 
   for (const s of shelves || []) {
-    if (s.pairId) {
-      if (seenPairs.has(s.pairId)) continue;
-      seenPairs.add(s.pairId);
-      const front =
-        (shelves || []).find((x) => x.pairId === s.pairId && x.pairRole !== "back") || s;
-      units.push({ front, pairId: s.pairId });
-    } else {
-      units.push({ front: s, pairId: null });
-    }
-  }
-
-  const byAisle = new Map();
-  for (const u of units) {
-    const aid = u.front.aisleId;
+    const aid = s.aisleId;
     if (!aid) continue;
     if (!byAisle.has(aid)) byAisle.set(aid, []);
-    byAisle.get(aid).push(u);
+    byAisle.get(aid).push(s);
   }
 
   const indexByShelfId = new Map();
-  for (const [aisleId, aisleUnits] of byAisle) {
-    const aisle = aisleById.get(aisleId);
-    if (!aisle) continue;
-    aisleUnits.sort(
+  for (const [, aisleShelves] of byAisle) {
+    aisleShelves.sort(
       (a, b) =>
-        shelfProjectionOnAisle(a.front, aisle, layout) -
-        shelfProjectionOnAisle(b.front, aisle, layout)
+        shelfProjectionOnAisle(a, aisleById.get(a.aisleId), layout) -
+        shelfProjectionOnAisle(b, aisleById.get(b.aisleId), layout)
     );
-    aisleUnits.forEach((u, idx) => {
-      indexByShelfId.set(u.front.id, idx);
-      if (u.pairId) {
-        const back = (shelves || []).find(
-          (x) => x.pairId === u.pairId && x.pairRole === "back"
-        );
-        if (back) indexByShelfId.set(back.id, idx);
-      }
+    aisleShelves.forEach((s, slot) => {
+      indexByShelfId.set(s.id, slot);
     });
   }
 

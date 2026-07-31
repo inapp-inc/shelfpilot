@@ -5,6 +5,7 @@ import {
   aisleShelfLabel,
   assignAisleNumbers,
   finalizeAisleLabeling,
+  labelIndexToSuffix,
   shelfDisplayLabelFromAisle,
   shelfLetter,
 } from "../src/services/aisleLabeling.js";
@@ -16,9 +17,17 @@ test("shelfLetter maps index to A, B, C", () => {
   assert.equal(shelfLetter(2), "C");
 });
 
+test("labelIndexToSuffix maps index to AA, AB, AC", () => {
+  assert.equal(labelIndexToSuffix(0), "AA");
+  assert.equal(labelIndexToSuffix(1), "AB");
+  assert.equal(labelIndexToSuffix(2), "AC");
+  assert.equal(labelIndexToSuffix(26), "BA");
+});
+
 test("aisleShelfLabel formats aisle-centric labels", () => {
   assert.equal(aisleShelfLabel(4, 0), "4A");
   assert.equal(aisleShelfLabel(4, 1), "4B");
+  assert.equal(aisleShelfLabel(9, 2), "9C");
   assert.equal(aisleShelfLabel(12, 2), "12C");
 });
 
@@ -112,4 +121,56 @@ test("finalizeAisleLabeling runs after binding", () => {
   ({ shelves } = finalizeAisleShelfBinding(shelves, aisles, layout));
   const labeled = finalizeAisleLabeling(shelves, aisles, layout);
   assert.ok(labeled.aisles.some((a) => a.aisleNumber != null));
+  const front = labeled.shelves.find((s) => s.id === "f1");
+  const back = labeled.shelves.find((s) => s.id === "b1");
+  assert.notEqual(front.aisleId, back.aisleId);
+  const frontLbl = shelfDisplayLabelFromAisle(front, labeled.aisles);
+  const backLbl = shelfDisplayLabelFromAisle(back, labeled.aisles);
+  assert.notEqual(frontLbl, backLbl);
+});
+
+test("gondola back is labelled on rear aisle not front aisle", () => {
+  const layout = {
+    widthMeters: 10,
+    depthMeters: 8,
+    entryPoints: [{ x: 0, y: 0 }],
+  };
+  const aisles = [
+    { id: "walk1", orientation: "horizontal", x: 1, y: 1, widthMeters: 1.2, lengthMeters: 4 },
+    { id: "walk2", orientation: "horizontal", x: 1, y: 3.5, widthMeters: 1.2, lengthMeters: 4 },
+  ];
+  const shelves = [
+    {
+      id: "f1",
+      pairId: "p1",
+      pairRole: "front",
+      aisleId: "walk1",
+      x: 2,
+      y: 2,
+      usableWidthMeters: 1.2,
+      widthMeters: 1.2,
+      depthMeters: 0.6,
+      rotationDeg: 0,
+    },
+    {
+      id: "b1",
+      pairId: "p1",
+      pairRole: "back",
+      aisleId: "walk2",
+      x: 2,
+      y: 2.6,
+      usableWidthMeters: 1.2,
+      widthMeters: 1.2,
+      depthMeters: 0.6,
+      rotationDeg: 180,
+    },
+  ];
+  const labeled = finalizeAisleLabeling(shelves, aisles, layout);
+  const front = labeled.shelves.find((s) => s.id === "f1");
+  const back = labeled.shelves.find((s) => s.id === "b1");
+  const frontAisle = labeled.aisles.find((a) => a.id === front.aisleId);
+  const backAisle = labeled.aisles.find((a) => a.id === back.aisleId);
+  assert.notEqual(frontAisle?.aisleNumber, backAisle?.aisleNumber);
+  assert.equal(shelfDisplayLabelFromAisle(front, labeled.aisles), `${frontAisle.aisleNumber}A`);
+  assert.equal(shelfDisplayLabelFromAisle(back, labeled.aisles), `${backAisle.aisleNumber}A`);
 });

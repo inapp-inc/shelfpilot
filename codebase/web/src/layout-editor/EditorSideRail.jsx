@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import MerchandisingPanel from "./MerchandisingPanel.jsx";
-import MissingProductsPanel from "./MissingProductsPanel.jsx";
 import ShelfNumberLegend from "./ShelfNumberLegend.jsx";
 import ZonesEntryPanel from "./ZonesEntryPanel.jsx";
 
@@ -36,7 +35,7 @@ export default function EditorSideRail({
   toast,
   planogramCoverage,
   coverageLoading,
-  onRefreshCoverage,
+  onOpenMissingProducts,
   onGoToShelf,
   selectedShelfId,
   onShelfFaceChange,
@@ -48,7 +47,7 @@ export default function EditorSideRail({
   useEffect(() => {
     if (selection?.kind === "zone" || selection?.kind === "entryPoint") setTab("zones");
     else if (selection?.kind === "aisle") setTab("props");
-    else if (selection?.kind === "shelf" || selection?.kind === "fixture") setTab("merch");
+    else if (selection?.kind === "shelf" || selection?.kind === "fixture") setTab("props");
   }, [selection?.kind, selection?.id]);
 
   useEffect(() => {
@@ -59,10 +58,10 @@ export default function EditorSideRail({
     <div className="props-col editor-side-rail">
       <div className="mode-toggle editor-rail-tabs">
         <button type="button" className={tab === "props" ? "active" : ""} onClick={() => setTab("props")}>
-          Properties
+          Props
         </button>
         <button type="button" className={tab === "merch" ? "active" : ""} onClick={() => setTab("merch")}>
-          Merchandising
+          Merch
         </button>
         <button type="button" className={tab === "zones" ? "active" : ""} onClick={() => setTab("zones")}>
           Zones
@@ -114,21 +113,28 @@ export default function EditorSideRail({
               toast={toast}
               onShelfFaceChange={onShelfFaceChange}
             />
-            <MissingProductsPanel
-              coverage={planogramCoverage}
-              loading={coverageLoading}
-              onRefresh={onRefreshCoverage}
-              categories={categories}
-              alwaysShow={Boolean((layout.shelves || layout.fixtures || []).length)}
-              defaultOpen={Boolean(planogramCoverage?.missingCount)}
-              title="Products not on shelves"
-            />
-            <ShelfNumberLegend
-              layout={layout}
-              categories={categories}
-              onGoToShelf={onGoToShelf}
-              selectedShelfId={selectedShelfId}
-            />
+            <details className="editor-rail-details">
+              <summary>Shelf map</summary>
+              {planogramCoverage?.missingCount > 0 && onOpenMissingProducts ? (
+                <button
+                  type="button"
+                  className="btn-secondary editor-rail-missing-link"
+                  onClick={onOpenMissingProducts}
+                >
+                  View missing products ({planogramCoverage.missingCount})
+                </button>
+              ) : planogramCoverage && !coverageLoading && planogramCoverage.missingCount === 0 ? (
+                <p className="muted" style={{ fontSize: 12, margin: "0 0 10px" }}>
+                  All catalog products are placed on shelves.
+                </p>
+              ) : null}
+              <ShelfNumberLegend
+                layout={layout}
+                categories={categories}
+                onGoToShelf={onGoToShelf}
+                selectedShelfId={selectedShelfId}
+              />
+            </details>
           </>
         )}
       </div>

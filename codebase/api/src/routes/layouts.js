@@ -180,6 +180,7 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
 layoutsRouter.get("/layouts/:layoutId", authRequired, (req, res) => {
   const layout = repo.getLayout(req.params.layoutId);
   if (!layout) return res.status(404).json({ error: "not_found" });
+  normalizeLayout(layout);
   res.json(layout);
 });
 

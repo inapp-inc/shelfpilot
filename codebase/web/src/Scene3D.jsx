@@ -1,45 +1,72 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { pointInPolygon, shelfCanvasAabb, gondolaCanvasAabb } from "./layout-editor/polygonCanvas.js";
-import { isDoubleSided, normalizeShelfUI, shelvesForScene3D } from "./layout-editor/shelfFaces.js";
+import {
+  buildAisleMeshes,
+  buildStoreFloor,
+  createWebGLRenderer,
+  DEFAULT_OVERVIEW_ZOOM,
+  layoutOverviewCameraFromBounds,
+  layoutSceneBounds,
+  SCENE_COLORS,
+  setupSceneLighting,
+} from "./layout-editor/layoutSceneWebGL.js";
+import { pointInPolygon } from "./layout-editor/polygonCanvas.js";
+import {
+  isDoubleSided,
+  normalizeShelfUI,
+  segmentFaceIdForShelf,
+  shelvesForScene3D,
+} from "./layout-editor/shelfFaces.js";
+import { effectiveSegmentsForLevel, resolveSegmentId, shelfLevels } from "./layout-editor/planogramSegments.js";
 import {
   buildProductLookup,
-  productDimensions,
   productImageUrl,
   resolveCatalogProduct,
 } from "./productCatalog.js";
+import {
+  layoutBounds,
+  levelClearanceMeters,
+  productFacingSize,
+  shelf3dLocalBox,
+  shelfWorldFocus,
+} from "./scene3dDimensions.js";
 
 function insideFloor(x, z, layout) {
   if (layout.shape === "polygon" && layout.polygon?.length >= 3) {
     return pointInPolygon(x, z, layout.polygon);
   }
-  const w = layout.widthMeters || 10;
-  const d = layout.depthMeters || 10;
+  const { widthMeters: w, depthMeters: d } = layoutBounds(layout);
   return x >= 0.35 && x <= w - 0.35 && z >= 0.35 && z <= d - 0.35;
 }
 
-function clampOrbitTarget(target, layout) {
-  const w = layout.widthMeters || 10;
-  const d = layout.depthMeters || 10;
-  target.x = Math.max(0.5, Math.min(w - 0.5, target.x));
-  target.z = Math.max(0.5, Math.min(d - 0.5, target.z));
-  target.y = Math.max(0.2, Math.min(2.5, target.y));
+function softClampOrbitTarget(target, layout, maxDim, anchor = null) {
+  if (anchor) {
+    const span = Math.max(anchor.merchW || 1.2, anchor.d || 0.6, 0.8);
+    const radius = span * 1.35;
+    target.x = Math.max(anchor.x - radius, Math.min(anchor.x + radius, target.x));
+    target.z = Math.max(anchor.z - radius, Math.min(anchor.z + radius, target.z));
+    target.y = Math.max(0.15, Math.min((anchor.h || 2.5) * 0.85, target.y));
+    return;
+  }
+  const margin = Math.max(4, maxDim * 0.85);
+  const { widthMeters: w, depthMeters: d } = layoutBounds(layout);
+  target.x = Math.max(-margin, Math.min(w + margin, target.x));
+  target.z = Math.max(-margin, Math.min(d + margin, target.z));
+  target.y = Math.max(0.05, Math.min(maxDim * 2.5, target.y));
 }
 
-function clampOrbitCamera(camera, target, layout, maxDim) {
-  const margin = maxDim * 0.12;
-  const w = layout.widthMeters || 10;
-  const d = layout.depthMeters || 10;
-  camera.position.x = Math.max(-margin, Math.min(w + margin, camera.position.x));
-  camera.position.z = Math.max(-margin, Math.min(d + margin, camera.position.z));
-  camera.position.y = Math.max(0.6, Math.min(maxDim * 1.8, camera.position.y));
-  const dist = camera.position.distanceTo(target);
-  if (dist < 1.5) {
-    camera.position.copy(target).add(
-      camera.position.clone().sub(target).normalize().multiplyScalar(1.5)
-    );
+function layoutOverviewCamera(layout) {
+  return layoutOverviewCameraFromBounds(layoutSceneBounds(layout));
+}
+
+function dollyCamera(camera, target, factor) {
+  const offset = camera.position.clone().sub(target);
+  if (offset.lengthSq() < 1e-6) {
+    offset.set(0, 0, 1);
   }
+  offset.multiplyScalar(factor);
+  camera.position.copy(target).add(offset);
 }
 
 function buildWalkerAvatar() {
@@ -160,27 +187,146 @@ function addProductFacing(group, opts) {
     rotY,
     width,
     height,
+    depth = 0.08,
     product,
     imageUrl,
     texLoader,
     texCache,
     disposables,
     alive,
+    emphasized = false,
+    shelfFocus = false,
   } = opts;
-  const geo = new THREE.PlaneGeometry(Math.max(0.08, width), Math.max(0.1, height));
-  const mat = new THREE.MeshStandardMaterial({
-    color: imageUrl ? 0xffffff : 0xe5e7eb,
-    roughness: 0.55,
-    side: THREE.DoubleSide,
+  const facingW = Math.max(0.1, width);
+  const facingH = Math.max(0.16, height);
+  const facingD = Math.max(0.08, depth);
+  const hue = product?.id ? (product.id.charCodeAt(0) * 17) % 360 : 30;
+  const baseColor = new THREE.Color().setHSL(
+    hue / 360,
+    emphasized ? 0.55 : 0.42,
+    emphasized ? 0.58 : 0.68
+  );
+
+  const boxGeo = new THREE.BoxGeometry(facingW, facingH, facingD);
+  const boxMat = new THREE.MeshStandardMaterial({
+    color: baseColor,
+    roughness: 0.58,
+    metalness: 0.02,
   });
-  if (imageUrl) loadProductTexture(texLoader, texCache, imageUrl, mat, disposables, alive);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(x, y, z);
-  mesh.rotation.y = rotY;
-  mesh.userData.productId = product?.id || null;
-  mesh.userData.productName = product?.name || null;
-  group.add(mesh);
-  disposables.push(geo, mat);
+  if (emphasized) {
+    boxMat.emissive = new THREE.Color(0xa30a2a);
+    boxMat.emissiveIntensity = 0.1;
+  }
+  const box = new THREE.Mesh(boxGeo, boxMat);
+  box.position.set(x, y, z);
+  box.rotation.y = rotY;
+  box.userData.productId = product?.id || null;
+  box.userData.productName = product?.name || null;
+  group.add(box);
+  disposables.push(boxGeo, boxMat);
+
+  if (imageUrl) {
+    const planeGeo = new THREE.PlaneGeometry(facingW * 0.94, facingH * 0.94);
+    const planeMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    loadProductTexture(texLoader, texCache, imageUrl, planeMat, disposables, alive);
+    const plane = new THREE.Mesh(planeGeo, planeMat);
+    plane.position.set(x, y, z + (rotY === 0 ? facingD * 0.52 : -facingD * 0.52));
+    plane.rotation.y = rotY;
+    plane.renderOrder = shelfFocus ? 2 : 1;
+    plane.userData.productId = product?.id || null;
+    group.add(plane);
+    disposables.push(planeGeo, planeMat);
+  }
+}
+
+function planogramFromPhysicalShelf(layout, shelfId, merchandisingFaceId = "A") {
+  if (!shelfId || !layout) return [];
+  const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+  const phys = shelves.find((s) => s.id === shelfId);
+  if (!phys) return [];
+  const norm = normalizeShelfUI(phys);
+  const dataFaceId = segmentFaceIdForShelf(phys, merchandisingFaceId);
+  const face = norm.faces?.find((f) => f.id === dataFaceId) || norm.faces?.[0];
+  return face?.planogram || phys.planogram || [];
+}
+
+function resolveFacePlanograms(f, layout, faceId, focusPhysicalShelfId, shelfFocusMode, isHighlighted) {
+  const dual = isDoubleSided(f);
+  const faceA = f.faces?.find((face) => face.id === "A");
+  const faceB = f.faces?.find((face) => face.id === "B");
+  const activeFace = faceId === "B" ? "B" : "A";
+
+  if (shelfFocusMode && isHighlighted && focusPhysicalShelfId) {
+    const focused = planogramFromPhysicalShelf(layout, focusPhysicalShelfId, activeFace);
+    return [{ id: activeFace, planogram: focused }];
+  }
+
+  if (dual) {
+    return [
+      { id: "A", planogram: faceA?.planogram || f.planogram || [] },
+      { id: "B", planogram: faceB?.planogram || [] },
+    ];
+  }
+  return [{ id: "A", planogram: f.planogram || faceA?.planogram || [] }];
+}
+
+function facingPositions(placement, shelf, faceId, merchWidth) {
+  const levelIndex = Number(placement.levelIndex) || 0;
+  const segments = effectiveSegmentsForLevel(shelf, faceId, levelIndex);
+  const segId = resolveSegmentId(placement, shelf, faceId);
+  const seg = segments.find((s) => s.id === segId) || segments[0];
+  const facings = Math.max(1, Number(placement.facings) || 1);
+  const segW = seg?.widthMeters ?? merchWidth;
+  const startX = seg?.offsetMeters ?? 0;
+  const slotW = segW / facings;
+  const xs = [];
+  for (let i = 0; i < facings; i += 1) {
+    xs.push(startX + slotW * (i + 0.5));
+  }
+  return xs;
+}
+
+function faceShoppersideZ(d, dual, faceId) {
+  if (!dual) return d * 0.38;
+  return faceId === "B" ? d * 0.88 : d * 0.12;
+}
+
+function faceShopperRotY(dual, faceId) {
+  if (!dual) return Math.PI;
+  return faceId === "B" ? 0 : Math.PI;
+}
+
+function shelfFocusCamera(highlight, faceId = "A") {
+  const cx = highlight.x;
+  const cz = highlight.z;
+  const h = highlight.h || 2;
+  const rot = highlight.rot || 0;
+  const dual = Boolean(highlight.dual);
+  const merchW = highlight.merchW || highlight.w || 1.2;
+  const span = Math.max(merchW, highlight.d || 0.6);
+  const dist = Math.max(1.35, Math.min(2.6, span * 1.35));
+  const eyeY = Math.max(1.05, h * 0.5);
+  const lookY = Math.max(0.62, h * 0.46);
+  const faceFlip = dual && faceId === "B" ? Math.PI : 0;
+  const approach = rot + Math.PI + faceFlip;
+  const lookOffset = dual ? (span * 0.08) * (faceId === "B" ? 1 : -1) : 0;
+  const lookX = cx + Math.sin(approach + Math.PI / 2) * lookOffset;
+  const lookZ = cz + Math.cos(approach + Math.PI / 2) * lookOffset;
+  return {
+    camX: lookX + Math.sin(approach) * dist,
+    camY: eyeY,
+    camZ: lookZ + Math.cos(approach) * dist,
+    lookX,
+    lookY,
+    lookZ,
+    minDist: 0.75,
+    maxDist: Math.max(dist * 2.4, 8),
+  };
 }
 
 /** Immersive Three.js: Orbit (zoom/pan) or Walk; shelves, levels, planogram facings. */
@@ -190,10 +336,24 @@ export default function Scene3D({
   walkMode = false,
   highlightShelfId = null,
   highlightPairId = null,
+  highlightFaceId = "A",
+  focusPhysicalShelfId = null,
+  shelfFocusMode = false,
   focusRequest = 0,
   contentRevision = 0,
 }) {
   const ref = useRef(null);
+  const orbitApiRef = useRef(null);
+  const [navSeq, setNavSeq] = useState({ type: "", n: 0 });
+
+  useEffect(() => {
+    const api = orbitApiRef.current;
+    if (!api?.controls || !navSeq.type) return;
+    if (navSeq.type === "fitStore") api.fitStore();
+    else if (navSeq.type === "focusShelf") api.focusShelf();
+    else if (navSeq.type === "zoomIn") api.dolly(0.82);
+    else if (navSeq.type === "zoomOut") api.dolly(1.18);
+  }, [navSeq]);
 
   useEffect(() => {
     const el = ref.current;
@@ -206,108 +366,68 @@ export default function Scene3D({
     const texLoader = new THREE.TextureLoader();
     const texCache = new Map();
 
-    const width = el.clientWidth || 640;
-    const height = el.clientHeight || 420;
+    const readSize = () => ({
+      width: Math.max(320, el.clientWidth || 640),
+      height: Math.max(360, el.clientHeight || 480),
+    });
+    let { width, height } = readSize();
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xe9e5e0);
+    scene.background = new THREE.Color(SCENE_COLORS.background);
 
-    const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 400);
-    const cx = (layout.widthMeters || 10) / 2;
-    const cz = (layout.depthMeters || 10) / 2;
-    const maxDim = Math.max(layout.widthMeters || 10, layout.depthMeters || 10);
+    const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 500);
+    const sceneBounds = layoutSceneBounds(layout);
+    const cx = sceneBounds.centerX;
+    const cz = sceneBounds.centerZ;
+    const maxDim = sceneBounds.maxDim;
+    const floorW = sceneBounds.widthMeters;
+    const floorD = sceneBounds.depthMeters;
+    const storeH = sceneBounds.heightMeters;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = createWebGLRenderer(el);
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    el.innerHTML = "";
-    el.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.75);
-    dir.position.set(10, 22, 12);
-    scene.add(dir);
+    setupSceneLighting(scene);
 
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(layout.widthMeters, layout.depthMeters),
-      new THREE.MeshStandardMaterial({ color: 0xfbfaf8, roughness: 0.92 })
-    );
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.set(cx, 0, cz);
-    scene.add(floor);
+    const disposables = [];
+    const storeOverview = !shelfFocusMode && !walkMode;
 
-    const grid = new THREE.GridHelper(
-      Math.max(layout.widthMeters, layout.depthMeters),
-      Math.max(8, Math.floor(Math.max(layout.widthMeters, layout.depthMeters))),
-      0xd8d8d8,
-      0xe5e7eb
-    );
-    grid.position.set(cx, 0.01, cz);
-    scene.add(grid);
+    const floorLayer = buildStoreFloor(layout, sceneBounds);
+    scene.add(floorLayer.group);
+    disposables.push(...floorLayer.disposables);
 
-    const disposables = [floor.geometry, floor.material, grid.geometry];
+    const aisleLayer = buildAisleMeshes(layout, { overview: storeOverview });
+    scene.add(aisleLayer.group);
+    disposables.push(...aisleLayer.disposables);
 
-    if (layout.shape === "polygon" && layout.polygon?.length >= 3) {
-      const shape = new THREE.Shape();
-      layout.polygon.forEach((p, i) => {
-        if (i === 0) shape.moveTo(p.x, p.y);
-        else shape.lineTo(p.x, p.y);
-      });
-      shape.closePath();
-      const geo = new THREE.ShapeGeometry(shape);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xa30a2a,
-        transparent: true,
-        opacity: 0.08,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = 0.02;
-      scene.add(mesh);
-      disposables.push(geo, mat);
-    }
-
-    for (const a of layout.aisles || []) {
-      const aw = Math.max(0.4, Number(a.widthMeters) || 1);
-      const len =
-        a.lengthMeters != null ? Number(a.lengthMeters) : Math.max(2, (layout.widthMeters || 10) * 0.35);
-      const vertical = a.orientation === "vertical";
-      const geo = vertical
-        ? new THREE.BoxGeometry(aw, 0.04, len)
-        : new THREE.BoxGeometry(len, 0.04, aw);
-      let color = 0x9aa1ab;
-      try {
-        if (a.color) color = new THREE.Color(a.color);
-      } catch {
-        /* keep */
-      }
-      const mat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.35 });
-      const mesh = new THREE.Mesh(geo, mat);
-      const ax = a.x != null ? Number(a.x) : 1;
-      const az = a.y != null ? Number(a.y) : 1;
-      if (vertical) {
-        mesh.position.set(ax + aw / 2, 0.03, az + len / 2);
-      } else {
-        mesh.position.set(ax + len / 2, 0.03, az + aw / 2);
-      }
-      scene.add(mesh);
-      disposables.push(geo, mat);
-    }
+    let highlightCenter = null;
+    let highlightFocus = null;
 
     const shelves = shelvesForScene3D(
       layout.shelves?.length ? layout.shelves : layout.fixtures || []
     );
     let facingBudget = 0;
-    const MAX_FACINGS = 800;
+    const MAX_FACINGS = 1200;
 
-    let highlightCenter = null;
+    if (!shelfFocusMode) {
+      const grid = new THREE.GridHelper(
+        Math.max(floorW, floorD),
+        Math.max(8, Math.floor(Math.max(floorW, floorD))),
+        SCENE_COLORS.grid,
+        SCENE_COLORS.grid
+      );
+      grid.position.set(cx, 0.01, cz);
+      scene.add(grid);
+      disposables.push(grid.geometry);
+    }
 
     for (const raw of shelves) {
       const f = normalizeShelfUI(raw);
-      const w = Number(f.usableWidthMeters ?? f.widthMeters) || 1.2;
-      const d = Number(f.depthMeters) || 0.6;
-      const h = Number(f.heightMeters) || 2;
-      const rot = (((Number(f.rotationDeg) || 0) % 360) + 360) % 360 * (Math.PI / 180);
+      const box = shelf3dLocalBox(f, layout);
+      const w = box.widthMeters;
+      const merchW = box.merchWidthMeters;
+      const d = box.depthMeters;
+      const h = box.heightMeters;
+      const rot = box.rotationRad;
       const dual = isDoubleSided(f);
       const faceA = f.faces?.find((face) => face.id === "A");
       const faceB = f.faces?.find((face) => face.id === "B");
@@ -319,6 +439,8 @@ export default function Scene3D({
           f.pairShelfIds?.back === highlightShelfId ||
           (highlightPairId && f.pairId === highlightPairId));
 
+      const dimOthers = false;
+
       let baseColor = new THREE.Color("#A30A2A");
       try {
         baseColor = new THREE.Color(f.color || faceA?.color || "#A30A2A");
@@ -327,44 +449,42 @@ export default function Scene3D({
       }
 
       const group = new THREE.Group();
-      group.position.set(Number(f.x) || 0, 0, Number(f.y) || 0);
+      group.position.set(box.originX, 0, box.originZ);
       group.rotation.y = -rot;
       group.userData.shelfId = f.id;
       group.userData.pairId = f.pairId || null;
 
-      const frameGeo = new THREE.BoxGeometry(w, 0.08, d);
+      const frameGeo = new THREE.BoxGeometry(w, 0.06, d);
       const frameMat = new THREE.MeshStandardMaterial({
         color: baseColor,
         roughness: 0.7,
-        transparent: Boolean(highlightShelfId && !isHighlighted),
-        opacity: highlightShelfId && !isHighlighted ? 0.72 : 1,
+        transparent: dimOthers,
+        opacity: dimOthers ? 0.28 : 1,
       });
       if (isHighlighted) {
         frameMat.emissive = new THREE.Color(0xa30a2a);
-        frameMat.emissiveIntensity = 0.45;
+        frameMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.45;
       }
       const frame = new THREE.Mesh(frameGeo, frameMat);
-      frame.position.set(w / 2, 0.04, d / 2);
+      frame.position.set(w / 2, 0.03, d / 2);
       group.add(frame);
       disposables.push(frameGeo, frameMat);
 
-      if (isHighlighted) {
-        let aabb = shelfCanvasAabb(f);
-        if (f.pairShelfIds?.front && f.pairShelfIds?.back) {
-          const shelfList = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
-          const front = shelfList.find((s) => s.id === f.pairShelfIds.front) || f;
-          const back = shelfList.find((s) => s.id === f.pairShelfIds.back);
-          if (back) aabb = gondolaCanvasAabb(front, back);
-        } else if (f.pairId && highlightPairId) {
-          const shelfList = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
-          const mate = shelfList.find((s) => s.pairId === f.pairId && s.id !== f.id);
-          if (mate) {
-            const front = f.pairRole === "back" ? mate : f;
-            const back = f.pairRole === "back" ? f : mate;
-            aabb = gondolaCanvasAabb(front, back);
-          }
+      const uprightGeo = new THREE.BoxGeometry(0.04, h, 0.04);
+      const uprightMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.82 });
+      for (const ux of [0.04, w - 0.04]) {
+        for (const uz of [0.04, d - 0.04]) {
+          const upright = new THREE.Mesh(uprightGeo, uprightMat);
+          upright.position.set(ux, h / 2, uz);
+          group.add(upright);
         }
-        highlightCenter = { x: aabb.x + aabb.w / 2, z: aabb.y + aabb.d / 2 };
+      }
+      disposables.push(uprightGeo, uprightMat);
+
+      if (isHighlighted) {
+        const focus = shelfWorldFocus(raw, layout, highlightPairId);
+        highlightCenter = { x: focus.x, z: focus.z };
+        highlightFocus = focus;
       }
 
       if (dual) {
@@ -399,13 +519,7 @@ export default function Scene3D({
         disposables.push(boardB.geometry, boardB.material);
       }
 
-      const levels =
-        Array.isArray(f.levels) && f.levels.length
-          ? f.levels
-          : [
-              { levelIndex: 0, heightFromFloorMeters: 0.35 },
-              { levelIndex: 1, heightFromFloorMeters: h * 0.55 },
-            ];
+      const levels = shelfLevels(f);
 
       if (!dual) {
         for (const lv of levels) {
@@ -436,51 +550,98 @@ export default function Scene3D({
         }
       }
 
-      const facePlanograms = dual
-        ? [
-            { id: "A", planogram: faceA?.planogram || f.planogram || [], z: d * 0.1, rotY: Math.PI },
-            { id: "B", planogram: faceB?.planogram || [], z: d * 0.9, rotY: 0 },
-          ]
-        : [{ id: "A", planogram: f.planogram || faceA?.planogram || [], z: d * 0.5, rotY: Math.PI }];
+      const activeFace = highlightFaceId === "B" ? "B" : "A";
+      const segmentShelf =
+        shelfFocusMode && isHighlighted && focusPhysicalShelfId
+          ? normalizeShelfUI(
+              (layout.shelves?.length ? layout.shelves : layout.fixtures || []).find(
+                (s) => s.id === focusPhysicalShelfId
+              ) || f
+            )
+          : f;
+      const facePlanograms = resolveFacePlanograms(
+        f,
+        layout,
+        activeFace,
+        focusPhysicalShelfId,
+        shelfFocusMode,
+        isHighlighted
+      ).map((face) => ({
+        ...face,
+        z: faceShoppersideZ(d, dual, face.id),
+        rotY: faceShopperRotY(dual, face.id),
+      }));
 
-      for (const face of facePlanograms) {
-        for (const placement of face.planogram || []) {
-          if (facingBudget >= MAX_FACINGS) break;
-          const lv = levels.find((l) => l.levelIndex === placement.levelIndex) || levels[0];
-          const y = (Number(lv?.heightFromFloorMeters) || 0.4) + 0.1;
-          const facings = Math.max(1, Number(placement.facings) || 1);
-          const product = resolveCatalogProduct(productLookup, placement.productId);
-          const imageUrl = productImageUrl(product);
-          const dims = productDimensions(product);
-          const slotW = w / facings;
-          const facingW = Math.min(slotW * 0.88, dims.w);
-          const facingH = Math.min(Math.max(dims.h, 0.18), h * 0.35);
-          const startX = Number(placement.positionX) || 0;
+      const renderProducts = !shelfFocusMode || isHighlighted;
+      if (renderProducts) {
+        for (const face of facePlanograms) {
+          if (!face.planogram?.length) continue;
+          const segmentFaceId = segmentFaceIdForShelf(segmentShelf, face.id);
+          for (const placement of face.planogram) {
+            if (facingBudget >= MAX_FACINGS) break;
+            const lv =
+              levels.find((l) => Number(l.levelIndex) === Number(placement.levelIndex)) || levels[0];
+            const boardY = Number(lv?.heightFromFloorMeters) || 0.4;
+            const facings = Math.max(1, Number(placement.facings) || 1);
+            const product = resolveCatalogProduct(productLookup, placement.productId);
+            const imageUrl = productImageUrl(product);
+            const xs = facingPositions(placement, segmentShelf, segmentFaceId, merchW);
+            const slotW =
+              (effectiveSegmentsForLevel(segmentShelf, segmentFaceId, placement.levelIndex).find(
+                (s) => s.id === resolveSegmentId(placement, segmentShelf, segmentFaceId)
+              )?.widthMeters || merchW) / facings;
+            const clearance = levelClearanceMeters(lv, levels, h);
+            const facing = productFacingSize(product, slotW, clearance, d);
+            const depthFacings = Math.max(1, Number(placement.depthFacings) || 1);
 
-          for (let i = 0; i < facings && facingBudget < MAX_FACINGS; i += 1) {
-            addProductFacing(group, {
-              x: startX + slotW * (i + 0.5),
-              y: y + facingH / 2,
-              z: face.z,
-              rotY: face.rotY,
-              width: facingW,
-              height: facingH,
-              product,
-              imageUrl,
-              texLoader,
-              texCache,
-              disposables,
-              alive: isAlive,
-            });
-            facingBudget += 1;
+            for (let i = 0; i < xs.length && facingBudget < MAX_FACINGS; i += 1) {
+              for (let depthIdx = 0; depthIdx < depthFacings && facingBudget < MAX_FACINGS; depthIdx += 1) {
+                const depthStep = facing.d * 1.05;
+                const zPull = face.id === "B" ? -depthIdx * depthStep : depthIdx * depthStep;
+                addProductFacing(group, {
+                  x: xs[i],
+                  y: boardY + facing.h / 2 + 0.02,
+                  z: face.z + zPull,
+                  rotY: face.rotY,
+                  width: facing.w,
+                  height: facing.h,
+                  depth: facing.d,
+                  product,
+                  imageUrl,
+                  texLoader,
+                  texCache,
+                  disposables,
+                  alive: isAlive,
+                  emphasized: isHighlighted,
+                  shelfFocus: shelfFocusMode && isHighlighted,
+                });
+                facingBudget += 1;
+              }
+            }
           }
         }
+      }
+
+      if (isHighlighted && shelfFocusMode) {
+        const ringGeo = new THREE.RingGeometry(Math.max(w, d) * 0.55, Math.max(w, d) * 0.62, 48);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: 0xa30a2a,
+          transparent: true,
+          opacity: 0.35,
+          side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(w / 2, 0.05, d / 2);
+        group.add(ring);
+        disposables.push(ringGeo, ringMat);
       }
 
       scene.add(group);
     }
 
     let controls = null;
+    let cleanupOrbitKeys = null;
     const keys = new Set();
     let yaw = 0;
     let pitch = 0.2;
@@ -489,7 +650,7 @@ export default function Scene3D({
     let cleanupOrbit = null;
     let avatar = null;
     let avatarRig = null;
-    let walker = { x: cx, z: Math.min(cz + 2, Math.max(0.5, (layout.depthMeters || 10) - 0.5)) };
+    let walker = { x: cx, z: Math.min(cz + 2, Math.max(0.5, floorD - 0.5)) };
     let lastWalker = { ...walker };
 
     if (walkMode) {
@@ -529,27 +690,138 @@ export default function Scene3D({
         if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
       };
     } else {
-      const lookX = highlightCenter?.x ?? cx;
-      const lookZ = highlightCenter?.z ?? cz;
-      const camDist = highlightCenter ? Math.max(4, maxDim * 0.35) : maxDim * 0.55;
-      camera.position.set(lookX + camDist * 0.6, maxDim * 0.45, lookZ + camDist * 0.6);
-      camera.lookAt(lookX, 0.5, lookZ);
+      const focus = highlightFocus && shelfFocusMode ? shelfFocusCamera(highlightFocus, highlightFaceId) : null;
+      const overview = layoutOverviewCamera(layout);
+      const lookX = focus?.lookX ?? highlightCenter?.x ?? cx;
+      const lookZ = focus?.lookZ ?? highlightCenter?.z ?? cz;
+      const lookY = focus?.lookY ?? 0.5;
+
+      const applyView = (view, zoomFactor = 1) => {
+        camera.position.set(view.camX, view.camY, view.camZ);
+        controls.target.set(view.lookX, view.lookY, view.lookZ);
+        camera.lookAt(view.lookX, view.lookY, view.lookZ);
+        if (zoomFactor !== 1) {
+          dollyCamera(camera, controls.target, zoomFactor);
+        }
+        controls.update();
+      };
+
       controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.set(lookX, 0.5, lookZ);
+      controls.target.set(lookX, lookY, lookZ);
       controls.enableDamping = true;
-      controls.maxPolarAngle = Math.PI / 2.05;
-      controls.minPolarAngle = 0.12;
-      controls.minDistance = 2;
-      controls.maxDistance = maxDim * 2.2;
+      controls.dampingFactor = 0.08;
+      controls.enableZoom = true;
+      controls.zoomSpeed = 1.15;
+      controls.zoomToCursor = true;
+      controls.rotateSpeed = storeOverview ? 0.65 : 0.75;
+      controls.panSpeed = storeOverview ? 1.1 : shelfFocusMode ? 0.65 : 0.95;
+      controls.maxPolarAngle = storeOverview ? Math.PI / 2.5 : Math.PI / 2.02;
+      controls.minPolarAngle = storeOverview ? 0.02 : 0.04;
+      controls.minDistance = focus?.minDist ?? overview.minDist ?? 0.28;
+      controls.maxDistance = focus?.maxDist ?? overview.maxDist ?? Math.max(maxDim * 5.5, 40);
       controls.enablePan = true;
-      controls.screenSpacePanning = true;
+      controls.screenSpacePanning = false;
+      controls.mouseButtons = {
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN,
+      };
+      controls.touches = {
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN,
+      };
+
+      const orbitAnchor =
+        shelfFocusMode && highlightFocus
+          ? {
+              x: highlightFocus.x,
+              z: highlightFocus.z,
+              h: highlightFocus.h,
+              merchW: highlightFocus.merchW,
+              d: highlightFocus.d,
+            }
+          : null;
+
+      if (focus) {
+        applyView(focus);
+      } else {
+        applyView(overview, DEFAULT_OVERVIEW_ZOOM);
+      }
+
       const onOrbitChange = () => {
-        clampOrbitTarget(controls.target, layout);
-        clampOrbitCamera(camera, controls.target, layout, maxDim);
+        softClampOrbitTarget(controls.target, layout, maxDim, orbitAnchor);
+        camera.position.y = Math.max(0.22, camera.position.y);
+      };
+      const onOrbitStart = () => {
+        renderer.domElement.style.cursor = "grabbing";
+      };
+      const onOrbitEnd = () => {
+        renderer.domElement.style.cursor = "grab";
       };
       controls.addEventListener("change", onOrbitChange);
-      cleanupOrbit = () => controls.removeEventListener("change", onOrbitChange);
+      controls.addEventListener("start", onOrbitStart);
+      controls.addEventListener("end", onOrbitEnd);
+
+      const onOrbitKey = (e) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement?.isContentEditable) {
+          return;
+        }
+        if (e.key === "+" || e.key === "=") {
+          dollyCamera(camera, controls.target, 0.82);
+          controls.update();
+          e.preventDefault();
+        } else if (e.key === "-" || e.key === "_") {
+          dollyCamera(camera, controls.target, 1.18);
+          controls.update();
+          e.preventDefault();
+        } else if (e.key === "0") {
+          applyView(overview, DEFAULT_OVERVIEW_ZOOM);
+          e.preventDefault();
+        } else if ((e.key === "r" || e.key === "R") && focus) {
+          applyView(focus);
+          e.preventDefault();
+        }
+      };
+      window.addEventListener("keydown", onOrbitKey);
+
+      orbitApiRef.current = {
+        controls,
+        camera,
+        fitStore: () => applyView(overview, DEFAULT_OVERVIEW_ZOOM),
+        focusShelf: () => {
+          if (focus) applyView(focus);
+        },
+        dolly: (factor) => {
+          dollyCamera(camera, controls.target, factor);
+          controls.update();
+        },
+      };
+
+      cleanupOrbit = () => {
+        controls.removeEventListener("change", onOrbitChange);
+        controls.removeEventListener("start", onOrbitStart);
+        controls.removeEventListener("end", onOrbitEnd);
+        window.removeEventListener("keydown", onOrbitKey);
+      };
+      cleanupOrbitKeys = () => {
+        orbitApiRef.current = null;
+      };
     }
+
+    const onResize = () => {
+      if (!alive) return;
+      const next = readSize();
+      if (next.width === width && next.height === height) return;
+      width = next.width;
+      height = next.height;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+    };
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+    resizeObserver?.observe(el);
+    window.addEventListener("resize", onResize);
 
     const clock = new THREE.Clock();
     let frame = 0;
@@ -635,8 +907,11 @@ export default function Scene3D({
     return () => {
       alive = false;
       cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", onResize);
       cleanupWalk?.();
       cleanupOrbit?.();
+      cleanupOrbitKeys?.();
       controls?.dispose();
       for (const d of disposables) {
         try {
@@ -649,12 +924,72 @@ export default function Scene3D({
       renderer.dispose();
       el.innerHTML = "";
     };
-  }, [layout, products, walkMode, highlightShelfId, highlightPairId, focusRequest, contentRevision]);
+  }, [
+    layout,
+    products,
+    walkMode,
+    highlightShelfId,
+    highlightPairId,
+    highlightFaceId,
+    focusPhysicalShelfId,
+    shelfFocusMode,
+    contentRevision,
+  ]);
 
   return (
-    <div
-      ref={ref}
-      style={{ width: "100%", height: "100%", minHeight: 420, borderRadius: 8, overflow: "hidden", cursor: walkMode ? "pointer" : "grab" }}
-    />
+    <div className="scene3d-root">
+      <div
+        ref={ref}
+        className={`scene3d-canvas${shelfFocusMode ? " scene3d-canvas--focus" : ""}`}
+        style={{ cursor: walkMode ? "pointer" : "grab" }}
+      />
+      {!walkMode ? (
+        <div className="scene3d-nav scene3d-nav--compact" aria-label="3D navigation">
+          <div className="scene3d-nav-row">
+            <button
+              type="button"
+              className="scene3d-nav-btn scene3d-nav-btn--wide"
+              title="Fit entire store (0)"
+              onClick={() => setNavSeq({ type: "fitStore", n: Date.now() })}
+            >
+              Fit store
+            </button>
+            <button
+              type="button"
+              className="scene3d-nav-btn"
+              title="Zoom out"
+              onClick={() => setNavSeq({ type: "zoomOut", n: Date.now() })}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className="scene3d-nav-btn"
+              title="Zoom in"
+              onClick={() => setNavSeq({ type: "zoomIn", n: Date.now() })}
+            >
+              +
+            </button>
+          </div>
+          {shelfFocusMode ? (
+            <div className="scene3d-nav-row">
+              <button
+                type="button"
+                className="scene3d-nav-btn scene3d-nav-btn--wide"
+                title="Reset to shelf (R)"
+                onClick={() => setNavSeq({ type: "focusShelf", n: Date.now() })}
+              >
+                Reset shelf
+              </button>
+            </div>
+          ) : null}
+          <p className="scene3d-nav-hint muted">
+            {shelfFocusMode
+              ? "Scroll · drag rotate · right-drag pan · 0 fit · R reset shelf"
+              : "Racks + products · scroll · drag · right-drag pan · 0 fit store"}
+          </p>
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -7,7 +7,7 @@ import { createFloorPlanRenderer } from "./floorPlanWebGL.js";
  * WebGL background (grid, envelope, fixture fill) + Canvas2D entities, labels, interaction.
  */
 export default function FloorPlan2D(props) {
-  const { layout, scale, onWheelZoom, previewFixturePolygon, ...canvasProps } = props;
+  const { layout, scale, previewFixturePolygon, ...canvasProps } = props;
   const bounds = useMemo(
     () => layoutCanvasBounds(layout, { previewPoly: previewFixturePolygon }),
     [layout, previewFixturePolygon]
@@ -27,14 +27,6 @@ export default function FloorPlan2D(props) {
       rendererRef.current = null;
     };
   }, [bounds.width, bounds.height, bounds.minX, bounds.minY, scale, layout, previewFixturePolygon]);
-
-  useEffect(() => {
-    const el = compositeRef.current;
-    if (!el || !onWheelZoom) return undefined;
-    const onWheel = (e) => onWheelZoom(e);
-    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => el.removeEventListener("wheel", onWheel, { capture: true });
-  }, [onWheelZoom]);
 
   const w = bounds.width * scale;
   const h = bounds.height * scale;
@@ -58,7 +50,6 @@ export default function FloorPlan2D(props) {
         canvasBounds={bounds}
         webglBackground
         previewFixturePolygon={previewFixturePolygon}
-        onWheelZoom={onWheelZoom}
       />
     </div>
   );

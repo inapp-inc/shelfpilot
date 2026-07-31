@@ -19,7 +19,11 @@ const ERROR_MESSAGES = {
   segment_out_of_range: "Bay split is outside the shelf width.",
   segment_overlap: "Bay segments overlap — adjust split positions.",
   invalid_image_file: "Unsupported image file.",
-  duplicate_sku: "A product with this SKU already exists.",
+  product_category_mismatch: "Product category does not match this shelf face.",
+  shelf_category_required: "Assign a category to this shelf face before placing products.",
+  planogram_disabled: "Planogram editing is disabled for this store type.",
+  segment_not_found: "Bay segment not found on this shelf level.",
+  product_not_found: "Product not found in the catalog.",
   duplicate_email: "A user with this email already exists.",
 };
 

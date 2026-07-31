@@ -1,9 +1,9 @@
+import { useEffect, useMemo, useState } from "react";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import { emojiForCategory } from "../storeTypes.js";
 import { isDoubleSided, isPairedShelf, shelfFaceDisplayLabel } from "./shelfFaces.js";
 
-/** Maps aisle-centric shelf labels (4A, 4B, …) to categories — clickable for go-to. */
-export default function ShelfNumberLegend({ layout, categories, onGoToShelf, selectedShelfId }) {
+function buildLegendRows(layout) {
   const aisles = layout?.aisles || [];
   const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
   const rows = [];
@@ -47,76 +47,128 @@ export default function ShelfNumberLegend({ layout, categories, onGoToShelf, sel
     });
   }
 
+  return rows;
+}
+
+/** Maps aisle-centric shelf labels (4A, 4B, …) to categories — clickable for go-to. */
+export default function ShelfNumberLegend({ layout, categories, onGoToShelf, selectedShelfId }) {
+  const rows = useMemo(() => buildLegendRows(layout), [layout]);
+
+  const sortedAisles = useMemo(() => {
+    const byAisle = new Map();
+    for (const r of rows) {
+      if (!byAisle.has(r.aisleNumber)) byAisle.set(r.aisleNumber, []);
+      byAisle.get(r.aisleNumber).push(r);
+    }
+    for (const items of byAisle.values()) {
+      items.sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }));
+    }
+    return [...byAisle.entries()].sort((a, b) => a[0] - b[0]);
+  }, [rows]);
+
+  const [openAisles, setOpenAisles] = useState(() => new Set());
+
+  useEffect(() => {
+    if (!selectedShelfId) return;
+    const match = rows.find((r) => r.shelfId === selectedShelfId);
+    if (!match) return;
+    setOpenAisles((prev) => {
+      if (prev.has(match.aisleNumber)) return prev;
+      const next = new Set(prev);
+      next.add(match.aisleNumber);
+      return next;
+    });
+  }, [selectedShelfId, rows]);
+
   if (!rows.length) return null;
 
-  const byAisle = new Map();
-  for (const r of rows) {
-    const k = r.aisleNumber;
-    if (!byAisle.has(k)) byAisle.set(k, []);
-    byAisle.get(k).push(r);
+  function toggleAisle(aisleNum) {
+    setOpenAisles((prev) => {
+      const next = new Set(prev);
+      if (next.has(aisleNum)) next.delete(aisleNum);
+      else next.add(aisleNum);
+      return next;
+    });
   }
 
-  const sortedAisles = [...byAisle.entries()].sort((a, b) => a[0] - b[0]);
+  const allOpen = sortedAisles.length > 0 && sortedAisles.every(([n]) => openAisles.has(n));
 
   return (
     <div className="shelf-number-legend">
-      <div className="section-label" style={{ marginBottom: 8 }}>
-        Shelf numbers by aisle
+      <div className="shelf-legend-head">
+        <span className="section-label">Shelf numbers by aisle</span>
+        {sortedAisles.length > 1 ? (
+          <button
+            type="button"
+            className="shelf-legend-toggle-all"
+            onClick={() => {
+              if (allOpen) setOpenAisles(new Set());
+              else setOpenAisles(new Set(sortedAisles.map(([n]) => n)));
+            }}
+          >
+            {allOpen ? "Collapse all" : "Expand all"}
+          </button>
+        ) : null}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {sortedAisles.map(([aisleNum, items]) => (
-          <div key={aisleNum}>
-            <div className="mono" style={{ fontSize: 11, fontWeight: 700, marginBottom: 4, color: "#64748b" }}>
-              Aisle {aisleNum === 999 ? "—" : aisleNum}
+      <div className="shelf-legend-aisles">
+        {sortedAisles.map(([aisleNum, items]) => {
+          const open = openAisles.has(aisleNum);
+          const hasSelected = items.some((r) => r.shelfId === selectedShelfId);
+          const aisleLabel = aisleNum === 999 ? "Unassigned" : `Aisle ${aisleNum}`;
+
+          return (
+            <div
+              key={aisleNum}
+              className={`shelf-legend-aisle${open ? " is-open" : ""}${hasSelected ? " has-selected" : ""}`}
+            >
+              <button
+                type="button"
+                className="shelf-legend-aisle-head"
+                aria-expanded={open}
+                onClick={() => toggleAisle(aisleNum)}
+              >
+                <span className="shelf-legend-aisle-chevron" aria-hidden>
+                  {open ? "▾" : "▸"}
+                </span>
+                <span className="shelf-legend-aisle-title">{aisleLabel}</span>
+                <span className="shelf-legend-aisle-count mono">{items.length}</span>
+              </button>
+              {open ? (
+                <div className="shelf-legend-aisle-body">
+                  {items.map((r) => {
+                    const cat = categories?.find((c) => c.id === r.categoryId);
+                    const emoji = emojiForCategory(r.categoryId, cat?.name, cat?.temperatureZone);
+                    const selected = selectedShelfId === r.shelfId;
+
+                    return (
+                      <button
+                        key={r.key}
+                        type="button"
+                        className={`shelf-legend-row${selected ? " is-selected" : ""}`}
+                        onClick={() => onGoToShelf?.(r.label)}
+                        disabled={!onGoToShelf}
+                      >
+                        <span className="shelf-legend-emoji" aria-hidden>
+                          {emoji}
+                        </span>
+                        <span
+                          className="shelf-legend-label mono"
+                          style={{
+                            background: r.color ? `${r.color}33` : "rgba(163,10,42,0.12)",
+                            borderColor: r.color || "#A30A2A",
+                          }}
+                        >
+                          {r.label}
+                        </span>
+                        <span className="shelf-legend-category">{categoryLabel(categories, r.categoryId)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 4 }}>
-              {items.map((r) => {
-                const cat = categories?.find((c) => c.id === r.categoryId);
-                const emoji = emojiForCategory(r.categoryId, cat?.name, cat?.temperatureZone);
-                const selected = selectedShelfId === r.shelfId;
-                return (
-                  <button
-                    key={r.key}
-                    type="button"
-                    className="shelf-legend-row"
-                    onClick={() => onGoToShelf?.(r.label)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 12,
-                      padding: "4px 6px",
-                      borderRadius: 6,
-                      border: selected ? "1px solid #A30A2A" : "1px solid transparent",
-                      background: selected ? "rgba(163,10,42,0.08)" : "transparent",
-                      cursor: onGoToShelf ? "pointer" : "default",
-                      textAlign: "left",
-                      width: "100%",
-                    }}
-                  >
-                    <span style={{ fontSize: 14 }} aria-hidden>
-                      {emoji}
-                    </span>
-                    <span
-                      className="mono"
-                      style={{
-                        fontWeight: 700,
-                        minWidth: 32,
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        background: r.color ? `${r.color}33` : "rgba(163,10,42,0.12)",
-                        border: `1px solid ${r.color || "#A30A2A"}`,
-                      }}
-                    >
-                      {r.label}
-                    </span>
-                    <span>{categoryLabel(categories, r.categoryId)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

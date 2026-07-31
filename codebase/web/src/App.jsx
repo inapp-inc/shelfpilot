@@ -14,6 +14,7 @@ import CatalogPage from "./catalog/CatalogPage.jsx";
 import ProductFormDrawer from "./catalog/ProductFormDrawer.jsx";
 import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
 import DashboardPage from "./modules/DashboardPage.jsx";
+import AnalyticsPage from "./modules/AnalyticsPage.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
 import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
@@ -67,12 +68,10 @@ export default function App() {
   const [vertical, setVertical] = useState("pharmacy");
   const [layouts, setLayouts] = useState([]);
   const [layout, setLayout] = useState(null);
-  const [analyticsLayoutId, setAnalyticsLayoutId] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [config, setConfig] = useState(null);
   const [audit, setAudit] = useState([]);
   const [users, setUsers] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
   const [adminTab, setAdminTab] = useState("users");
   const [configForm, setConfigForm] = useState({
     minAisleWidthMeters: 1.2,
@@ -81,9 +80,6 @@ export default function App() {
   });
   const [createConfig, setCreateConfig] = useState(null);
   const [newUser, setNewUser] = useState({ email: "", name: "", role: "Designer", password: "" });
-  const [compareA, setCompareA] = useState("");
-  const [compareB, setCompareB] = useState("");
-  const [comparison, setComparison] = useState(null);
   const [catCategories, setCatCategories] = useState([]);
   const [catProducts, setCatProducts] = useState([]);
   const [selectedCatalogCategoryId, setSelectedCatalogCategoryId] = useState(null);
@@ -349,32 +345,6 @@ export default function App() {
     setConfig(cfg);
     setAudit(aud.items || []);
     setUsers(usr.items || []);
-  }
-
-  async function loadAnalytics() {
-    if (!analyticsLayoutId) return;
-    setAnalytics(await api(`/analytics/layouts/${analyticsLayoutId}/summary`, { token }));
-  }
-
-  async function runCompare() {
-    if (!compareA || !compareB) {
-      toast("Select two layouts to compare.", { type: "warning" });
-      return;
-    }
-    if (compareA === compareB) {
-      toast("Choose two different layouts.", { type: "warning" });
-      return;
-    }
-    try {
-      const result = await api("/analytics/compare", {
-        token,
-        method: "POST",
-        body: { layoutIdA: compareA, layoutIdB: compareB },
-      });
-      setComparison(result);
-    } catch (err) {
-      toast(friendlyError(err), { type: "error" });
-    }
   }
 
   async function saveConfig(partial) {
@@ -750,7 +720,6 @@ export default function App() {
   function navigateToModule(moduleId) {
     navigate(pathForModule(moduleId));
     if (moduleId === "admin") loadAdmin().catch((e) => toast(e.message));
-    if (moduleId === "analytics") loadAnalytics().catch((e) => toast(e.message));
   }
 
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
@@ -813,6 +782,7 @@ export default function App() {
                 token={token}
                 role={role}
                 onOpenLayout={openLayout}
+                onNavigateAnalytics={() => navigate(pathForModule("analytics"))}
                 onNewLayout={() => {
                   navigate(pathForModule("layouts"));
                   setCreateOpen(true);
@@ -915,132 +885,7 @@ export default function App() {
             )}
 
             {page === "analytics" && (
-              <section className="fade" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <h2 className="page-title">Analytics</h2>
-                  <select
-                    value={analyticsLayoutId || ""}
-                    onChange={(e) => {
-                      setAnalyticsLayoutId(e.target.value);
-                      setTimeout(() => loadAnalytics().catch((err) => toast(err.message)), 0);
-                    }}
-                    style={{ padding: "9px 13px", borderRadius: 9, border: "1px solid #e5e7eb" }}
-                  >
-                    <option value="">Select layout</option>
-                    {layouts.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {!analytics ? (
-                  <button className="btn-primary" style={{ padding: "10px 16px", width: "fit-content" }} onClick={() => loadAnalytics().catch((e) => toast(e.message))}>
-                    Load summary
-                  </button>
-                ) : (
-                  <>
-                    <div className="grid-cards">
-                      {[
-                        { label: "Utilization", value: `${analytics.utilizationPercent}%` },
-                        { label: "Fixture count", value: String(analytics.fixtureCount) },
-                        { label: "Capacity", value: String(analytics.capacity) },
-                        { label: "Footprint", value: `${analytics.footprintSqm} m²` },
-                      ].map((k) => (
-                        <div key={k.label} className="panel">
-                          <div className="muted" style={{ fontSize: 12 }}>{k.label}</div>
-                          <div className="mono" style={{ fontSize: 28, fontWeight: 700, color: "#A30A2A", marginTop: 8 }}>
-                            {k.value}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="panel">
-                      <div className="section-label" style={{ marginBottom: 12 }}>Category allocation</div>
-                      {(analytics.allocationByCategory || []).map((a) => (
-                        <div key={a.categoryId} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                          <span style={{ width: 10, height: 10, borderRadius: 3, background: a.color }} />
-                          <span style={{ flex: 1 }}>{a.categoryName}</span>
-                          <span className="mono">{a.fixtureCount}</span>
-                        </div>
-                      ))}
-                      {!analytics.allocationByCategory?.length ? <div className="muted">No mappings yet.</div> : null}
-                    </div>
-                  </>
-                )}
-                <div className="panel">
-                  <div className="section-label" style={{ marginBottom: 12 }}>
-                    Compare layouts
-                  </div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <select value={compareA} onChange={(e) => setCompareA(e.target.value)} style={{ padding: "9px 13px", borderRadius: 9, border: "1px solid #e5e7eb" }}>
-                      <option value="">Layout A</option>
-                      {layouts.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.name}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="muted" style={{ fontSize: 12.5, fontWeight: 700 }}>
-                      vs
-                    </span>
-                    <select value={compareB} onChange={(e) => setCompareB(e.target.value)} style={{ padding: "9px 13px", borderRadius: 9, border: "1px solid #e5e7eb" }}>
-                      <option value="">Layout B</option>
-                      {layouts.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn-primary"
-                      style={{ padding: "9px 16px" }}
-                      disabled={!compareA || !compareB}
-                      onClick={() => runCompare()}
-                    >
-                      Compare
-                    </button>
-                  </div>
-                  {comparison ? (
-                    <div style={{ display: "flex", gap: 32, marginTop: 18, flexWrap: "wrap" }}>
-                      <div>
-                        <div className="muted" style={{ fontSize: 12 }}>
-                          Utilization Δ (B − A)
-                        </div>
-                        <div
-                          className="mono"
-                          style={{
-                            fontSize: 26,
-                            fontWeight: 700,
-                            marginTop: 6,
-                            color: comparison.utilizationDelta >= 0 ? "oklch(0.5 0.12 150)" : "#A30A2A",
-                          }}
-                        >
-                          {comparison.utilizationDelta > 0 ? "+" : ""}
-                          {comparison.utilizationDelta}%
-                        </div>
-                      </div>
-                      <div>
-                        <div className="muted" style={{ fontSize: 12 }}>
-                          Fixture count Δ (B − A)
-                        </div>
-                        <div
-                          className="mono"
-                          style={{
-                            fontSize: 26,
-                            fontWeight: 700,
-                            marginTop: 6,
-                            color: comparison.fixtureCountDelta >= 0 ? "oklch(0.5 0.12 150)" : "#A30A2A",
-                          }}
-                        >
-                          {comparison.fixtureCountDelta > 0 ? "+" : ""}
-                          {comparison.fixtureCountDelta}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </section>
+              <AnalyticsPage layouts={layouts} token={token} toast={(msg, opts) => toast(msg, opts)} />
             )}
 
             {page === "admin" && visibleAdminTabs.length > 0 && (

@@ -14,7 +14,7 @@ export function maxBindDistanceMeters(layout) {
   const ys = poly.map((p) => p.y);
   const bw = Math.max(0.1, Math.max(...xs) - Math.min(...xs));
   const bd = Math.max(0.1, Math.max(...ys) - Math.min(...ys));
-  return Math.max(12, Math.hypot(bw, bd) * 0.55);
+  return Math.max(5, Math.hypot(bw, bd) * 0.32);
 }
 
 /** Shelf center in layout coordinates (meters). */
@@ -45,6 +45,8 @@ function bindFromPoint(point, normal, aisles, layout, directionSign, shelf = nul
   const ny = normal.y * directionSign;
   const maxAlong = maxBindDistanceMeters(layout);
   const shelfFp = shelf ? shelfFloorFootprint(shelf) : null;
+  const facesVertical = Math.abs(nx) > Math.abs(ny) * 1.08;
+  const facesHorizontal = Math.abs(ny) > Math.abs(nx) * 1.08;
   let best = null;
   let bestScore = Infinity;
 
@@ -57,7 +59,11 @@ function bindFromPoint(point, normal, aisles, layout, directionSign, shelf = nul
     const along = dx * nx + dy * ny;
     if (along < 0.05) continue;
 
-    if (aisle.orientation === "vertical") {
+    const aisleIsVertical = aisle.orientation === "vertical";
+    if (facesVertical && !aisleIsVertical) continue;
+    if (facesHorizontal && aisleIsVertical) continue;
+
+    if (aisleIsVertical) {
       const y0 = shelfFp ? shelfFp.y : point.y - 0.45;
       const y1 = shelfFp ? shelfFp.y + shelfFp.d : point.y + 0.45;
       const overlap = Math.min(fp.y + fp.d, y1) - Math.max(fp.y, y0);
@@ -70,7 +76,7 @@ function bindFromPoint(point, normal, aisles, layout, directionSign, shelf = nul
     }
 
     const perp = Math.abs(dx * -ny + dy * nx);
-    const score = along + perp * 0.75;
+    const score = along + perp * 1.6;
     if (score < bestScore && along < maxAlong) {
       bestScore = score;
       best = aisle;

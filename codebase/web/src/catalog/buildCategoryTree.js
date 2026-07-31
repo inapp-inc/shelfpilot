@@ -1,3 +1,5 @@
+import { categoryDisplayName } from "../layout-editor/categoryFilter.js";
+
 /** Flat API categories → nested tree (parentId links). */
 export function buildCategoryTree(flat) {
   const byParent = {};
@@ -20,6 +22,5 @@ export function categoryById(categories) {
 }
 
 export function categoryLabel(categories, id) {
-  if (!id) return "—";
-  return categoryById(categories).get(id)?.name || id;
+  return categoryDisplayName(id, categories);
 }

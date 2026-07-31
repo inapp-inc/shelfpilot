@@ -4,6 +4,16 @@ import AlertBanner from "../components/AlertBanner.jsx";
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import { filterProductsForShelf } from "./categoryFilter.js";
+import { friendlyError } from "../validationMessages.js";
+import MissingProductsPanel from "./MissingProductsPanel.jsx";
+import ShelfPlanogramConfig from "./ShelfPlanogramConfig.jsx";
+import { MISSING_PRODUCT_MIME, parseMissingProduct } from "./missingProductDrag.js";
+
+const TEMPERATURE_ZONES = {
+  ambient: { emoji: "🌡️", label: "Ambient" },
+  chilled: { emoji: "🧊", label: "Chilled" },
+  frozen: { emoji: "❄️", label: "Frozen" },
+};
 import { isDoubleSided, normalizeShelfUI, resolveGondolaForEditor, shelfCanvasFaceLabel, shelfFaceDisplayLabel, shelfDisplayLabel } from "./shelfFaces.js";
 import {
   buildEqualSegmentsClient,
@@ -38,6 +48,13 @@ export default function PlanogramEditorModal({
   onLayoutUpdated,
   onPatchShelf,
   toast,
+  planogramCoverage,
+  coverageLoading,
+  onRefreshCoverage,
+  fixtureTypes = [],
+  onMapShelf,
+  onDeleteShelf,
+  onViewIn3d,
 }) {
   const [faceId, setFaceId] = useState(initialFaceId);
   const [addCell, setAddCell] = useState(null);
@@ -50,6 +67,8 @@ export default function PlanogramEditorModal({
   const [draftSegmentsByLevel, setDraftSegmentsByLevel] = useState({});
   const [selectedLevelIndex, setSelectedLevelIndex] = useState(0);
   const [dismissedFillWarning, setDismissedFillWarning] = useState(false);
+  const [cellDropTarget, setCellDropTarget] = useState(null);
+  const [sidebarTab, setSidebarTab] = useState("missing");
   const gridRef = useRef(null);
   const draftRef = useRef(null);
   const dragLevelRef = useRef(null);
@@ -85,6 +104,20 @@ export default function PlanogramEditorModal({
   const productList = faceCategory ? filterProductsForShelf(products, faceCategory, categories) : [];
   const planogram = face?.planogram || [];
 
+  const missingForFace = useMemo(() => {
+    if (!faceCategory || !planogramCoverage?.missingProducts?.length) return [];
+    return filterProductsForShelf(planogramCoverage.missingProducts, faceCategory, categories);
+  }, [faceCategory, planogramCoverage?.missingProducts, categories]);
+
+  const faceCoverage = useMemo(() => {
+    if (!planogramCoverage) return null;
+    return {
+      ...planogramCoverage,
+      missingProducts: missingForFace,
+      missingCount: missingForFace.length,
+    };
+  }, [planogramCoverage, missingForFace]);
+
   useEffect(() => {
     if (open) {
       setFaceId(initialFaceId);
@@ -93,6 +126,7 @@ export default function PlanogramEditorModal({
       setDraftSegmentsByLevel({});
       setSelectedLevelIndex(0);
       setDismissedFillWarning(false);
+      setSidebarTab("missing");
     }
   }, [open, shelfId, initialFaceId]);
 
@@ -256,9 +290,86 @@ export default function PlanogramEditorModal({
       body,
     });
     onLayoutUpdated(updated);
+    await onRefreshCoverage?.();
     setAddCell(null);
     setEditPlacement(null);
     toast?.(`Placed on level ${levelIndex}`);
+  }
+
+  async function placeProductOnCell(draggedProduct, levelIndex, segmentId) {
+    if (editDisabled || !shelf || !faceCategory) {
+      toast?.("Assign a category to this face first.", { type: "warning" });
+      return;
+    }
+    const productIdToPlace = draggedProduct?.productId;
+    if (!productIdToPlace) return;
+
+    const existing = placementInCell(planogram, { levelIndex, segmentId, shelf, faceId });
+    if (existing) {
+      toast?.("This bay already has a product — remove it first or click to edit.", { type: "warning" });
+      return;
+    }
+
+    const segmentIdResolved = segmentId || defaultSegmentIdForLevel(shelf, faceId, levelIndex);
+    try {
+      const previewBody = {
+        shelfId: activePhysicalId,
+        productId: productIdToPlace,
+        levelIndex,
+        faceId: activeApiFaceId,
+      };
+      if (segmentIdResolved && segmentIdResolved !== "implicit") previewBody.segmentId = segmentIdResolved;
+
+      const prev = await api(`/layouts/${layout.id}/planogram/preview`, {
+        token,
+        method: "POST",
+        body: previewBody,
+      });
+      if ((prev.maxFacings ?? 0) < 1) {
+        toast?.("Product does not fit in this bay.", { type: "error" });
+        return;
+      }
+
+      const body = {
+        productId: productIdToPlace,
+        levelIndex,
+        faceId: activeApiFaceId,
+        facings: prev.maxFacings,
+        depthFacings: prev.maxDepthFacings > 0 ? prev.maxDepthFacings : undefined,
+      };
+      if (segmentIdResolved && segmentIdResolved !== "implicit") body.segmentId = segmentIdResolved;
+
+      const updated = await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram`, {
+        token,
+        method: "POST",
+        body,
+      });
+      onLayoutUpdated(updated);
+      await onRefreshCoverage?.();
+      const name = draggedProduct.name || productIdToPlace;
+      toast?.(`Placed ${name} on level ${levelIndex}`, { type: "success" });
+    } catch (err) {
+      toast?.(friendlyError(err, "Could not place product in this bay."), { type: "error" });
+    }
+  }
+
+  function handleCellDragOver(e, levelIndex, segmentId, hasPlacement) {
+    if (editDisabled || hasPlacement || !faceCategory) return;
+    if (!e.dataTransfer.types.includes(MISSING_PRODUCT_MIME)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    setCellDropTarget({ levelIndex, segmentId });
+  }
+
+  function handleCellDrop(e, levelIndex, segmentId) {
+    const dragged = parseMissingProduct(e.dataTransfer.getData(MISSING_PRODUCT_MIME));
+    if (!dragged) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setCellDropTarget(null);
+    setSelectedLevelIndex(levelIndex);
+    placeProductOnCell(dragged, levelIndex, segmentId);
   }
 
   async function handleAddToCell(levelIndex, segmentId) {
@@ -344,6 +455,15 @@ export default function PlanogramEditorModal({
         ? shelfDisplayLabel(shelf, layout?.aisles)
         : "—";
 
+  const faceLabel =
+    shelf && layout
+      ? shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves) || planogramTitle
+      : planogramTitle;
+  const heightM = Number(shelfRaw?.heightMeters ?? shelf?.heightMeters) || 2;
+  const depthM = Number(shelfRaw?.depthMeters ?? shelf?.depthMeters) || 0.6;
+  const zone = TEMPERATURE_ZONES[shelfRaw?.temperatureZone || "ambient"] || TEMPERATURE_ZONES.ambient;
+  const mapTarget = { shelfId: activePhysicalId, faceId: activeApiFaceId };
+
   if (!open || !shelf) return null;
 
   const pickerOpen = addCell || editPlacement;
@@ -358,17 +478,28 @@ export default function PlanogramEditorModal({
     >
       <div className="modal planogram-editor-modal" onMouseDown={(e) => e.stopPropagation()}>
         <header className="planogram-editor-header">
-          <div>
-            <h2 id="planogram-editor-title" style={{ margin: 0, fontSize: 18 }}>
-              Planogram · {planogramTitle}
-            </h2>
-            <div className="muted mono" style={{ fontSize: 12, marginTop: 4 }}>
-              {planogramTitle} · {typeLabel} · {usable.toFixed(1)} m × {Number(shelf.depthMeters ?? 0.6).toFixed(1)} m
-              {faceCategory ? (
-                <span className="cat-chip" style={{ marginLeft: 8 }}>
-                  {categoryLabel(categories, faceCategory)}
-                </span>
+          <div className="planogram-editor-header-main">
+            <h2 id="planogram-editor-title" style={{ margin: 0, fontSize: 20 }}>
+              {planogramTitle}
+              {shelfRaw?.label ? (
+                <span className="planogram-editor-shelf-name"> · {shelfRaw.label}</span>
               ) : null}
+            </h2>
+            <div className="planogram-editor-header-details">
+              <span className="planogram-header-chip planogram-header-chip--primary mono">{faceLabel}</span>
+              <span className="planogram-header-chip">{typeLabel}</span>
+              <span className="planogram-header-chip">
+                {zone.emoji} {zone.label}
+              </span>
+              <span className="planogram-header-chip mono">
+                {usable.toFixed(1)} m wide × {depthM.toFixed(1)} m deep × {heightM.toFixed(1)} m high
+              </span>
+              <span className="planogram-header-chip">{levels.length} level{levels.length === 1 ? "" : "s"}</span>
+              {faceCategory ? (
+                <span className="planogram-header-chip cat-chip">{categoryLabel(categories, faceCategory)}</span>
+              ) : (
+                <span className="planogram-header-chip planogram-header-chip--warn">No category</span>
+              )}
             </div>
           </div>
           <div className="planogram-editor-header-actions">
@@ -382,6 +513,15 @@ export default function PlanogramEditorModal({
                 </button>
               </div>
             ) : null}
+            {onViewIn3d ? (
+              <button
+                type="button"
+                className="btn-secondary planogram-view-3d-btn"
+                onClick={() => onViewIn3d(activePhysicalId, faceId)}
+              >
+                View in 3D
+              </button>
+            ) : null}
             <button type="button" className="btn-secondary" onClick={() => onClose?.()}>
               Close
             </button>
@@ -390,10 +530,16 @@ export default function PlanogramEditorModal({
 
         {!faceCategory ? (
           <div className="planogram-editor-empty muted">
-            Assign a category to {shelfCanvasFaceLabel(shelf, faceId, layout?.aisles, layout?.shelves)} in the Merchandising panel before adding products.
+            Assign a category in{" "}
+            <button type="button" className="planogram-inline-link" onClick={() => setSidebarTab("settings")}>
+              Shelf settings
+            </button>{" "}
+            for {faceLabel} before placing products.
           </div>
         ) : null}
 
+        <div className="planogram-editor-body">
+          <div className="planogram-editor-main">
         <div className="planogram-editor-toolbar">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>
             Bays · Level {selectedLevelIndex}
@@ -442,7 +588,7 @@ export default function PlanogramEditorModal({
                   {segments.length > 1 ? (
                     <div className="planogram-bay-headers planogram-bay-headers-inline">
                       {segments.map((seg, idx) => (
-                        <div key={seg.id} className="planogram-bay-header" style={{ flex: `${seg.widthMeters} 1 0` }}>
+                        <div key={seg.id} className="planogram-bay-header" style={{ flex: `${seg.widthMeters} 0 0`, minWidth: `${Math.max(96, Math.round(seg.widthMeters * 88))}px` }}>
                           <span>{seg.label || `Bay ${idx + 1}`}</span>
                           <span className="mono muted">{seg.widthMeters.toFixed(2)} m</span>
                           {!editDisabled && levelSelected ? (
@@ -473,15 +619,23 @@ export default function PlanogramEditorModal({
                           ? Math.min(100, (placement.facings / placement.maxFacings) * 100)
                           : 0;
                       const isPartial = seg.fillMode === "partial";
+                      const isDropTarget =
+                        cellDropTarget?.levelIndex === levelIndex && cellDropTarget?.segmentId === seg.id;
                       return (
                         <div
                           key={seg.id}
-                          className={`planogram-cell${isPartial ? " segment-partial" : ""}${!placement ? " planogram-cell-empty" : ""}`}
-                          style={{ flex: `${seg.widthMeters} 1 0` }}
+                          className={`planogram-cell${isPartial ? " segment-partial" : ""}${!placement ? " planogram-cell-empty" : ""}${isDropTarget ? " planogram-cell-drop-target" : ""}`}
+                          style={{
+                            flex: `${seg.widthMeters} 0 0`,
+                            minWidth: `${Math.max(96, Math.round(seg.widthMeters * 88))}px`,
+                          }}
                           onClick={() => {
                             setSelectedLevelIndex(levelIndex);
                             handleAddToCell(levelIndex, seg.id);
                           }}
+                          onDragOver={(e) => handleCellDragOver(e, levelIndex, seg.id, Boolean(placement))}
+                          onDragLeave={() => setCellDropTarget(null)}
+                          onDrop={(e) => handleCellDrop(e, levelIndex, seg.id)}
                         >
                           {placement ? (
                             <div className="planogram-product-block">
@@ -614,6 +768,97 @@ export default function PlanogramEditorModal({
           {summary.placements} placement{summary.placements === 1 ? "" : "s"}
           {summary.warnings > 0 ? ` · ${summary.warnings} fill gap warning(s)` : ""}
         </footer>
+          </div>
+
+          <aside className="planogram-editor-sidebar" aria-label="Shelf settings and missing products">
+            <nav className="planogram-sidebar-tabs" aria-label="Side panel tabs">
+              <button
+                type="button"
+                className={`planogram-sidebar-tab${sidebarTab === "settings" ? " active" : ""}`}
+                onClick={() => setSidebarTab("settings")}
+              >
+                Shelf settings
+              </button>
+              <button
+                type="button"
+                className={`planogram-sidebar-tab${sidebarTab === "missing" ? " active" : ""}`}
+                onClick={() => setSidebarTab("missing")}
+              >
+                Missing products
+                {missingForFace.length > 0 ? (
+                  <span className="planogram-sidebar-tab-badge">{missingForFace.length}</span>
+                ) : null}
+              </button>
+            </nav>
+
+            <div className="planogram-sidebar-panel">
+              {sidebarTab === "settings" ? (
+                <ShelfPlanogramConfig
+                  shelfRaw={shelfRaw}
+                  faceCategory={faceCategory}
+                  faceId={faceId}
+                  faceLabel={faceLabel}
+                  levels={levels}
+                  categories={categories}
+                  products={products}
+                  fixtureTypes={fixtureTypes}
+                  editDisabled={editDisabled}
+                  onPatchShelf={onPatchShelf}
+                  onMapShelf={onMapShelf}
+                  onDeleteShelf={onDeleteShelf}
+                  mapTarget={mapTarget}
+                  hideTitle
+                />
+              ) : (
+                <>
+                  <div className="planogram-sidebar-toolbar">
+                    <p className="planogram-sidebar-toolbar-hint">
+                      Drag products onto empty bays in the planogram.
+                    </p>
+                    {onRefreshCoverage ? (
+                      <button
+                        type="button"
+                        className="btn-secondary planogram-sidebar-refresh"
+                        onClick={() => onRefreshCoverage()}
+                        disabled={coverageLoading}
+                      >
+                        {coverageLoading ? "…" : "Refresh"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {!faceCategory ? (
+                    <div className="planogram-sidebar-empty">
+                      <p className="planogram-sidebar-empty-title">No category assigned</p>
+                      <p className="muted planogram-sidebar-hint">
+                        Set a category in Shelf settings to filter missing products for this face.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn-secondary planogram-sidebar-empty-btn"
+                        onClick={() => setSidebarTab("settings")}
+                      >
+                        Open shelf settings
+                      </button>
+                    </div>
+                  ) : (
+                    <MissingProductsPanel
+                      coverage={faceCoverage}
+                      loading={coverageLoading}
+                      categories={categories}
+                      alwaysShow
+                      embedded
+                      variant="sidebar"
+                      maxProductsPerCategory={null}
+                      draggable={!editDisabled}
+                      editDisabled={editDisabled}
+                      dragHint="Drop on an empty bay at left."
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
   );

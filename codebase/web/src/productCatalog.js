@@ -34,8 +34,28 @@ export function productImageUrl(product) {
 }
 
 export function productDimensions(product) {
-  const w = Number(product?.widthMeters ?? product?.attributes?.widthMeters) || 0.2;
-  const h = Number(product?.heightMeters ?? product?.attributes?.heightMeters) || 0.25;
-  const d = Number(product?.depthMeters ?? product?.attributes?.depthMeters) || 0.15;
-  return { w, h, d };
+  const attrs = product?.attributes || {};
+  const cm = (v) => (v != null && v !== "" ? Number(v) / 100 : null);
+  const w =
+    Number(product?.widthMeters ?? attrs.widthMeters ?? attrs.width ?? cm(product?.widthCm ?? attrs.widthCm)) ||
+    0.2;
+  const h =
+    Number(
+      product?.heightMeters ?? attrs.heightMeters ?? attrs.height ?? cm(product?.heightCm ?? attrs.heightCm)
+    ) || 0.25;
+  const d =
+    Number(product?.depthMeters ?? attrs.depthMeters ?? attrs.depth ?? cm(product?.depthCm ?? attrs.depthCm)) ||
+    Math.min(w, 0.15);
+  const assumedDimensions =
+    product?.widthMeters == null &&
+    attrs.widthMeters == null &&
+    attrs.width == null &&
+    product?.widthCm == null &&
+    attrs.widthCm == null &&
+    product?.heightMeters == null &&
+    attrs.heightMeters == null &&
+    attrs.height == null &&
+    product?.heightCm == null &&
+    attrs.heightCm == null;
+  return { w, h, d, widthMeters: w, heightMeters: h, depthMeters: d, assumedDimensions };
 }

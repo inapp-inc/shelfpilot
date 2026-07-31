@@ -10,6 +10,7 @@ import {
 } from "./shelfFaces.js";
 import { normalizeEntryPoint, normalizeZone } from "./zones.js";
 import { finalizeAisleLabeling } from "./aisleLabeling.js";
+import { finalizeAisleShelfBinding } from "./aisleBinding.js";
 import { alignLayoutGeometry } from "./polygonContainment.js";
 
 export function fixtureToShelf(f) {
@@ -135,10 +136,14 @@ export function normalizeLayout(layout) {
     shelfIndexAlongAisle:
       s.shelfIndexAlongAisle != null ? Number(s.shelfIndexAlongAisle) : null,
   }));
-  if (
-    layout.shelves.some((s) => s.aisleId) &&
-    layout.aisles.some((a) => a.aisleNumber == null)
-  ) {
+  if (layout.shelves?.length && layout.aisles?.length) {
+    let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
+    layout.shelves = bound.shelves;
+    layout.aisles = bound.aisles;
+    const labeled = finalizeAisleLabeling(layout.shelves, layout.aisles, layout);
+    layout.shelves = labeled.shelves;
+    layout.aisles = labeled.aisles;
+  } else if (layout.shelves?.some((s) => s.aisleId) && layout.aisles?.length) {
     const labeled = finalizeAisleLabeling(layout.shelves, layout.aisles, layout);
     layout.shelves = labeled.shelves;
     layout.aisles = labeled.aisles;

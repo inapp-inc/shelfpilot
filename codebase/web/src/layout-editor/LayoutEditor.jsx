@@ -7,17 +7,21 @@ import { shelfUnitLabel, countGondolaUnits, resolveShelfByLabel, listShelfLabels
 import { FIXTURE_TYPES, VERTICALS, ZONE_TYPES } from "../referenceCatalog.js";
 import { fixtureForType, fixturePaletteEntries } from "../fixtureCatalog.js";
 import Scene3D from "../Scene3D.jsx";
+import { formatMeters, layoutBounds, shelf3dLocalBox } from "../scene3dDimensions.js";
 import Palette from "./Palette.jsx";
 import Canvas2D from "./Canvas2D.jsx";
 import FloorPlan2D from "./FloorPlan2D.jsx";
 import SmartGeneratePanel from "./SmartGeneratePanel.jsx";
-import MissingProductsPanel from "./MissingProductsPanel.jsx";
-import EditorSideRail from "./EditorSideRail.jsx";
 import EditorPanelShell from "./EditorPanelShell.jsx";
 import PlanogramEditorModal from "./PlanogramEditorModal.jsx";
-import ShelfGotoInput from "./ShelfGotoInput.jsx";
+import MissingProductsDialog from "./MissingProductsDialog.jsx";
+import EditorCanvasBar from "./EditorCanvasBar.jsx";
+import {
+  shelfLabelFitsGondolaFace,
+  shelfLabelFitsShelfBadge,
+} from "./canvasLabelZoom.js";
 import { mixForVertical, buildCategoryMix, storeTypeForVertical } from "../storeTypes.js";
-import { layoutCanvasBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, layoutFixturePolygon, fixtureZoneDistinctFromEnvelope, polygonDimensions, normalizeFixtureRectangle, shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb, aisleFootprintMeters, defaultAisleRun, fitRectanglePolygonInEnvelope, polygonInsideEnvelope, centeredStoreEnvelope } from "./polygonCanvas.js";
+import { layoutCanvasBounds, layoutContentBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, layoutFixturePolygon, fixtureZoneDistinctFromEnvelope, polygonDimensions, normalizeFixtureRectangle, shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb, aisleFootprintMeters, defaultAisleRun, fitRectanglePolygonInEnvelope, polygonInsideEnvelope, centeredStoreEnvelope, layoutFixtureZoneRect } from "./polygonCanvas.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
 
@@ -26,19 +30,34 @@ const USE_WEBGL_2D = import.meta.env.VITE_USE_WEBGL_2D === "true";
 
 const DEFAULT_CANVAS_BOUNDS = { minX: 0, minY: 0, maxX: 10, maxY: 8, width: 10, height: 8 };
 
+/** Minimum canvas px/m so shelf numbers are readable after fit (see canvasLabelZoom). */
+const MIN_READABLE_PX_PER_M = 24;
+
+/** Default zoom when opening or after generate — ~250% for readable shelf numbers. */
+const INITIAL_LANDING_ZOOM = 2.5;
+
+function clampZoom(value) {
+  return Math.min(5, Math.max(0.5, Number(Number(value).toFixed(2))));
+}
+
+function resolveFrameZoom(fitZoom, baseScale, { landing = true } = {}) {
+  let next = Math.max(0.5, fitZoom, MIN_READABLE_PX_PER_M / baseScale);
+  if (landing) next = Math.max(next, INITIAL_LANDING_ZOOM);
+  return clampZoom(next);
+}
+
 const EDITOR_PANELS_STORAGE_KEY = "shelfpilot.editorPanels";
 
 function readEditorPanelPrefs() {
   try {
     const raw = localStorage.getItem(EDITOR_PANELS_STORAGE_KEY);
-    if (!raw) return { palette: false, sideRail: false };
+    if (!raw) return { palette: true };
     const parsed = JSON.parse(raw);
     return {
       palette: Boolean(parsed.palette),
-      sideRail: Boolean(parsed.sideRail),
     };
   } catch {
-    return { palette: false, sideRail: false };
+    return { palette: true };
   }
 }
 
@@ -107,7 +126,6 @@ export default function LayoutEditor({
   const [focus3dRequest, setFocus3dRequest] = useState(0);
   const [planogramCoverage, setPlanogramCoverage] = useState(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
-  const [merchTabFocus, setMerchTabFocus] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
@@ -115,17 +133,21 @@ export default function LayoutEditor({
   const [rejectSubmitting, setRejectSubmitting] = useState(false);
   const [dismissedAlerts, setDismissedAlerts] = useState(() => new Set());
   const [planogramEditor, setPlanogramEditor] = useState(null);
+  const [planogram3dReturn, setPlanogram3dReturn] = useState(null);
+  const [missingProductsOpen, setMissingProductsOpen] = useState(false);
   const stageRef = useRef(null);
   const editorRootRef = useRef(null);
   const zoomRef = useRef(zoom);
   const lastAutoFitLayoutId = useRef(null);
   const pendingViewPreserveRef = useRef(null);
+  const pendingZoomScrollRef = useRef(null);
   const [editorFullscreen, setEditorFullscreen] = useState(false);
   const [paletteCollapsed, setPaletteCollapsed] = useState(() => readEditorPanelPrefs().palette);
-  const [sideRailCollapsed, setSideRailCollapsed] = useState(() => readEditorPanelPrefs().sideRail);
   zoomRef.current = zoom;
 
   const editDisabled = !["Designer", "Admin"].includes(role);
+  const layoutHasShelves = Boolean((layout?.shelves || layout?.fixtures || []).length);
+  const missingProductCount = planogramCoverage?.missingCount ?? 0;
   const layoutVertical = layout?.vertical || vertical;
   const vMeta = VERTICALS[layoutVertical] || VERTICALS.retail;
   const activeStoreType = storeTypeForVertical(layoutVertical);
@@ -301,6 +323,34 @@ export default function LayoutEditor({
     }, 400);
   }
 
+  function growStoreEnvelope() {
+    pendingViewPreserveRef.current = { ...canvasBounds };
+    const oldEnv = layoutStoreEnvelope(layout);
+    const nextEnv = centeredStoreEnvelope(oldEnv, oldEnv.widthMeters + 2, oldEnv.depthMeters + 2);
+    const body = {
+      widthMeters: nextEnv.widthMeters,
+      depthMeters: nextEnv.depthMeters,
+      storeEnvelope: nextEnv,
+    };
+    const fw = Number(fixtureW);
+    const fd = Number(fixtureD);
+    if (Number.isFinite(fw) && Number.isFinite(fd) && fw > 0 && fd > 0) {
+      const poly = fitRectanglePolygonInEnvelope(
+        nextEnv,
+        Math.min(fw, nextEnv.widthMeters),
+        Math.min(fd, nextEnv.depthMeters),
+        layout.polygon
+      );
+      if (poly) {
+        body.shape = "polygon";
+        body.polygon = poly;
+      }
+    }
+    patchLayout(body).then(() => {
+      toast("Store envelope expanded (+1 m each side)");
+    });
+  }
+
   const dirtySinceSubmit =
     (Number(layout?.contentRevision) || 0) > (Number(layout?.submittedRevision) ?? -1);
   const canSubmitReview =
@@ -327,13 +377,29 @@ export default function LayoutEditor({
   const fitToView = useCallback(() => {
     const stage = stageRef.current;
     if (!stage || !layout) return;
+
+    const hasFixtures =
+      (layout.shelves?.length || layout.fixtures?.length || layout.aisles?.length) > 0;
+    const content = layoutContentBounds(layout, previewFixturePolygon);
+
+    if (hasFixtures && content) {
+      frameRect(content.minX, content.minY, content.maxX, content.maxY, 0.8);
+      return;
+    }
+
+    if (layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3) {
+      const fz = layoutFixtureZoneRect(layout, previewFixturePolygon);
+      frameRect(fz.x, fz.y, fz.x + fz.widthMeters, fz.y + fz.depthMeters, 0.6);
+      return;
+    }
+
     const pad = 40;
     const availW = Math.max(120, stage.clientWidth - pad * 2);
     const availH = Math.max(120, stage.clientHeight - pad * 2);
     const baseScale = baseCanvasScale(canvasBounds);
     const fitScale = Math.min(availW / canvasBounds.width, availH / canvasBounds.height);
-    const nextZoom = Math.min(5, Math.max(0.5, fitScale / baseScale));
-    setZoom(Number(nextZoom.toFixed(2)));
+    let nextZoom = resolveFrameZoom(fitScale / baseScale, baseScale);
+    setZoom(nextZoom);
     requestAnimationFrame(() => {
       const innerPad = 24;
       const innerScale = baseCanvasScale(canvasBounds) * nextZoom;
@@ -342,18 +408,14 @@ export default function LayoutEditor({
       stage.scrollLeft = Math.max(0, (w - stage.clientWidth) / 2);
       stage.scrollTop = Math.max(0, (h - stage.clientHeight) / 2);
     });
-  }, [canvasBounds.width, canvasBounds.height, layout]);
+  }, [canvasBounds.width, canvasBounds.height, canvasBounds.minX, layout, previewFixturePolygon]);
 
   useEffect(() => {
     localStorage.setItem(
       EDITOR_PANELS_STORAGE_KEY,
-      JSON.stringify({ palette: paletteCollapsed, sideRail: sideRailCollapsed })
+      JSON.stringify({ palette: paletteCollapsed })
     );
-  }, [paletteCollapsed, sideRailCollapsed]);
-
-  useEffect(() => {
-    if (selection?.id) setSideRailCollapsed(false);
-  }, [selection?.id, selection?.kind]);
+  }, [paletteCollapsed]);
 
   const toggleEditorFullscreen = useCallback(async () => {
     const el = editorRootRef.current;
@@ -408,6 +470,20 @@ export default function LayoutEditor({
     [canvasBounds.width, canvasBounds.height, zoom]
   );
 
+  const shelfLabelsVisible = useMemo(() => {
+    if (!layout) return false;
+    const list = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+    for (const raw of list) {
+      const aabb = shelfCanvasAabb(raw);
+      const pw = aabb.w * scale;
+      const ph = aabb.d * scale;
+      if (shelfLabelFitsShelfBadge(pw, ph)) return true;
+      if (shelfLabelFitsGondolaFace(pw, ph, true)) return true;
+      if (shelfLabelFitsGondolaFace(pw, ph, false)) return true;
+    }
+    return false;
+  }, [layout, scale]);
+
   const preserveViewCenter = useCallback((prevBounds) => {
     const stage = stageRef.current;
     if (!stage || !prevBounds) return;
@@ -434,28 +510,51 @@ export default function LayoutEditor({
     }
   });
 
-  const adjustZoom = useCallback((delta, { reset = false } = {}) => {
+  const applyZoomAtPoint = useCallback((nextZoom, clientX, clientY) => {
     const stage = stageRef.current;
     const currentZoom = zoomRef.current;
-    const nextZoom = reset
-      ? 1
-      : Math.min(5, Math.max(0.5, Number((currentZoom + delta).toFixed(2))));
+    const clamped = clampZoom(nextZoom);
+    if (clamped === currentZoom) return;
+    if (!stage) {
+      setZoom(clamped);
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    const ratio = clamped / currentZoom;
+    pendingZoomScrollRef.current = {
+      scrollLeft: (stage.scrollLeft + localX) * ratio - localX,
+      scrollTop: (stage.scrollTop + localY) * ratio - localY,
+    };
+    pendingFrameRef.current = null;
+    setZoom(clamped);
+  }, []);
+
+  const adjustZoom = useCallback((delta, { reset = false, clientX, clientY } = {}) => {
+    const stage = stageRef.current;
+    const currentZoom = zoomRef.current;
+    const nextZoom = reset ? 1 : clampZoom(currentZoom + delta);
     if (nextZoom === currentZoom) return;
+    if (clientX != null && clientY != null) {
+      applyZoomAtPoint(nextZoom, clientX, clientY);
+      return;
+    }
     if (!stage) {
       setZoom(nextZoom);
       return;
     }
     const rect = stage.getBoundingClientRect();
-    const centerX = stage.scrollLeft + rect.width / 2;
-    const centerY = stage.scrollTop + rect.height / 2;
+    const localX = rect.width / 2;
+    const localY = rect.height / 2;
     const ratio = nextZoom / currentZoom;
+    pendingZoomScrollRef.current = {
+      scrollLeft: (stage.scrollLeft + localX) * ratio - localX,
+      scrollTop: (stage.scrollTop + localY) * ratio - localY,
+    };
+    pendingFrameRef.current = null;
     setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      if (!stageRef.current) return;
-      stageRef.current.scrollLeft = centerX * ratio - rect.width / 2;
-      stageRef.current.scrollTop = centerY * ratio - rect.height / 2;
-    });
-  }, []);
+  }, [applyZoomAtPoint]);
 
   useEffect(() => {
     setSelection(null);
@@ -476,21 +575,8 @@ export default function LayoutEditor({
     const currentZoom = zoomRef.current;
     const step = e.deltaMode === 1 ? 0.35 : e.deltaMode === 2 ? 0.5 : 0.12;
     const delta = e.deltaY > 0 ? -step : step;
-    const nextZoom = Math.min(5, Math.max(0.5, Number((currentZoom + delta).toFixed(2))));
-    if (!stage || nextZoom === currentZoom) {
-      setZoom(nextZoom);
-      return;
-    }
-    const rect = stage.getBoundingClientRect();
-    const pointerX = e.clientX - rect.left + stage.scrollLeft;
-    const pointerY = e.clientY - rect.top + stage.scrollTop;
-    const ratio = nextZoom / currentZoom;
-    setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      stage.scrollLeft = pointerX * ratio - (e.clientX - rect.left);
-      stage.scrollTop = pointerY * ratio - (e.clientY - rect.top);
-    });
-  }, []);
+    applyZoomAtPoint(currentZoom + delta, e.clientX, e.clientY);
+  }, [applyZoomAtPoint]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -885,9 +971,19 @@ export default function LayoutEditor({
     const availH = Math.max(120, stage.clientHeight - pad * 2);
     const baseScale = baseCanvasScale(canvasBounds);
     const fitScale = Math.min(availW / bw, availH / bh);
-    const nextZoom = Math.min(5, Math.max(0.5, fitScale / baseScale));
+    let nextZoom = resolveFrameZoom(fitScale / baseScale, baseScale);
+    pendingZoomScrollRef.current = null;
     pendingFrameRef.current = { minX, minY, maxX, maxY, zoom: nextZoom };
-    setZoom(Number(nextZoom.toFixed(2)));
+    setZoom(nextZoom);
+  }
+
+  function focusLayoutContent(targetLayout, padM = 0.6) {
+    const content = layoutContentBounds(targetLayout, previewFixturePolygon);
+    if (content) {
+      frameRect(content.minX, content.minY, content.maxX, content.maxY, padM);
+      return;
+    }
+    fitToView();
   }
 
   function frameShelfIds(shelfIds) {
@@ -929,16 +1025,28 @@ export default function LayoutEditor({
   }
 
   useLayoutEffect(() => {
-    const frame = pendingFrameRef.current;
-    if (!frame || view3d) return;
+    if (view3d) return;
     const stage = stageRef.current;
     if (!stage) return;
-    pendingFrameRef.current = null;
-    const baseScale = baseCanvasScale(canvasBounds);
-    const cx = (frame.minX + frame.maxX) / 2 - canvasBounds.minX;
-    const cy = (frame.minY + frame.maxY) / 2 - canvasBounds.minY;
-    stage.scrollLeft = Math.max(0, cx * baseScale * frame.zoom - stage.clientWidth / 2);
-    stage.scrollTop = Math.max(0, cy * baseScale * frame.zoom - stage.clientHeight / 2);
+
+    const frame = pendingFrameRef.current;
+    if (frame) {
+      pendingFrameRef.current = null;
+      pendingZoomScrollRef.current = null;
+      const baseScale = baseCanvasScale(canvasBounds);
+      const cx = (frame.minX + frame.maxX) / 2 - canvasBounds.minX;
+      const cy = (frame.minY + frame.maxY) / 2 - canvasBounds.minY;
+      stage.scrollLeft = Math.max(0, cx * baseScale * frame.zoom - stage.clientWidth / 2);
+      stage.scrollTop = Math.max(0, cy * baseScale * frame.zoom - stage.clientHeight / 2);
+      return;
+    }
+
+    const pendingScroll = pendingZoomScrollRef.current;
+    if (pendingScroll) {
+      pendingZoomScrollRef.current = null;
+      stage.scrollLeft = Math.max(0, pendingScroll.scrollLeft);
+      stage.scrollTop = Math.max(0, pendingScroll.scrollTop);
+    }
   }, [zoom, canvasBounds, view3d]);
 
   useEffect(() => {
@@ -949,17 +1057,57 @@ export default function LayoutEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paletteTool, view3d, editDisabled]);
 
+  function openPlanogramForShelf(shelfId, faceId = "A") {
+    if (view3d) return;
+    setPlanogramEditor({ shelfId, faceId: faceId || "A" });
+  }
+
+  function viewShelfIn3d(shelfId, faceId = "A") {
+    if (!shelfId) return;
+    setPlanogram3dReturn({ shelfId, faceId: faceId || "A" });
+    setSelection({ kind: "shelf", id: shelfId, faceId: faceId || "A" });
+    setPlanogramEditor(null);
+    setView3d(true);
+    setWalkMode(false);
+    setFocus3dRequest((n) => n + 1);
+  }
+
+  function backToPlanogramFrom3d() {
+    if (!planogram3dReturn) return;
+    setView3d(false);
+    setWalkMode(false);
+    setPlanogramEditor({
+      shelfId: planogram3dReturn.shelfId,
+      faceId: planogram3dReturn.faceId || "A",
+    });
+    setSelection({
+      kind: "shelf",
+      id: planogram3dReturn.shelfId,
+      faceId: planogram3dReturn.faceId || "A",
+    });
+    setPlanogram3dReturn(null);
+  }
+
+  function exit3dView() {
+    setView3d(false);
+    setWalkMode(false);
+    setPlanogram3dReturn(null);
+  }
+
+  function selectShelf(shelfId, faceId = "A", { openPlanogram = true } = {}) {
+    setSelection({ kind: "shelf", id: shelfId, faceId: faceId || "A" });
+    if (openPlanogram) openPlanogramForShelf(shelfId, faceId);
+  }
+
   function goToShelf(label) {
     const resolved = resolveShelfByLabel(layout, label);
     if (!resolved) {
       toast(`Shelf "${String(label).trim()}" not found — try e.g. 4A`);
       return;
     }
-    setSelection({
-      kind: "shelf",
-      id: resolved.shelfId,
-      faceId: resolved.mergedGondola && resolved.shelfId === resolved.backId ? "B" : "A",
-    });
+    const faceId =
+      resolved.mergedGondola && resolved.shelfId === resolved.backId ? "B" : "A";
+    selectShelf(resolved.shelfId, faceId);
     setFocus3dRequest((n) => n + 1);
     if (view3d) return;
     const ids =
@@ -973,11 +1121,36 @@ export default function LayoutEditor({
 
   const highlightShelf3d = useMemo(() => {
     if (!selection || (selection.kind !== "shelf" && selection.kind !== "fixture")) return null;
-    const shelves = layout?.shelves || [];
+    const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
     const s = shelves.find((x) => x.id === selection.id);
     if (!s) return { shelfId: selection.id, pairId: null };
-    return { shelfId: selection.id, pairId: s.pairId || null };
-  }, [selection, layout?.shelves]);
+    if (s.pairId) {
+      const mate = shelves.find((x) => x.pairId === s.pairId && x.id !== s.id);
+      return {
+        shelfId: selection.id,
+        pairId: s.pairId,
+        frontId: s.pairRole === "back" ? mate?.id : s.id,
+        backId: s.pairRole === "back" ? s.id : mate?.id,
+      };
+    }
+    return { shelfId: selection.id, pairId: null };
+  }, [selection, layout?.shelves, layout?.fixtures]);
+
+  const scene3dDimensionLabels = useMemo(() => {
+    if (!layout) return null;
+    const floor = layoutBounds(layout);
+    const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+    const focusShelf = planogram3dReturn
+      ? shelves.find((s) => s.id === planogram3dReturn.shelfId)
+      : shelves.find((s) => s.id === highlightShelf3d?.shelfId);
+    const rack = focusShelf ? shelf3dLocalBox(focusShelf, layout) : null;
+    return {
+      layout: `${formatMeters(floor.widthMeters)} × ${formatMeters(floor.depthMeters)} × ${formatMeters(floor.heightMeters)}`,
+      rack: rack
+        ? `${formatMeters(rack.merchWidthMeters)} W × ${formatMeters(rack.depthMeters)} D × ${formatMeters(rack.heightMeters)} H`
+        : null,
+    };
+  }, [layout, planogram3dReturn, highlightShelf3d?.shelfId]);
 
   function focusCanvasTarget(target) {
     const stage = stageRef.current;
@@ -1052,8 +1225,8 @@ export default function LayoutEditor({
     const availH = Math.max(120, stage.clientHeight - pad * 2);
     const baseScale = baseCanvasScale(canvasBounds);
     const fitScale = Math.min(availW / bw, availH / bh);
-    const nextZoom = Math.min(5, Math.max(0.5, fitScale / baseScale));
-    setZoom(Number(nextZoom.toFixed(2)));
+    const nextZoom = resolveFrameZoom(fitScale / baseScale, baseScale);
+    setZoom(nextZoom);
     requestAnimationFrame(() => {
       const cx = (minX + maxX) / 2 - canvasBounds.minX;
       const cy = (minY + maxY) / 2 - canvasBounds.minY;
@@ -1176,6 +1349,7 @@ export default function LayoutEditor({
           (cov ? ` · ${cov.placedCount}/${cov.totalProducts} catalog SKUs on shelves` : "") +
           (g.skippedOutsideCount ? ` (${g.skippedOutsideCount} skipped outside area)` : "")
       );
+      setTimeout(() => focusLayoutContent(updated, 0.5), 120);
     } catch (e) {
       toast(e.message);
     } finally {
@@ -1386,62 +1560,39 @@ export default function LayoutEditor({
   }
 
   return (
-    <section ref={editorRootRef} className={`fade editor-layout-root${editorFullscreen ? " editor-layout-fullscreen" : ""}`}>
-      <div className="editor-toolbar-row">
+    <section
+      ref={editorRootRef}
+      className={`fade editor-layout-root${editorFullscreen ? " editor-layout-fullscreen" : ""}${view3d ? " editor-layout-root--3d" : ""}${planogram3dReturn ? " editor-layout-root--3d-focus" : ""}`}
+    >
+      <div className="editor-toolbar-row editor-toolbar-row--compact">
         <div className="editor-toolbar-left">
-          <button className="btn-secondary" style={{ border: "none", background: "none", color: "#6b7280" }} onClick={onBack}>
-            ← Layouts
+          <button className="btn-secondary editor-back-btn" onClick={onBack}>
+            ←
           </button>
-          <div style={{ fontSize: 19, fontWeight: 800 }}>{layout.name}</div>
+          <div className="editor-toolbar-title">{layout.name}</div>
           <span
-            className="status-chip"
+            className="status-chip status-chip--sm"
             style={{ background: statusMeta(layout.status).bg, color: statusMeta(layout.status).color }}
           >
             {statusMeta(layout.status).label}
           </span>
-          <span className="catalog-vertical-badge">
+          <span className="catalog-vertical-badge catalog-vertical-badge--sm">
             {activeStoreType?.emoji} {activeStoreType?.label || vMeta.label}
           </span>
-          {!view3d && zoomCategories.length > 0 ? (
-            <select
-              className="category-zoom-select"
-              defaultValue=""
-              title="Zoom canvas to a category"
-              onChange={(e) => {
-                const v = e.target.value;
-                e.target.value = "";
-                if (v) focusCanvasTarget(v);
-              }}
-            >
-              <option value="">Category zoom…</option>
-              <option value="__selection__">Current selection</option>
-              {zoomCategories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.id}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <ShelfGotoInput
-            options={shelfLabelOptions}
-            onGo={goToShelf}
-            disabled={editDisabled}
-            listId="shelf-goto-list-toolbar"
-          />
         </div>
         <div className="editor-toolbar-right">
           {canApproveReject ? (
             <>
               <button
-                className="btn-secondary"
-                style={{ padding: "9px 14px", color: "#A30A2A", fontWeight: 700 }}
+                className="btn-secondary editor-toolbar-action"
+                style={{ color: "#A30A2A", fontWeight: 700 }}
                 onClick={() => setRejectOpen(true)}
               >
                 Reject
               </button>
               <button
-                className="btn-primary"
-                style={{ padding: "9px 14px", background: "oklch(0.5 0.12 150)", boxShadow: "none" }}
+                className="btn-primary editor-toolbar-action"
+                style={{ background: "oklch(0.5 0.12 150)", boxShadow: "none" }}
                 onClick={() => approveLayout()}
               >
                 Approve
@@ -1449,46 +1600,81 @@ export default function LayoutEditor({
             </>
           ) : null}
           {canSubmitReview ? (
+            <>
+              {layoutHasShelves ? (
+                <button
+                  type="button"
+                  className={`btn-secondary editor-toolbar-action${missingProductCount > 0 ? " editor-toolbar-action--warn" : ""}`}
+                  onClick={() => setMissingProductsOpen(true)}
+                  disabled={coverageLoading && !planogramCoverage}
+                  title={
+                    missingProductCount > 0
+                      ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves`
+                      : "All catalog products are placed on shelves"
+                  }
+                >
+                  Missing products{missingProductCount > 0 ? ` (${missingProductCount})` : ""}
+                </button>
+              ) : null}
+              <button className="btn-secondary editor-toolbar-action" onClick={() => submitForReview()}>
+                Submit
+              </button>
+            </>
+          ) : layoutHasShelves ? (
             <button
-              className="btn-secondary"
-              style={{ padding: "9px 14px" }}
-              onClick={() => submitForReview()}
+              type="button"
+              className={`btn-secondary editor-toolbar-action${missingProductCount > 0 ? " editor-toolbar-action--warn" : ""}`}
+              onClick={() => setMissingProductsOpen(true)}
+              disabled={coverageLoading && !planogramCoverage}
+              title={
+                missingProductCount > 0
+                  ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves`
+                  : "All catalog products are placed on shelves"
+              }
             >
-              Submit for review
+              Missing products{missingProductCount > 0 ? ` (${missingProductCount})` : ""}
             </button>
           ) : null}
           {(role === "Designer" || role === "Admin") && onDeleteLayout ? (
-            <button
-              className="btn-danger"
-              style={{ padding: "9px 14px" }}
-              onClick={() => onDeleteLayout(layout)}
-            >
-              Delete layout
+            <button className="btn-danger editor-toolbar-action" onClick={() => onDeleteLayout(layout)}>
+              Delete
             </button>
           ) : null}
-          <div className="mode-toggle">
+          <div className="mode-toggle mode-toggle--sm">
             <button
               type="button"
               className="btn-secondary editor-fullscreen-btn"
-              style={{ padding: "9px 12px", marginRight: 8 }}
+              style={{ padding: "6px 10px", marginRight: 4 }}
               onClick={() => toggleEditorFullscreen()}
-              title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen layout design (F)"}
+              title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen (F)"}
             >
-              {editorFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              {editorFullscreen ? "⛶" : "⛶"}
             </button>
             <button
               className={!view3d ? "active" : ""}
-              onClick={() => {
-                setView3d(false);
-                setWalkMode(false);
-              }}
+              onClick={() => exit3dView()}
             >
               2D
             </button>
-            <button className={view3d && !walkMode ? "active" : ""} onClick={() => { setView3d(true); setWalkMode(false); }}>
-              3D Orbit
+            <button
+              className={view3d && !walkMode ? "active" : ""}
+              onClick={() => {
+                setPlanogram3dReturn(null);
+                setView3d(true);
+                setWalkMode(false);
+                setFocus3dRequest((n) => n + 1);
+              }}
+            >
+              3D
             </button>
-            <button className={view3d && walkMode ? "active" : ""} onClick={() => { setView3d(true); setWalkMode(true); }}>
+            <button
+              className={view3d && walkMode ? "active" : ""}
+              onClick={() => {
+                setPlanogram3dReturn(null);
+                setView3d(true);
+                setWalkMode(true);
+              }}
+            >
               Walk
             </button>
           </div>
@@ -1542,19 +1728,19 @@ export default function LayoutEditor({
         </div>
       ) : null}
 
-      {!view3d ? (
-        !dismissedAlerts.has("hint:methodology-2d") ? (
-          <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:methodology-2d")}>
-            Measurements drive this layout — store size and fixtures use real metres. Draw the fixture zone inside the store envelope, then place standard fixture types from the palette or Smart Generate.
-          </AlertBanner>
-        ) : null
-      ) : !dismissedAlerts.has("hint:methodology-3d") ? (
-        <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:methodology-3d")}>
-          3D is for stakeholder validation — the 2D measured layout is the source of truth. Use Orbit or Walk to review before approval.
+      {!view3d && paletteTool === "edit-area" && !dismissedAlerts.has("hint:edit-area") ? (
+        <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:edit-area")}>
+          Drag polygon vertices to reshape the fixture zone · changes save automatically
+        </AlertBanner>
+      ) : null}
+      {!view3d && paletteTool === "draw" && !dismissedAlerts.has("hint:draw") ? (
+        <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:draw")}>
+          Click to place corners · move mouse to preview each line · click the green start point (or Apply area) to close · need 3+ points
         </AlertBanner>
       ) : null}
 
-      <div className="editor-layout">
+      <div className={`editor-layout${view3d ? " editor-layout--3d" : ""}`}>
+        {!view3d ? (
         <EditorPanelShell
           side="left"
           label="Tools"
@@ -1562,6 +1748,7 @@ export default function LayoutEditor({
           onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
         >
           <Palette
+            compact
             paletteTool={paletteTool}
             setPaletteTool={setPaletteTool}
             editDisabled={editDisabled}
@@ -1581,200 +1768,40 @@ export default function LayoutEditor({
             }}
           />
         </EditorPanelShell>
+        ) : null}
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-          <div className="meter-bar">
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-                Store W
-                <input
-                  className="mono"
-                  type="number"
-                  step="0.5"
-                  min="1"
-                  disabled={editDisabled}
-                  value={storeW}
-                  onChange={(e) => {
-                    setStoreW(e.target.value);
-                    scheduleEnvelopePatch(e.target.value, storeD);
-                  }}
-                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
-                />
-                m
-              </label>
-              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-                Store D
-                <input
-                  className="mono"
-                  type="number"
-                  step="0.5"
-                  min="1"
-                  disabled={editDisabled}
-                  value={storeD}
-                  onChange={(e) => {
-                    setStoreD(e.target.value);
-                    scheduleEnvelopePatch(storeW, e.target.value);
-                  }}
-                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
-                />
-                m
-              </label>
-              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-                Fixture W
-                <input
-                  className="mono"
-                  type="number"
-                  step="0.5"
-                  min="0.5"
-                  max={envelope ? envelope.widthMeters : undefined}
-                  disabled={editDisabled}
-                  value={fixtureW}
-                  title="Fixture zone width — must fit inside store envelope"
-                  onChange={(e) => {
-                    setFixtureW(e.target.value);
-                    scheduleFixtureZonePatch(e.target.value, fixtureD);
-                  }}
-                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
-                />
-                m
-              </label>
-              <label className="mono" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-                Fixture D
-                <input
-                  className="mono"
-                  type="number"
-                  step="0.5"
-                  min="0.5"
-                  max={envelope ? envelope.depthMeters : undefined}
-                  disabled={editDisabled}
-                  value={fixtureD}
-                  title="Fixture zone depth — must fit inside store envelope"
-                  onChange={(e) => {
-                    setFixtureD(e.target.value);
-                    scheduleFixtureZonePatch(fixtureW, e.target.value);
-                  }}
-                  style={{ width: 64, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb" }}
-                />
-                m
-              </label>
-              {layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3 ? (
-                <span className="muted" style={{ fontSize: 11 }}>
-                  Fixture zone resizes from centre — all four edges move equally
-                </span>
-              ) : null}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-              {!view3d && zoomCategories.length > 0 ? (
-                <select
-                  className="category-zoom-select"
-                  defaultValue=""
-                  title="Zoom canvas to a category"
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    e.target.value = "";
-                    if (v) focusCanvasTarget(v);
-                  }}
-                >
-                  <option value="">Category zoom…</option>
-                  <option value="__selection__">Current selection</option>
-                  {zoomCategories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name || c.id}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-              <ShelfGotoInput
-                options={shelfLabelOptions}
-                onGo={goToShelf}
-                disabled={editDisabled}
-                listId="shelf-goto-list-canvas"
-              />
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: "6px 10px", fontSize: 12 }}
-                onClick={() => toggleEditorFullscreen()}
-                title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen layout design (F)"}
-              >
-                {editorFullscreen ? "Exit fullscreen" : "Fullscreen"}
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: "6px 10px", fontSize: 12 }}
-                onClick={() => fitToView()}
-              >
-                Fit view
-              </button>
-              <span style={{ fontSize: 12, color: "#6b7280" }}>Max shelves</span>
-              <span className="mono" style={{ fontSize: 16, fontWeight: 700, color: "#A30A2A" }}>
-                {layout.autoCalc?.maxFixtures ?? "—"}
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10 }}>
-                <button className="btn-secondary" style={{ width: 26, height: 26, padding: 0 }} onClick={() => adjustZoom(-0.25)}>
-                  –
-                </button>
-                <span className="mono" style={{ fontSize: 11, color: "#9aa1ab", width: 40, textAlign: "center" }}>
-                  {Math.round(zoom * 100)}%
-                </span>
-                <button className="btn-secondary" style={{ width: 26, height: 26, padding: 0 }} onClick={() => adjustZoom(0.25)}>
-                  +
-                </button>
-                <button
-                  className="btn-secondary"
-                  style={{ padding: "0 8px", height: 26, fontSize: 11 }}
-                  onClick={() => adjustZoom(0, { reset: true })}
-                  title="Reset zoom"
-                >
-                  Reset
-                </button>
-                <span className="muted" style={{ fontSize: 11, marginLeft: 6 }} title="Hold Ctrl and scroll or drag, or middle-drag, to pan the canvas">
-                  Ctrl / middle-drag to pan
-                </span>
-              </div>
-              <button
-                className="btn-secondary"
-                style={{ padding: "6px 10px", fontSize: 12 }}
-                disabled={editDisabled}
-                onClick={() => {
-                  pendingViewPreserveRef.current = { ...canvasBounds };
-                  const oldEnv = layoutStoreEnvelope(layout);
-                  const nextEnv = centeredStoreEnvelope(
-                    oldEnv,
-                    oldEnv.widthMeters + 2,
-                    oldEnv.depthMeters + 2
-                  );
-                  const body = {
-                    widthMeters: nextEnv.widthMeters,
-                    depthMeters: nextEnv.depthMeters,
-                    storeEnvelope: nextEnv,
-                  };
-                  const fw = Number(fixtureW);
-                  const fd = Number(fixtureD);
-                  if (Number.isFinite(fw) && Number.isFinite(fd) && fw > 0 && fd > 0) {
-                    const poly = fitRectanglePolygonInEnvelope(
-                      nextEnv,
-                      Math.min(fw, nextEnv.widthMeters),
-                      Math.min(fd, nextEnv.depthMeters),
-                      layout.polygon
-                    );
-                    if (poly) {
-                      body.shape = "polygon";
-                      body.polygon = poly;
-                    }
-                  }
-                  patchLayout(body).then(() => {
-                    toast("Store envelope expanded (+1 m each side)");
-                  });
-                }}
-              >
-                Grow +2m
-              </button>
-            </div>
-          </div>
+        <div className="editor-canvas-column">
+          {!planogram3dReturn ? (
+          <EditorCanvasBar
+            view3d={view3d}
+            editDisabled={editDisabled}
+            storeW={storeW}
+            storeD={storeD}
+            fixtureW={fixtureW}
+            fixtureD={fixtureD}
+            onStoreWChange={setStoreW}
+            onStoreDChange={setStoreD}
+            onFixtureWChange={setFixtureW}
+            onFixtureDChange={setFixtureD}
+            onEnvelopePatch={scheduleEnvelopePatch}
+            onFixturePatch={scheduleFixtureZonePatch}
+            envelope={envelope}
+            hasPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
+            zoom={zoom}
+            onZoomDelta={adjustZoom}
+            onZoomReset={() => adjustZoom(0, { reset: true })}
+            onFitView={fitToView}
+            shelfLabelOptions={shelfLabelOptions}
+            onGoToShelf={goToShelf}
+            zoomCategories={zoomCategories}
+            onCategoryZoom={focusCanvasTarget}
+            maxFixtures={layout.autoCalc?.maxFixtures}
+            onGrowStore={growStoreEnvelope}
+            showShelfLabelHint={!shelfLabelsVisible && shelfLabelOptions.length > 0}
+          />
+          ) : null}
 
-          {(layout.validation?.aisleViolations || []).map((text) =>
+          {!planogram3dReturn && (layout.validation?.aisleViolations || []).map((text) =>
             dismissedAlerts.has(`aisle:${text}`) ? null : (
               <AlertBanner
                 key={text}
@@ -1785,7 +1812,7 @@ export default function LayoutEditor({
               </AlertBanner>
             )
           )}
-          {(layout.validation?.containmentViolations || []).length > 0 && !dismissedAlerts.has("containment") ? (
+          {!planogram3dReturn && (layout.validation?.containmentViolations || []).length > 0 && !dismissedAlerts.has("containment") ? (
             <AlertBanner
               variant="error"
               className="alert-banner--clickable"
@@ -1800,43 +1827,15 @@ export default function LayoutEditor({
               {(layout.validation.containmentViolations || []).length} item(s) outside floor area — click to select
             </AlertBanner>
           ) : null}
-          {!view3d && planogramCoverage?.missingCount > 0 && !dismissedAlerts.has("missing-products") ? (
+          {!view3d && !planogram3dReturn && planogramCoverage?.missingCount > 0 && !dismissedAlerts.has("missing-products") ? (
             <AlertBanner
               variant="warning"
               role="button"
               style={{ cursor: "pointer" }}
               onDismiss={() => dismissAlert("missing-products")}
-              onClick={() => {
-                setMerchTabFocus((n) => n + 1);
-                setSideRailCollapsed(false);
-              }}
+              onClick={() => setMissingProductsOpen(true)}
             >
-              {planogramCoverage.missingCount} catalog product{planogramCoverage.missingCount === 1 ? "" : "s"} not placed on any shelf
-              — click to view in Merchandising
-            </AlertBanner>
-          ) : null}
-          {!view3d && paletteTool === "edit-area" && !dismissedAlerts.has("hint:edit-area") ? (
-            <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:edit-area")}>
-              Drag polygon vertices to reshape the fixture zone · changes save automatically
-            </AlertBanner>
-          ) : null}
-          {!view3d && paletteTool === "draw" && !dismissedAlerts.has("hint:draw") ? (
-            <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:draw")}>
-              Click to place corners · move mouse to preview each line · click the green start point (or Apply area) to close · need 3+ points
-            </AlertBanner>
-          ) : null}
-          {!view3d && layout.shape === "polygon" && fixtureZoneSize && envelope ? (
-            Math.abs(envelope.widthMeters - fixtureZoneSize.w) < 0.6 &&
-            Math.abs(envelope.depthMeters - fixtureZoneSize.d) < 0.6 &&
-            !dismissedAlerts.has("hint:envelope-match") ? (
-              <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:envelope-match")}>
-                Store envelope matches the fixture zone — use Grow +2m to expand the outer boundary, then draw/apply a smaller polygon inside it.
-              </AlertBanner>
-            ) : null
-          ) : null}
-          {!view3d && layout.shape !== "polygon" && !editDisabled && !dismissedAlerts.has("hint:draw-area-tip") ? (
-            <AlertBanner variant="info" onDismiss={() => dismissAlert("hint:draw-area-tip")}>
-              Tip: use Draw area to define an irregular store shape before Generate.
+              {planogramCoverage.missingCount} product{planogramCoverage.missingCount === 1 ? "" : "s"} not on shelves — view missing products
             </AlertBanner>
           ) : null}
 
@@ -1861,62 +1860,75 @@ export default function LayoutEditor({
             />
           ) : null}
 
-          {!view3d && selectionInfo ? (
-            <div className="selection-bar">
-              <span className="selection-bar-kind">{selectionInfo.kind}</span>
-              <span className="selection-bar-label">{selectionInfo.label}</span>
-              {selectionInfo.shelfType ? (
-                <span className="selection-bar-type">{selectionInfo.shelfType}</span>
-              ) : null}
-              {selectionInfo.detail ? (
-                <span className="selection-bar-dim mono">{selectionInfo.detail}</span>
-              ) : null}
-              <span className="selection-bar-hint">Press Del to remove</span>
-              <span className="selection-bar-spacer" aria-hidden />
-              <div className="selection-bar-actions">
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: "6px 12px", fontSize: 12 }}
-                onClick={() => setSelection(null)}
-              >
-                Deselect
-              </button>
-              <button
-                type="button"
-                className="btn-danger"
-                style={{ padding: "6px 12px", fontSize: 12 }}
-                disabled={editDisabled}
-                onClick={() => deleteSelection()}
-              >
-                Delete
-              </button>
+          <div className={`canvas-stage${view3d ? " canvas-stage--3d" : ""}`} ref={stageRef}>
+            {!view3d && selectionInfo ? (
+              <div className="selection-bar selection-bar--overlay">
+                <span className="selection-bar-kind">{selectionInfo.kind}</span>
+                <span className="selection-bar-label">{selectionInfo.label}</span>
+                {selectionInfo.shelfType ? (
+                  <span className="selection-bar-type">{selectionInfo.shelfType}</span>
+                ) : null}
+                {selectionInfo.detail ? (
+                  <span className="selection-bar-dim mono">{selectionInfo.detail}</span>
+                ) : null}
+                <span className="selection-bar-spacer" aria-hidden />
+                <div className="selection-bar-actions">
+                  <button
+                    type="button"
+                    className="editor-canvas-chip"
+                    onClick={() => setSelection(null)}
+                  >
+                    Deselect
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-canvas-chip editor-canvas-chip--danger"
+                    disabled={editDisabled}
+                    onClick={() => deleteSelection()}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : null}
-
-          <div className="canvas-stage" ref={stageRef}>
-            <div className="canvas-stage-inner">
+            ) : null}
+            <div className={`canvas-stage-inner${view3d ? " canvas-stage-inner--3d" : ""}`}>
             {view3d ? (
-              <div className="scene3d-wrap" style={{ width: "100%", height: "100%", minHeight: 420 }}>
+              <div className="scene3d-wrap">
+                {planogram3dReturn ? (
+                  <div className="scene3d-focus-bar">
+                    <div className="scene3d-focus-bar-main">
+                      <strong>Shelf view</strong>
+                      {scene3dDimensionLabels?.rack ? (
+                        <span className="mono scene3d-dimension-chip">{scene3dDimensionLabels.rack}</span>
+                      ) : null}
+                    </div>
+                    <div className="scene3d-focus-bar-actions">
+                      <button type="button" className="btn-primary scene3d-focus-btn" onClick={backToPlanogramFrom3d}>
+                        Back to planogram
+                      </button>
+                      <button type="button" className="btn-secondary scene3d-focus-btn" onClick={exit3dView}>
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <Scene3D
                   layout={layout}
                   products={products}
                   walkMode={walkMode}
                   highlightShelfId={highlightShelf3d?.shelfId}
                   highlightPairId={highlightShelf3d?.pairId}
+                  highlightFaceId={selection?.faceId || "A"}
+                  focusPhysicalShelfId={planogram3dReturn?.shelfId || null}
+                  shelfFocusMode={Boolean(planogram3dReturn)}
                   focusRequest={focus3dRequest}
                   contentRevision={layout.contentRevision}
                 />
                 {walkMode ? (
-                  <div className="muted" style={{ fontSize: 12, marginTop: 8, textAlign: "center" }}>
-                    Click canvas to start · WASD walk · mouse look · Esc to release
+                  <div className="canvas-hint canvas-hint--overlay">
+                    Click canvas · WASD · Esc to release
                   </div>
-                ) : (
-                  <div className="muted" style={{ fontSize: 12, marginTop: 8, textAlign: "center" }}>
-                    Scroll zoom · drag orbit · right-drag pan · view stays inside store
-                  </div>
-                )}
+                ) : null}
               </div>
             ) : useWebGlFloor ? (
               <FloorPlan2D
@@ -1925,6 +1937,7 @@ export default function LayoutEditor({
                 previewFixturePolygon={previewFixturePolygon}
                 selection={selection}
                 setSelection={setSelection}
+                onSelectShelf={selectShelf}
                 paletteTool={paletteTool}
                 editDisabled={editDisabled}
                 dragPos={dragPos}
@@ -1933,7 +1946,6 @@ export default function LayoutEditor({
                 onPlaceClick={onPlaceClick}
                 onResize={resizeEntity}
                 onRotateShelf={(id, deg) => rotateShelf(id, deg)}
-                onWheelZoom={handleCanvasWheel}
                 categories={categories}
                 products={products}
                 draftPolygon={draftPolygon}
@@ -1951,6 +1963,7 @@ export default function LayoutEditor({
                 fixtureTypeKeys={fixtureTypeKeys}
                 selection={selection}
                 setSelection={setSelection}
+                onSelectShelf={selectShelf}
                 paletteTool={paletteTool}
                 editDisabled={editDisabled}
                 dragPos={dragPos}
@@ -1959,7 +1972,6 @@ export default function LayoutEditor({
                 onPlaceClick={onPlaceClick}
                 onResize={resizeEntity}
                 onRotateShelf={(id, deg) => rotateShelf(id, deg)}
-                onWheelZoom={handleCanvasWheel}
                 categories={categories}
                 products={products}
                 draftPolygon={draftPolygon}
@@ -1973,60 +1985,6 @@ export default function LayoutEditor({
             </div>
           </div>
         </div>
-
-        <EditorPanelShell
-          side="right"
-          label="Inspector"
-          collapsed={sideRailCollapsed}
-          onToggleCollapse={() => setSideRailCollapsed((v) => !v)}
-        >
-          <EditorSideRail
-            selection={selection}
-            layout={layout}
-            editDisabled={editDisabled}
-            minAisle={minAisle}
-            verticalLabel={vMeta.label}
-            storeTypeLabel={activeStoreType?.label || vMeta.label}
-            storeTypeEmoji={activeStoreType?.emoji}
-            fixtureTypes={fixtureTypes}
-            categories={categories}
-            products={products}
-            token={token}
-            onPatchAisle={(id, body) => patchAisle(id, body).catch((e) => notifyError(e))}
-            onPatchShelf={(id, body) => patchShelf(id, body).catch((e) => notifyError(e))}
-            onDeleteAisle={() => deleteSelection()}
-            onDeleteShelf={() => deleteSelection()}
-            onMapAisle={(id, cat, color) => mapAisle(id, cat, color).catch((e) => notifyError(e))}
-            onMapShelf={(id, cat, color, faceId) => mapShelf(id, cat, color, faceId).catch((e) => notifyError(e))}
-            onLayoutUpdated={setLayout}
-            onQuickAddProduct={onQuickAddProduct}
-            onPatchZone={(id, body) =>
-              patchZone(id, body).catch((e) =>
-                toast(
-                  e.message === "zone_not_found"
-                    ? "Zone was removed or is out of sync. Reselect the zone and try again."
-                    : e.message
-                )
-              )
-            }
-            onSelectZone={(id) => setSelection({ kind: "zone", id })}
-            onDeleteZone={(id) => deleteZone(id).catch((e) => notifyError(e))}
-            onPatchEntry={(id, body) => patchEntry(id, body).catch((e) => notifyError(e))}
-            onDeleteEntry={(id) => deleteEntry(id).catch((e) => notifyError(e))}
-            onRefreshCatalog={onRefreshCatalog}
-            onOpenPlanogram={(shelfId, faceId) => setPlanogramEditor({ shelfId, faceId: faceId || "A" })}
-            toast={toast}
-            planogramCoverage={planogramCoverage}
-            coverageLoading={coverageLoading}
-            onRefreshCoverage={refreshPlanogramCoverage}
-            onGoToShelf={goToShelf}
-            selectedShelfId={
-              selection?.kind === "shelf" || selection?.kind === "fixture" ? selection.id : null
-            }
-            onShelfFaceChange={(shelfId, faceId) => setSelection({ kind: "shelf", id: shelfId, faceId })}
-            merchTabFocus={merchTabFocus}
-          />
-        </EditorPanelShell>
       </div>
 
       <PlanogramEditorModal
@@ -2042,6 +2000,25 @@ export default function LayoutEditor({
         onLayoutUpdated={setLayout}
         onPatchShelf={patchShelf}
         toast={toast}
+        planogramCoverage={planogramCoverage}
+        coverageLoading={coverageLoading}
+        onRefreshCoverage={refreshPlanogramCoverage}
+        fixtureTypes={fixtureTypes}
+        onMapShelf={(id, cat, color, faceId) => mapShelf(id, cat, color, faceId).catch((e) => notifyError(e))}
+        onDeleteShelf={async () => {
+          await deleteSelection();
+          setPlanogramEditor(null);
+        }}
+        onViewIn3d={(id, faceId) => viewShelfIn3d(id, faceId)}
+      />
+
+      <MissingProductsDialog
+        open={missingProductsOpen}
+        onClose={() => setMissingProductsOpen(false)}
+        coverage={planogramCoverage}
+        loading={coverageLoading}
+        onRefresh={refreshPlanogramCoverage}
+        categories={categories}
       />
     </section>
   );

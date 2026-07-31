@@ -1826,8 +1826,22 @@ components:
         layoutId: { type: string }
         utilizationPercent: { type: number }
         footprintSqm: { type: number }
+        usableAreaSqm: { type: number }
+        usedAreaSqm: { type: number }
+        freeSpacePercent: { type: number }
         fixtureCount: { type: integer }
+        aisleCount: { type: integer }
         capacity: { type: integer }
+        facingsTotal: { type: integer }
+        facingsByCategory:
+          type: array
+          items:
+            type: object
+            properties:
+              categoryId: { type: string }
+              categoryName: { type: string }
+              facings: { type: integer }
+              color: { type: string }
         allocationByCategory:
           type: array
           items:
@@ -1836,7 +1850,41 @@ components:
               categoryId: { type: string }
               categoryName: { type: string }
               fixtureCount: { type: integer }
+              shelfCount: { type: integer }
+              areaSqm: { type: number }
+              linearMeters: { type: number }
+              sharePercent: { type: number }
               color: { type: string }
+        spaceUtilization:
+          type: object
+          description: M9 §1.1 space breakdown
+        fixtureDensity:
+          type: object
+          description: M9 §1.2 fixture density
+        unmappedShelves:
+          type: object
+          description: M9 §1.3 unmapped fixtures
+        verticalSpaceUtilization:
+          type: object
+          description: M9 §1.4 tier utilization
+        capacityVariance:
+          type: object
+          description: M9 §2.1 capacity variance
+        fixtureMix:
+          type: array
+          description: M9 §2.2 fixture type mix
+        categorySpaceAllocation:
+          type: object
+          description: M9 §3.1 category space allocation
+        aisleCompliance:
+          type: object
+          description: M9 §4.1 aisle compliance
+        productCoverage:
+          type: object
+          description: M9 §3.3 product mapping coverage
+        executiveKpis:
+          type: object
+          description: M9 §7 executive KPI rollup
         durationMs: { type: number }
     AnalyticsCompare:
       type: object

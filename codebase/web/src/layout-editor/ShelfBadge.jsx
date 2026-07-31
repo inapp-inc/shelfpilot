@@ -20,7 +20,7 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
     const label =
       shelfFaceDisplayLabel(shelf, aisles) ||
       shelfCanvasFaceLabel(shelf, face, aisles, allShelves) ||
-      (shelf.displayNumber ? shelfFaceLabel(shelf.displayNumber, face) : "—");
+      "—";
     const cat = shelf.categoryId ? categoryLabel(categories, shelf.categoryId) : "Unassigned";
     const role = shelf.pairRole === "back" ? "back" : "front";
     const title = `${label} · ${role} · ${cat}`;

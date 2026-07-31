@@ -2,6 +2,7 @@ import { ZONE_TYPES } from "../referenceCatalog.js";
 
 /** Left sidebar palette: select, draw area, aisles, shelves. */
 export default function Palette({
+  compact = false,
   paletteTool,
   setPaletteTool,
   editDisabled,
@@ -14,31 +15,29 @@ export default function Palette({
   hasAppliedPolygon,
 }) {
   return (
-    <div className="palette">
+    <div className={`palette${compact ? " palette--compact" : ""}`}>
       <button
         type="button"
         className={`tool-btn ${paletteTool === "select" ? "active" : ""}`}
         onClick={() => setPaletteTool("select")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Select</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          click · drag move
-        </div>
+        <div className="tool-btn-title">Select</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">click · drag move</div>
+        ) : null}
       </button>
 
-      <div className="section-label" style={{ padding: "10px 4px 6px" }}>
-        Floor area
-      </div>
+      <div className="section-label palette-section-label">Floor</div>
       <button
         type="button"
         className={`tool-btn ${paletteTool === "draw" ? "active" : ""}`}
         disabled={editDisabled}
         onClick={() => setPaletteTool("draw")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Draw area</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          click · line preview · close shape
-        </div>
+        <div className="tool-btn-title">Draw area</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">click · line preview · close shape</div>
+        ) : null}
       </button>
       {draftCount > 0 ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "4px 2px" }}>
@@ -65,27 +64,24 @@ export default function Palette({
         disabled={editDisabled || !hasAppliedPolygon}
         onClick={() => setPaletteTool("edit-area")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Edit area</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          drag vertices · reshape
-        </div>
+        <div className="tool-btn-title">Edit area</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">drag vertices · reshape</div>
+        ) : null}
       </button>
       <button
         type="button"
-        className="tool-btn"
+        className="tool-btn tool-btn--accent"
         disabled={editDisabled}
         onClick={onOpenGenerate}
-        style={{ marginTop: 6 }}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Generate</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          gondola pairs + walk aisles
-        </div>
+        <div className="tool-btn-title">Generate</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">gondola pairs + walk aisles</div>
+        ) : null}
       </button>
 
-      <div className="section-label" style={{ padding: "10px 4px 6px" }}>
-        Aisles
-      </div>
+      <div className="section-label palette-section-label">Aisles</div>
       <button
         type="button"
         className={`tool-btn ${paletteTool === "aisle-h" || paletteTool === "aisle" ? "active" : ""}`}
@@ -98,10 +94,10 @@ export default function Palette({
         }}
         onClick={() => setPaletteTool("aisle-h")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Aisle (horizontal)</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          east–west run · min {minAisle} m wide
-        </div>
+        <div className="tool-btn-title">Aisle H</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">east–west · min {minAisle} m</div>
+        ) : null}
       </button>
       <button
         type="button"
@@ -115,18 +111,13 @@ export default function Palette({
         }}
         onClick={() => setPaletteTool("aisle-v")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Aisle (vertical)</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          north–south run · min {minAisle} m wide
-        </div>
+        <div className="tool-btn-title">Aisle V</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">north–south · min {minAisle} m</div>
+        ) : null}
       </button>
 
-      <div className="section-label" style={{ padding: "10px 4px 6px" }}>
-        Shelves
-      </div>
-      <div className="mono" style={{ fontSize: 10, color: "#9aa1ab", padding: "0 4px 6px" }}>
-        From Admin → Store Master
-      </div>
+      <div className="section-label palette-section-label">Fixtures</div>
       {fixtureTypes.map((t) => (
         <button
           key={t.type}
@@ -141,19 +132,19 @@ export default function Palette({
           }}
           onClick={() => setPaletteTool(t.type)}
         >
-          <div style={{ fontSize: 13, fontWeight: 700 }}>
+          <div className="tool-btn-title">
             {t.temperatureZone === "chilled" ? "🧊 " : t.temperatureZone === "frozen" ? "❄️ " : ""}
             {t.label}
           </div>
-          <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-            {t.defaultWidthMeters} × {t.defaultDepthMeters} m · {t.defaultLevels} lvl
-          </div>
+          {!compact ? (
+            <div className="tool-btn-sub mono">
+              {t.defaultWidthMeters} × {t.defaultDepthMeters} m · {t.defaultLevels} lvl
+            </div>
+          ) : null}
         </button>
       ))}
 
-      <div className="section-label" style={{ padding: "10px 4px 6px" }}>
-        Zones
-      </div>
+      <div className="section-label palette-section-label">Zones</div>
       {Object.entries(ZONE_TYPES).map(([key, z]) => {
         const tool = `zone:${key}`;
         return (
@@ -170,20 +161,18 @@ export default function Palette({
             }}
             onClick={() => setPaletteTool(tool)}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 3, background: z.color, display: "inline-block" }} />
+            <div className="tool-btn-title tool-btn-title--row">
+              <span className="zone-swatch" style={{ background: z.color }} />
               {z.label}
             </div>
-            <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-              {z.hint} · draw rectangle
-            </div>
+            {!compact ? (
+              <div className="tool-btn-sub mono">{z.hint} · draw rectangle</div>
+            ) : null}
           </button>
         );
       })}
 
-      <div className="section-label" style={{ padding: "10px 4px 6px" }}>
-        Entry
-      </div>
+      <div className="section-label palette-section-label">Entry</div>
       <button
         type="button"
         className={`tool-btn ${paletteTool === "entry" ? "active" : ""}`}
@@ -196,10 +185,10 @@ export default function Palette({
         }}
         onClick={() => setPaletteTool("entry")}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Entry point</div>
-        <div className="mono" style={{ fontSize: 10.5, color: "#9aa1ab" }}>
-          store entrance · click floor
-        </div>
+        <div className="tool-btn-title">Entry point</div>
+        {!compact ? (
+          <div className="tool-btn-sub mono">store entrance · click floor</div>
+        ) : null}
       </button>
     </div>
   );

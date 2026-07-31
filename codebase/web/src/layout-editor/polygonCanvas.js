@@ -231,6 +231,60 @@ export function layoutFixtureZoneRect(layout, previewPoly = null) {
   };
 }
 
+/** Tight bounds around generated fixtures — shelves, aisles, and fixture zone (not full store envelope). */
+export function layoutContentBounds(layout, previewPoly = null) {
+  if (!layout) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const expand = (x, y, w, d) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(d)) return;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + d);
+  };
+
+  const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+  const seenPairs = new Set();
+  for (const s of shelves) {
+    if (s.pairId) {
+      if (seenPairs.has(s.pairId)) continue;
+      const mate = shelves.find((x) => x.pairId === s.pairId && x.id !== s.id);
+      if (mate) {
+        seenPairs.add(s.pairId);
+        const front = s.pairRole === "back" ? mate : s;
+        const back = s.pairRole === "back" ? s : mate;
+        const aabb = gondolaCanvasAabb(front, back);
+        expand(aabb.x, aabb.y, aabb.w, aabb.d);
+        continue;
+      }
+    }
+    const aabb = shelfCanvasAabb(s);
+    expand(aabb.x, aabb.y, aabb.w, aabb.d);
+  }
+
+  for (const a of layout.aisles || []) {
+    const fp = aisleFootprintMeters(a, layout);
+    expand(fp.x, fp.y, fp.w, fp.d);
+  }
+
+  if (Number.isFinite(minX)) {
+    return { minX, minY, maxX, maxY };
+  }
+
+  const fz = layoutFixtureZoneRect(layout, previewPoly);
+  return {
+    minX: fz.x,
+    minY: fz.y,
+    maxX: fz.x + fz.widthMeters,
+    maxY: fz.y + fz.depthMeters,
+  };
+}
+
 /** Floor polygon for rendering: saved fixture zone, or layout size when none drawn yet. */
 export function layoutFloorPolygon(layout, previewPoly = null) {
   const rect = layoutFixtureZoneRect(layout, previewPoly);

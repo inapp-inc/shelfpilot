@@ -110,7 +110,15 @@ export default function MerchandisingPanel({
   if (!entity) {
     return (
       <div className="muted" style={{ fontSize: 12.5, fontStyle: "italic", padding: "4px 0" }}>
-        Select an aisle or shelf to assign a category and place products.
+        Select an aisle to assign a category, or click a shelf to open its planogram.
+      </div>
+    );
+  }
+
+  if (kind === "shelf") {
+    return (
+      <div className="muted" style={{ fontSize: 12.5, fontStyle: "italic", padding: "4px 0", lineHeight: 1.45 }}>
+        Shelf settings and planogram are in the dialog that opens when you click a shelf on the canvas.
       </div>
     );
   }

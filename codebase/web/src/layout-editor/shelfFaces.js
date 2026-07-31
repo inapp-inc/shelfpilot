@@ -8,11 +8,23 @@ export function shelfLetter(index) {
   return SHELF_LETTERS[i] ?? String(i + 1);
 }
 
-/** Aisle-centric label, e.g. aisle 4, unit B → "4B" */
-export function aisleShelfLabel(aisleNumber, shelfIndexAlongAisle) {
+/** Physical gondola halves store planogram/segments on face A; true double-sided uses A/B. */
+export function segmentFaceIdForShelf(shelf, merchandisingFaceId = "A") {
+  if (shelf?.pairId && !shelf?.pairDisplay) return "A";
+  return merchandisingFaceId === "B" ? "B" : "A";
+}
+
+/** Legacy double-letter suffix (AA, AB) — kept for parsing old labels. */
+export function labelIndexToSuffix(labelIndex) {
+  const i = Math.max(0, Math.floor(Number(labelIndex) || 0));
+  return `${shelfLetter(Math.floor(i / 26))}${shelfLetter(i % 26)}`;
+}
+
+/** Aisle-centric label, e.g. aisle 4, index 0 → "4A"; index 1 → "4B" */
+export function aisleShelfLabel(aisleNumber, labelIndex) {
   const n = Number(aisleNumber);
   if (!Number.isFinite(n) || n < 1) return "—";
-  return `${n}${shelfLetter(shelfIndexAlongAisle ?? 0)}`;
+  return `${n}${shelfLetter(labelIndex)}`;
 }
 
 export function shelfFaceDisplayLabel(shelf, aisles) {
@@ -39,9 +51,6 @@ export function shelfCanvasFaceLabel(shelf, faceId, aisles, allShelves) {
   }
   const lbl = shelfFaceDisplayLabel(shelf, aisles);
   if (lbl) return lbl;
-  if (shelf?.displayNumber) {
-    return shelfFaceLabel(shelf.displayNumber, faceId === "B" ? "B" : "A");
-  }
   return faceDigit(faceId);
 }
 
@@ -206,14 +215,20 @@ export function countGondolaUnits(shelves) {
   return units;
 }
 
-/** Parse aisle-centric label e.g. "4A" → { aisleNumber, shelfIndex }. */
+/** Parse aisle-centric label e.g. "9AA" → { aisleNumber, shelfIndex }; legacy "4A" still supported. */
 export function parseShelfLabel(label) {
-  const m = String(label || "")
-    .trim()
-    .toUpperCase()
-    .match(/^(\d+)([A-Z])$/);
-  if (!m) return null;
-  return { aisleNumber: Number(m[1]), shelfIndex: m[2].charCodeAt(0) - 65 };
+  const s = String(label || "").trim().toUpperCase();
+  let m = s.match(/^(\d+)([A-Z]{2})$/);
+  if (m) {
+    const a = m[2].charCodeAt(0) - 65;
+    const b = m[2].charCodeAt(1) - 65;
+    return { aisleNumber: Number(m[1]), shelfIndex: a * 26 + b };
+  }
+  m = s.match(/^(\d+)([A-Z])$/);
+  if (m) {
+    return { aisleNumber: Number(m[1]), shelfIndex: m[2].charCodeAt(0) - 65 };
+  }
+  return null;
 }
 
 /** All aisle-centric labels in layout for go-to typeahead. */

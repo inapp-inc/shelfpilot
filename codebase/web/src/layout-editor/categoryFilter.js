@@ -53,6 +53,28 @@ export function resolveCategoryId(categoryId, categories) {
   return match?.id || categoryId;
 }
 
+/** Human-readable label when catalog name is unavailable. */
+export function humanizeCategoryId(categoryId) {
+  if (!categoryId) return "—";
+  if (categoryId === "unmapped") return "Unmapped";
+  const raw = String(categoryId)
+    .replace(/^cat-/, "")
+    .replace(/^(hm-|cv-|ph-)/, "");
+  return raw
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Resolve id and return display name from catalog or humanized fallback. */
+export function categoryDisplayName(categoryId, categories) {
+  if (!categoryId) return "—";
+  const resolved = resolveCategoryId(categoryId, categories);
+  const cat = (categories || []).find((c) => c.id === resolved);
+  return cat?.name || humanizeCategoryId(resolved || categoryId);
+}
+
 export function catalogVerticalsForLayout(vertical) {
   const v = String(vertical || "retail").toLowerCase();
   if (v === "hypermarket") return ["hypermarket", "retail"];

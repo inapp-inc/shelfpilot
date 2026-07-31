@@ -5,6 +5,11 @@ import ShelfHoverTooltip from "./ShelfHoverTooltip.jsx";
 import { isDoubleSided, isPairedShelf, mergePairedShelfForCanvas, normalizeShelfUI, shelfCanvasFaceLabel } from "./shelfFaces.js";
 import { emojiForCategory } from "../storeTypes.js";
 import {
+  shelfLabelFitsFaceEdge,
+  shelfLabelFitsGondolaFace,
+  shelfLabelFitsShelfBadge,
+} from "./canvasLabelZoom.js";
+import {
   entityFitsPolygon,
   entityPlacementValid,
   fromStageCoords,
@@ -21,6 +26,7 @@ import {
   shelfLocalMeters,
   toStageCoords,
 } from "./polygonCanvas.js";
+import { MISSING_PRODUCT_MIME, parseMissingProduct } from "./missingProductDrag.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
 
@@ -148,12 +154,19 @@ function gondolaSplitAlongWidth(rotationDeg) {
   return n === 90 || n === 270;
 }
 
-function facingTickStyle(rotationDeg) {
-  const n = normalizeDeg(rotationDeg);
-  if (n === 90) return { top: "50%", left: 2, transform: "translateY(-50%) rotate(-90deg)" };
-  if (n === 180) return { bottom: 2, left: "50%", transform: "translateX(-50%) rotate(180deg)" };
-  if (n === 270) return { top: "50%", right: 2, transform: "translateY(-50%) rotate(90deg)" };
-  return { top: 2, left: "50%", transform: "translateX(-50%)" };
+function gondolaFaceLayout(splitAlongWidth) {
+  if (splitAlongWidth) {
+    return {
+      front: { left: 0, top: 0, width: "50%", height: "100%" },
+      back: { left: "50%", top: 0, width: "50%", height: "100%" },
+      spine: { left: "50%", top: "6%", width: 3, height: "88%", transform: "translateX(-50%)" },
+    };
+  }
+  return {
+    front: { left: 0, top: 0, width: "100%", height: "50%" },
+    back: { left: 0, top: "50%", width: "100%", height: "50%" },
+    spine: { left: "6%", top: "50%", width: "88%", height: 3, transform: "translateY(-50%)" },
+  };
 }
 
 function snapDeg(deg, shiftKey) {
@@ -218,31 +231,6 @@ function shelfRenderBox(live, rp, rotatePreview, rotateActive) {
   };
 }
 
-function gondolaFaceLayout(splitAlongWidth) {
-  if (splitAlongWidth) {
-    return {
-      front: { left: 0, top: 0, width: "50%", height: "100%" },
-      back: { left: "50%", top: 0, width: "50%", height: "100%" },
-      spine: { left: "50%", top: "6%", width: 3, height: "88%", transform: "translateX(-50%)" },
-      frontArrow: { left: 4, top: "50%", transform: "translateY(-50%)" },
-      backArrow: { right: 4, top: "50%", transform: "translateY(-50%)" },
-    };
-  }
-  return {
-    front: { left: 0, top: 0, width: "100%", height: "50%" },
-    back: { left: 0, top: "50%", width: "100%", height: "50%" },
-    spine: { left: "6%", top: "50%", width: "88%", height: 3, transform: "translateY(-50%)" },
-    frontArrow: { top: 3, left: "50%", transform: "translateX(-50%)" },
-    backArrow: { bottom: 3, left: "50%", transform: "translateX(-50%)" },
-  };
-}
-
-/** Arrow hint showing which way each gondola face points toward its aisle. */
-function gondolaAisleArrow(splitAlongWidth, faceRole) {
-  if (splitAlongWidth) return faceRole === "front" ? "◀" : "▶";
-  return faceRole === "front" ? "▲" : "▼";
-}
-
 /**
  * 2D floor canvas: DnD, draw polygon area, aisle + shelf layers.
  * Strict mode: viewport = polygon AABB; fixtures only inside drawn zone.
@@ -252,6 +240,7 @@ export default function Canvas2D({
   scale,
   selection,
   setSelection,
+  onSelectShelf,
   paletteTool,
   editDisabled,
   dragPos,
@@ -260,7 +249,6 @@ export default function Canvas2D({
   onPlaceClick,
   onResize,
   onRotateShelf,
-  onWheelZoom,
   categories,
   draftPolygon,
   onDrawVertex,
@@ -273,6 +261,8 @@ export default function Canvas2D({
   previewFixturePolygon = null,
   canvasBounds: canvasBoundsProp = null,
   fixtureTypeKeys = null,
+  onDropMissingProduct,
+  onMissingProductDropMiss,
 }) {
   const floorRef = useRef(null);
   const editPreviewRef = useRef(null);
@@ -373,6 +363,7 @@ export default function Canvas2D({
   const [edgeDrag, setEdgeDrag] = useState(null);
   const [draftDrag, setDraftDrag] = useState(null);
   const [drawCursor, setDrawCursor] = useState(null);
+  const [missingProductDropTarget, setMissingProductDropTarget] = useState(null);
   const resizeRef = useRef(null);
   const previewRef = useRef(null);
   const rotateRef = useRef(null);
@@ -607,14 +598,6 @@ export default function Canvas2D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftDrag, scale, bounds]);
 
-  useEffect(() => {
-    const el = floorRef.current;
-    if (!el || !onWheelZoom) return undefined;
-    const onWheel = (e) => onWheelZoom(e);
-    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => el.removeEventListener("wheel", onWheel, { capture: true });
-  }, [onWheelZoom]);
-
   function scheduleShelfHover(payload, e) {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = setTimeout(() => {
@@ -633,8 +616,7 @@ export default function Canvas2D({
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
   }, []);
 
-  function pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState) {
-    const pt = layoutPointFromClient(e.clientX, e.clientY);
+  function pickShelfFaceAtPoint(pt, f, frontId, backId, live, rp, rotState) {
     const { aabb, rot } = shelfRenderBox(live, rp, rotatePreview, rotState);
     if (!pointInAabb(pt, aabb, 0.02)) return null;
     if (f.pairDisplay && backId) {
@@ -642,6 +624,59 @@ export default function Canvas2D({
       return { shelfId: faceId === "B" ? backId : frontId, faceId, mergedShelf: f };
     }
     return { shelfId: f.id, faceId: "A", mergedShelf: null };
+  }
+
+  function pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState) {
+    const pt = layoutPointFromClient(e.clientX, e.clientY);
+    return pickShelfFaceAtPoint(pt, f, frontId, backId, live, rp, rotState);
+  }
+
+  function findShelfHitFromEvent(e) {
+    const pt = layoutPointFromClient(e.clientX, e.clientY);
+    for (let i = visibleShelves.length - 1; i >= 0; i -= 1) {
+      const f = visibleShelves[i];
+      const frontId = f.pairShelfIds?.front ?? f.id;
+      const backId = f.pairShelfIds?.back;
+      const live = dragPos && dragPos.id === frontId ? dragPos : f;
+      const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
+      const rotState = rotate?.id === frontId || rotate?.id === f.id;
+      const hit = pickShelfFaceAtPoint(pt, f, frontId, backId, live, rp, rotState);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function handleMissingProductDragOver(e) {
+    if (editDisabled || drawing) return false;
+    if (!e.dataTransfer.types.includes(MISSING_PRODUCT_MIME)) return false;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    const hit = findShelfHitFromEvent(e);
+    setMissingProductDropTarget(hit ? { shelfId: hit.shelfId, faceId: hit.faceId } : null);
+    return true;
+  }
+
+  function handleMissingProductDrop(e) {
+    if (editDisabled || drawing) return false;
+    const product = parseMissingProduct(e.dataTransfer.getData(MISSING_PRODUCT_MIME));
+    if (!product) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    setMissingProductDropTarget(null);
+    const hit = findShelfHitFromEvent(e);
+    if (!hit) {
+      onMissingProductDropMiss?.();
+      return true;
+    }
+    onDropMissingProduct?.({
+      productId: product.productId,
+      productName: product.name,
+      productSku: product.sku,
+      categoryId: product.categoryId,
+      shelfId: hit.shelfId,
+      faceId: hit.faceId,
+    });
+    return true;
   }
 
   function handleShelfSlotMouseDown(e, f, frontId, backId) {
@@ -653,7 +688,8 @@ export default function Canvas2D({
     const hit = pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState);
     if (!hit) return;
 
-    setSelection({ kind: "shelf", id: hit.shelfId, faceId: hit.faceId });
+    if (onSelectShelf) onSelectShelf(hit.shelfId, hit.faceId);
+    else setSelection({ kind: "shelf", id: hit.shelfId, faceId: hit.faceId });
     if (!canDragFixtures) return;
     const origX = f.pairOrigins?.front?.x ?? f.canvasOriginX ?? f.x;
     const origY = f.pairOrigins?.front?.y ?? f.canvasOriginY ?? f.y;
@@ -753,10 +789,15 @@ export default function Canvas2D({
         cursor: drawing || editingArea || isPlacerTool(paletteTool, fixtureTypeKeys) ? "crosshair" : "default",
       }}
       onDragOver={(e) => {
+        if (handleMissingProductDragOver(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
       }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setMissingProductDropTarget(null);
+      }}
       onDrop={(e) => {
+        if (handleMissingProductDrop(e)) return;
         e.preventDefault();
         if (editDisabled || drawing) return;
         const tool = e.dataTransfer.getData("application/x-shelfpilot-tool");
@@ -1168,14 +1209,13 @@ export default function Canvas2D({
         const frontId = f.pairShelfIds?.front ?? f.id;
         const backId = f.pairShelfIds?.back;
         const pairIds = backId ? [frontId, backId] : [f.id];
-        const selectedFront =
-          (selection?.kind === "shelf" || selection?.kind === "fixture") &&
-          (selection.id === frontId || (selection.id === backId && (selection.faceId || "A") === "A"));
-        const selectedBack =
-          backId &&
-          (selection?.kind === "shelf" || selection?.kind === "fixture") &&
-          (selection.id === backId || (selection.id === frontId && selection.faceId === "B"));
-        const selected = selectedFront || selectedBack;
+        const isShelfSelection =
+          selection?.kind === "shelf" || selection?.kind === "fixture";
+        const selectionMatchesUnit =
+          isShelfSelection &&
+          (selection.id === f.id || selection.id === frontId || selection.id === backId);
+        const selected = selectionMatchesUnit;
+        const showUnitSelection = selected;
         const dragId = dragPos && pairIds.includes(dragPos.id) ? frontId : dragPos?.id;
         const live = dragPos && dragPos.id === frontId ? dragPos : f;
         const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
@@ -1224,13 +1264,22 @@ export default function Canvas2D({
         const outside =
           outsideIds.has(`shelf:${f.id}`) ||
           (backId && outsideIds.has(`shelf:${backId}`));
-        const pixelMin = Math.min(aabb.w * scale, aabb.d * scale);
-        const handleBoost = pixelMin < 56 ? Math.min(3.5, 56 / Math.max(pixelMin, 10)) : 1;
+        const pixelW = aabb.w * scale;
+        const pixelH = aabb.d * scale;
+        const showGondolaFaceLabels = f.pairDisplay && shelfLabelFitsGondolaFace(pixelW, pixelH, splitAlongWidth);
+        const showShelfBadge =
+          !f.pairDisplay && shelfLabelFitsShelfBadge(pixelW, pixelH, { dualFace: dual && !paired });
+        const showFaceEdgeLabels =
+          dual && !f.pairDisplay && shelfLabelFitsFaceEdge(pixelW, pixelH, splitAlongWidth);
+        const isDropTarget =
+          missingProductDropTarget?.shelfId === frontId ||
+          missingProductDropTarget?.shelfId === backId ||
+          missingProductDropTarget?.shelfId === f.id;
 
         return (
           <div
             key={f.id}
-            className={`fx-slot fx-slot-interactive ${f.pairDisplay ? "fx-slot-gondola" : ""}${selected ? " fx-slot-selected" : ""}`}
+            className={`fx-slot fx-slot-interactive ${f.pairDisplay ? "fx-slot-gondola" : ""}${showUnitSelection ? " fx-slot-selected" : ""}${isDropTarget ? " fx-slot-drop-target" : ""}`}
             style={{
               position: "absolute",
               left: st.x * scale,
@@ -1245,10 +1294,12 @@ export default function Canvas2D({
             onMouseDown={(e) => handleShelfSlotMouseDown(e, f, frontId, backId)}
             onMouseMove={(e) => handleShelfSlotMouseMove(e, f, frontId, backId)}
             onMouseLeave={clearShelfHover}
+            onDragOver={(e) => handleMissingProductDragOver(e)}
+            onDrop={(e) => handleMissingProductDrop(e)}
             onClick={(e) => e.stopPropagation()}
           >
             <div
-              className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}`}
+              className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}${showUnitSelection ? " fx-selected" : ""}`}
               style={{
                 position: "absolute",
                 left: 0,
@@ -1258,7 +1309,7 @@ export default function Canvas2D({
                 background: fillColor,
                 borderColor: outside
                   ? "#dc2626"
-                  : selected && !f.pairDisplay
+                  : showUnitSelection
                     ? "#A30A2A"
                     : paired && f.pairRole === "back"
                       ? "#0284c7"
@@ -1270,8 +1321,7 @@ export default function Canvas2D({
                             ? "#38bdf8"
                             : "#1f2933",
                 borderStyle: paired && f.pairRole === "back" ? "dashed" : "solid",
-                boxShadow:
-                  selected && !f.pairDisplay ? "0 0 0 3px rgba(163,10,42,0.25)" : f.pairDisplay ? "0 2px 8px rgba(15,23,42,0.14)" : "none",
+                boxShadow: f.pairDisplay ? "0 2px 8px rgba(15,23,42,0.14)" : "none",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -1283,34 +1333,32 @@ export default function Canvas2D({
             {f.pairDisplay && backId ? (
               <>
                 <div
-                  className={`gondola-face-pane gondola-face-a${selectedFront ? " selected" : ""}`}
+                  className="gondola-face-pane gondola-face-a"
                   title={`${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)} · front aisle`}
                   style={faceLayout.front}
                 >
-                  <span className="gondola-aisle-arrow" style={faceLayout.frontArrow} aria-hidden>
-                    {gondolaAisleArrow(splitAlongWidth, "front")}
-                  </span>
-                  <span className="gondola-face-label mono">
-                    {shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)}
-                  </span>
-                  {faceA?.categoryId ? (
+                  {showGondolaFaceLabels ? (
+                    <span className="gondola-face-label mono">
+                      {shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)}
+                    </span>
+                  ) : null}
+                  {showGondolaFaceLabels && faceA?.categoryId ? (
                     <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
                       {emojiForCategory(faceA.categoryId, null, f.temperatureZone)}
                     </span>
                   ) : null}
                 </div>
                 <div
-                  className={`gondola-face-pane gondola-face-b${selectedBack ? " selected" : ""}`}
+                  className="gondola-face-pane gondola-face-b"
                   title={`${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)} · back aisle`}
                   style={faceLayout.back}
                 >
-                  <span className="gondola-aisle-arrow" style={faceLayout.backArrow} aria-hidden>
-                    {gondolaAisleArrow(splitAlongWidth, "back")}
-                  </span>
-                  <span className="gondola-face-label mono">
-                    {shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)}
-                  </span>
-                  {faceB?.categoryId ? (
+                  {showGondolaFaceLabels ? (
+                    <span className="gondola-face-label mono">
+                      {shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)}
+                    </span>
+                  ) : null}
+                  {showGondolaFaceLabels && faceB?.categoryId ? (
                     <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
                       {emojiForCategory(faceB.categoryId, null, f.temperatureZone)}
                     </span>
@@ -1343,7 +1391,7 @@ export default function Canvas2D({
                 }}
               />
             ) : null}
-            {dual && !f.pairDisplay && d * scale >= 18 ? (
+            {showFaceEdgeLabels ? (
               <>
                 <span
                   className="face-edge-label face-a-edge mono"
@@ -1359,11 +1407,6 @@ export default function Canvas2D({
                 >
                   {shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)}
                 </span>
-                {f.pairDisplay ? (
-                  <span className="facing-tick mono" aria-hidden style={{ position: "absolute", fontSize: 9, color: "#475569", ...facingTickStyle(rot) }}>
-                    ▲
-                  </span>
-                ) : null}
               </>
             ) : null}
             {selected && segments.length > 1
@@ -1391,12 +1434,7 @@ export default function Canvas2D({
                   );
                 })
               : null}
-            {selected ? (
-              <span className="fixture-dim mono">
-                {logicalW.toFixed(1)}×{logicalD.toFixed(1)} m
-              </span>
-            ) : null}
-            {!f.pairDisplay ? (
+            {showShelfBadge ? (
               <ShelfBadge
                 shelf={f}
                 pixelWidth={w * scale}
@@ -1404,53 +1442,6 @@ export default function Canvas2D({
                 aisles={layout.aisles}
                 allShelves={layout.shelves}
               />
-            ) : null}
-            {selected && showHandles ? (
-              <>
-                <ResizeHandles
-                  boost={handleBoost}
-                  onStart={(dir, e) =>
-                    startResize(
-                      {
-                        kind: "shelf",
-                        id: frontId,
-                        rotationDeg: rot,
-                        orig: {
-                          x: f.pairOrigins?.front?.x ?? aabb.originX,
-                          y: f.pairOrigins?.front?.y ?? aabb.originY,
-                          w,
-                          h: d,
-                        },
-                        min: { w: 0.4, h: 0.3 },
-                      },
-                      dir,
-                      e
-                    )
-                  }
-                />
-                {onRotateShelf ? (
-                  <div
-                    className="rotate-handle"
-                    title="Drag to rotate · Shift = 15° snap"
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      const rect = e.currentTarget.parentElement.getBoundingClientRect();
-                      const cx = rect.left + rect.width / 2;
-                      const cy = rect.top + rect.height / 2;
-                      setRotatePreview(null);
-                      rotatePreviewRef.current = null;
-                      setRotate({
-                        id: frontId,
-                        origDeg: normalizeDeg(f.rotationDeg),
-                        startAngle: Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI),
-                        cx,
-                        cy,
-                      });
-                    }}
-                  />
-                ) : null}
-              </>
             ) : null}
             </div>
           </div>
