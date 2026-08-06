@@ -7,9 +7,9 @@ import { validateLayoutCreate } from "../validationMessages.js";
 export const EMPTY_CREATE_DRAFT = {
   name: "",
   storeTypeId: "hypermarket",
-  widthMeters: 40,
-  depthMeters: 25,
-  heightMeters: 3,
+  widthMeters: 24,
+  depthMeters: 16,
+  heightMeters: 3.2,
   shape: "rectangle",
 };
 
@@ -39,13 +39,13 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal layout-create-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" onClick={onClose} data-testid="layout-create-backdrop">
+      <div className="modal layout-create-modal" onClick={(e) => e.stopPropagation()} data-testid="layout-create-modal">
         <div style={{ fontSize: 18, fontWeight: 800 }}>New store layout</div>
         <div className="section-label">Single form · choose store type and dimensions</div>
 
         {Object.keys(errors).length ? (
-          <AlertBanner variant="error" onDismiss={() => setErrors({})}>
+          <AlertBanner variant="error" onDismiss={() => setErrors({})} data-testid="layout-create-errors">
             Please fix the highlighted fields before creating the layout.
           </AlertBanner>
         ) : null}
@@ -53,6 +53,7 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
         <div className={`field${errors.name ? " field-invalid" : ""}`}>
           <label>Store name</label>
           <input
+            data-testid="layout-create-name"
             value={form.name}
             onChange={(e) => {
               setDraft({ ...form, name: e.target.value });
@@ -65,6 +66,7 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
         <div className="field">
           <label>Store type</label>
           <select
+            data-testid="layout-create-store-type"
             value={form.storeTypeId}
             onChange={(e) => setDraft({ ...form, storeTypeId: e.target.value })}
           >
@@ -77,11 +79,12 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
         </div>
         <div className="form-grid-3">
           <div className={`field${errors.widthMeters ? " field-invalid" : ""}`}>
-            <label>Width (m)</label>
+            <label data-testid="layout-create-length-label">Length (m)</label>
             <input
               className="mono"
               type="number"
               min="1"
+              data-testid="layout-create-length"
               value={form.widthMeters}
               onChange={(e) => {
                 setDraft({ ...form, widthMeters: e.target.value });
@@ -91,11 +94,12 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
             <FieldError message={errors.widthMeters} />
           </div>
           <div className={`field${errors.depthMeters ? " field-invalid" : ""}`}>
-            <label>Depth (m)</label>
+            <label data-testid="layout-create-width-label">Width (m)</label>
             <input
               className="mono"
               type="number"
               min="1"
+              data-testid="layout-create-width"
               value={form.depthMeters}
               onChange={(e) => {
                 setDraft({ ...form, depthMeters: e.target.value });
@@ -105,12 +109,13 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
             <FieldError message={errors.depthMeters} />
           </div>
           <div className={`field${errors.heightMeters ? " field-invalid" : ""}`}>
-            <label>Height (m)</label>
+            <label data-testid="layout-create-height-label">Height (m)</label>
             <input
               className="mono"
               type="number"
               min="1"
               step="0.1"
+              data-testid="layout-create-height"
               value={form.heightMeters}
               onChange={(e) => {
                 setDraft({ ...form, heightMeters: e.target.value });
@@ -167,12 +172,19 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="btn-secondary" style={{ padding: "10px 16px" }} onClick={onClose}>
+          <button
+            type="button"
+            className="btn-secondary"
+            data-testid="layout-create-cancel"
+            style={{ padding: "10px 16px" }}
+            onClick={onClose}
+          >
             Cancel
           </button>
           <button
             type="button"
             className="btn-primary"
+            data-testid="layout-create-submit"
             style={{ padding: "10px 20px" }}
             disabled={submitting}
             onClick={handleSubmit}

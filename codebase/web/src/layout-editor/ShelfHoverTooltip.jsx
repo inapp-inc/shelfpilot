@@ -1,4 +1,5 @@
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { catalogProductDimensionsInches } from "../catalog/productDimensions.js";
 import {
   groupPlanogramByLevel,
   normalizeShelfUI,
@@ -89,9 +90,12 @@ export default function ShelfHoverTooltip({ hover, layout, categories, products,
   const categoryId = categoryForHover(layout, hover);
   const planogram = planogramForHover(layout, hover);
 
-  const productName = (p) => {
+  const productLine = (p) => {
     const prod = (products || []).find((x) => x.id === p.productId);
-    return prod ? prod.name || prod.sku || p.productId : p.productId;
+    const name = prod ? prod.name || prod.sku || p.productId : p.productId;
+    if (!prod) return name;
+    const dims = catalogProductDimensionsInches(prod);
+    return `${name} · ${dims.label}`;
   };
 
   const levelGroups = groupPlanogramByLevel(planogram, null).filter((g) => g.products.length > 0);
@@ -128,7 +132,7 @@ export default function ShelfHoverTooltip({ hover, layout, categories, products,
       {totalProducts > 0 ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {levelGroups.map(({ levelIndex, products: levelProducts }) => {
-            const rows = levelProducts.slice(0, 5).map((p) => productName(p));
+            const rows = levelProducts.slice(0, 5).map((p) => productLine(p));
             const overflow = levelProducts.length - rows.length;
             return (
               <div key={levelIndex}>

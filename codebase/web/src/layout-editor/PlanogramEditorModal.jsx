@@ -20,12 +20,18 @@ import {
   defaultSegmentId,
   defaultSegmentIdForLevel,
   effectiveSegmentsForLevel,
+  levelDisplayLabel,
   mergeAllSegments,
   orphanPlacementsForLevel,
   placementInCell,
+  positionDisplayLabel,
   resizeDivider,
   shelfLevels,
 } from "./planogramSegments.js";
+import { formatInchesFromMeters, formatDimensionTripleInches } from "../units.js";
+import { catalogProductDimensionsInches } from "../catalog/productDimensions.js";
+import { resolveCategoryStorageType, storageTypeLabel } from "../storageType.js";
+import { weightWarningMessage } from "../shelfLoad.js";
 
 function activeFace(shelf, faceId) {
   if (!shelf?.faces?.length) {
@@ -195,7 +201,7 @@ export default function PlanogramEditorModal({
       const orphans = orphanPlacementsForLevel(planogram, nextSegments, levelIndex);
       if (orphans.length) {
         const ok = window.confirm(
-          `Re-splitting level ${levelIndex} will remove ${orphans.length} product placement(s) tied to old bays. Continue?`
+          `Re-splitting ${levelDisplayLabel(levelIndex)} will remove ${orphans.length} product placement(s) tied to old positions. Continue?`
         );
         if (!ok) return;
         for (const p of orphans) {
@@ -254,7 +260,7 @@ export default function PlanogramEditorModal({
       setDragDivider(null);
       dragLevelRef.current = null;
       if (pending != null && levelIndex != null) {
-        applySegments(levelIndex, pending).catch((err) => toast?.(err.message));
+        applySegments(levelIndex, pending).catch((err) => toast?.(friendlyError(err, "Could not update positions.")));
       }
     };
 
@@ -293,7 +299,9 @@ export default function PlanogramEditorModal({
     await onRefreshCoverage?.();
     setAddCell(null);
     setEditPlacement(null);
-    toast?.(`Placed on level ${levelIndex}`);
+    const overload = weightWarningMessage(updated);
+    if (overload) toast?.(overload, { type: "warning" });
+    else toast?.(`Placed on level ${levelIndex}`);
   }
 
   async function placeProductOnCell(draggedProduct, levelIndex, segmentId) {
@@ -306,7 +314,7 @@ export default function PlanogramEditorModal({
 
     const existing = placementInCell(planogram, { levelIndex, segmentId, shelf, faceId });
     if (existing) {
-      toast?.("This bay already has a product — remove it first or click to edit.", { type: "warning" });
+      toast?.("This position already has a product — remove it first or click to edit.", { type: "warning" });
       return;
     }
 
@@ -326,7 +334,7 @@ export default function PlanogramEditorModal({
         body: previewBody,
       });
       if ((prev.maxFacings ?? 0) < 1) {
-        toast?.("Product does not fit in this bay.", { type: "error" });
+        toast?.("Product does not fit in this position.", { type: "error" });
         return;
       }
 
@@ -347,9 +355,11 @@ export default function PlanogramEditorModal({
       onLayoutUpdated(updated);
       await onRefreshCoverage?.();
       const name = draggedProduct.name || productIdToPlace;
-      toast?.(`Placed ${name} on level ${levelIndex}`, { type: "success" });
+      const overload = weightWarningMessage(updated);
+      if (overload) toast?.(overload, { type: "warning" });
+      else toast?.(`Placed ${name} on ${levelDisplayLabel(levelIndex)}`, { type: "success" });
     } catch (err) {
-      toast?.(friendlyError(err, "Could not place product in this bay."), { type: "error" });
+      toast?.(friendlyError(err, "Could not place product in this position."), { type: "error" });
     }
   }
 
@@ -492,7 +502,7 @@ export default function PlanogramEditorModal({
                 {zone.emoji} {zone.label}
               </span>
               <span className="planogram-header-chip mono">
-                {usable.toFixed(1)} m wide × {depthM.toFixed(1)} m deep × {heightM.toFixed(1)} m high
+                {formatDimensionTripleInches(usable, depthM, heightM)} (W × D × H)
               </span>
               <span className="planogram-header-chip">{levels.length} level{levels.length === 1 ? "" : "s"}</span>
               {faceCategory ? (
@@ -516,13 +526,13 @@ export default function PlanogramEditorModal({
             {onViewIn3d ? (
               <button
                 type="button"
-                className="btn-secondary planogram-view-3d-btn"
+                className="btn-primary planogram-view-3d-btn"
                 onClick={() => onViewIn3d(activePhysicalId, faceId)}
               >
                 View in 3D
               </button>
             ) : null}
-            <button type="button" className="btn-secondary" onClick={() => onClose?.()}>
+            <button type="button" className="btn-secondary planogram-close-btn" onClick={() => onClose?.()}>
               Close
             </button>
           </div>
@@ -542,12 +552,12 @@ export default function PlanogramEditorModal({
           <div className="planogram-editor-main">
         <div className="planogram-editor-toolbar">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>
-            Bays · Level {selectedLevelIndex}
+            Positions · {levelDisplayLabel(selectedLevelIndex)}
           </span>
           {!editDisabled ? (
             <>
               {[2, 3, 4].map((n) => (
-                <button key={n} type="button" className="btn-secondary planogram-toolbar-btn" onClick={() => equalSplit(n).catch((e) => toast?.(e.message))}>
+                <button key={n} type="button" className="btn-secondary planogram-toolbar-btn" onClick={() => equalSplit(n).catch((e) => toast?.(friendlyError(e, "Could not split positions.")))}>
                   Split {n}
                 </button>
               ))}
@@ -577,10 +587,10 @@ export default function PlanogramEditorModal({
                   onClick={() => setSelectedLevelIndex(levelIndex)}
                   onKeyDown={(e) => e.key === "Enter" && setSelectedLevelIndex(levelIndex)}
                 >
-                  <span className="mono">L{levelIndex}</span>
+                  <span className="mono">{levelDisplayLabel(levelIndex)}</span>
                   {lv.heightFromFloorMeters != null ? (
                     <span className="muted" style={{ fontSize: 10 }}>
-                      {lv.heightFromFloorMeters} m
+                      {formatInchesFromMeters(lv.heightFromFloorMeters)}
                     </span>
                   ) : null}
                 </div>
@@ -589,8 +599,8 @@ export default function PlanogramEditorModal({
                     <div className="planogram-bay-headers planogram-bay-headers-inline">
                       {segments.map((seg, idx) => (
                         <div key={seg.id} className="planogram-bay-header" style={{ flex: `${seg.widthMeters} 0 0`, minWidth: `${Math.max(96, Math.round(seg.widthMeters * 88))}px` }}>
-                          <span>{seg.label || `Bay ${idx + 1}`}</span>
-                          <span className="mono muted">{seg.widthMeters.toFixed(2)} m</span>
+                          <span>{positionDisplayLabel(idx, seg.label)}</span>
+                          <span className="mono muted">{formatInchesFromMeters(seg.widthMeters)}</span>
                           {!editDisabled && levelSelected ? (
                             <button
                               type="button"
@@ -640,6 +650,14 @@ export default function PlanogramEditorModal({
                           {placement ? (
                             <div className="planogram-product-block">
                               <div className="planogram-product-name">{prod?.name || placement.productId}</div>
+                              {prod ? (
+                                <div
+                                  className="mono planogram-product-dims"
+                                  title={catalogProductDimensionsInches(prod).assumed ? "Estimated product size (W × H × D)" : "Product size (W × H × D)"}
+                                >
+                                  {catalogProductDimensionsInches(prod).label}
+                                </div>
+                              ) : null}
                               <div className="mono planogram-product-count">
                                 {placement.facings} wide × {placement.depthFacings ?? 1} deep
                               </div>
@@ -687,6 +705,11 @@ export default function PlanogramEditorModal({
               {editPlacement ? "Edit placement" : `Add · Level ${addCell?.levelIndex}`}
             </div>
             <div className="planogram-add-fields">
+              {faceCategory ? (
+                <div className="planogram-add-storage-hint muted" style={{ gridColumn: "1 / -1", fontSize: 11.5 }}>
+                  Products filtered to <strong>{storageTypeLabel(resolveCategoryStorageType(faceCategory, categories))}</strong> storage for this category.
+                </div>
+              ) : null}
               <label>
                 Product
                 <select
@@ -701,6 +724,11 @@ export default function PlanogramEditorModal({
                     </option>
                   ))}
                 </select>
+                {!productList.length && faceCategory ? (
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    No matching products — set storage type on products in Catalog to match this category.
+                  </span>
+                ) : null}
               </label>
               <label>
                 Front facings
@@ -725,6 +753,17 @@ export default function PlanogramEditorModal({
                 />
               </label>
             </div>
+            {productId ? (() => {
+              const selected = productList.find((p) => p.id === productId) || products.find((p) => p.id === productId);
+              if (!selected) return null;
+              const dims = catalogProductDimensionsInches(selected);
+              return (
+                <div className="mono muted planogram-add-dims" style={{ fontSize: 11.5, marginBottom: 6 }}>
+                  Product size: {dims.label}
+                  {dims.assumed ? " (estimated)" : ""}
+                </div>
+              );
+            })() : null}
             {preview ? (
               <div className="mono muted" style={{ fontSize: 11.5 }}>
                 Max {preview.maxFacings} wide · {preview.maxDepthFacings ?? 1} deep
@@ -759,12 +798,12 @@ export default function PlanogramEditorModal({
 
         {summary.warnings > 0 && !dismissedFillWarning ? (
           <AlertBanner variant="warning" onDismiss={() => setDismissedFillWarning(true)}>
-            {summary.warnings} placement{summary.warnings === 1 ? "" : "s"} leave unused shelf width — add facings or adjust bay splits.
+            {summary.warnings} placement{summary.warnings === 1 ? "" : "s"} leave unused shelf width — add facings or adjust position splits.
           </AlertBanner>
         ) : null}
 
         <footer className="planogram-editor-footer mono muted">
-          {levels.length} levels · up to {summary.maxBays} bay{summary.maxBays === 1 ? "" : "s"} ·{" "}
+          {levels.length} levels · up to {summary.maxBays} position{summary.maxBays === 1 ? "" : "s"} ·{" "}
           {summary.placements} placement{summary.placements === 1 ? "" : "s"}
           {summary.warnings > 0 ? ` · ${summary.warnings} fill gap warning(s)` : ""}
         </footer>
@@ -813,7 +852,7 @@ export default function PlanogramEditorModal({
                 <>
                   <div className="planogram-sidebar-toolbar">
                     <p className="planogram-sidebar-toolbar-hint">
-                      Drag products onto empty bays in the planogram.
+                      Drag products onto empty positions in the planogram.
                     </p>
                     {onRefreshCoverage ? (
                       <button
@@ -851,7 +890,7 @@ export default function PlanogramEditorModal({
                       maxProductsPerCategory={null}
                       draggable={!editDisabled}
                       editDisabled={editDisabled}
-                      dragHint="Drop on an empty bay at left."
+                      dragHint="Drop on an empty position at left."
                     />
                   )}
                 </>

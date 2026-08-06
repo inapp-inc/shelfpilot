@@ -37,7 +37,7 @@ export function parseAppPath(pathname) {
   const layoutMatch = raw.match(/^\/layouts\/([^/]+)$/);
   if (layoutMatch) return { module: "layouts", layoutId: decodeURIComponent(layoutMatch[1]) };
   if (raw === "/products" || raw === "/catalog") return { module: "catalog", layoutId: null };
-  if (raw === "/analytics") return { module: "analytics", layoutId: null };
+  if (raw === "/analytics") return { module: "dashboard", layoutId: null };
   if (raw === "/admin") return { module: "admin", layoutId: null };
   return { module: "dashboard", layoutId: null };
 }

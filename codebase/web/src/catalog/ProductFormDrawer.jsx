@@ -4,6 +4,8 @@ import CategoryTreePicker from "./CategoryTreePicker.jsx";
 import FieldError from "../components/FieldError.jsx";
 import { validateProduct } from "../validationMessages.js";
 import { resolveAssetUrl } from "../assetUrl.js";
+import { inchesInputFromMeters, inchesToMeters, lbToKg } from "../units.js";
+import { STORAGE_TYPE_OPTIONS, normalizeStorageType, productStorageType, resolveCategoryStorageType } from "../storageType.js";
 
 const MAX_DIM = 256;
 
@@ -60,13 +62,22 @@ export default function ProductFormDrawer({
 
   function handleSubmit(e) {
     e.preventDefault();
-    const check = validateProduct(draft);
+    const payload = {
+      ...draft,
+      widthMeters: inchesToMeters(draft.widthInches),
+      heightMeters: inchesToMeters(draft.heightInches),
+      depthMeters: inchesToMeters(draft.depthInches),
+      weightKg:
+        draft.weightLb === "" || draft.weightLb == null ? null : lbToKg(draft.weightLb),
+      storageType: normalizeStorageType(draft.storageType || productStorageType(draft)),
+    };
+    const check = validateProduct(payload);
     if (!check.ok) {
       setErrors(check.errors);
       return;
     }
     setErrors({});
-    onSubmit?.();
+    onSubmit?.(payload);
   }
 
   async function acceptFile(file) {
@@ -106,6 +117,7 @@ export default function ProductFormDrawer({
             type="submit"
             form="product-form"
             className="btn-primary"
+            data-testid="product-form-submit"
             style={{ padding: "10px 22px" }}
             disabled={editDisabled || imgBusy}
           >
@@ -122,6 +134,7 @@ export default function ProductFormDrawer({
         <label className={`field${errors.name ? " field-invalid" : ""}`}>
           Name
           <input
+            data-testid="product-form-name"
             value={draft.name}
             onChange={(e) => {
               setDraft({ ...draft, name: e.target.value });
@@ -132,11 +145,15 @@ export default function ProductFormDrawer({
         </label>
         <label className="field">
           SKU
-          <input value={draft.sku} onChange={(e) => setDraft({ ...draft, sku: e.target.value })} />
+          <input
+            data-testid="product-form-sku"
+            value={draft.sku}
+            onChange={(e) => setDraft({ ...draft, sku: e.target.value })}
+          />
         </label>
 
-        <div className="field" style={{ marginBottom: 0 }}>
-          <span>Product image</span>
+        <div className="field product-image-section">
+          <span className="product-section-label">Product image</span>
           <div
             className={`import-dropzone product-image-zone ${dragOver ? "drag-over" : ""} ${
               draft.imageUrl ? "has-file" : ""
@@ -212,7 +229,12 @@ export default function ProductFormDrawer({
             categories={categories}
             value={draft.categoryId}
             onChange={(id) => {
-              setDraft({ ...draft, categoryId: id || "" });
+              const nextStorage = id ? resolveCategoryStorageType(id, categories) : draft.storageType;
+              setDraft({
+                ...draft,
+                categoryId: id || "",
+                storageType: normalizeStorageType(nextStorage || "ambient"),
+              });
               clearError("categoryId");
             }}
             allowEmpty={false}
@@ -221,56 +243,92 @@ export default function ProductFormDrawer({
           />
           <FieldError message={errors.categoryId} />
         </label>
-        <div className="form-grid-3">
+        <label className="field">
+          Storage type
+          <select
+            value={normalizeStorageType(draft.storageType || productStorageType(draft))}
+            onChange={(e) => setDraft({ ...draft, storageType: e.target.value })}
+            disabled={editDisabled}
+          >
+            {STORAGE_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.emoji} {opt.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted" style={{ fontSize: 11 }}>
+            Must match the category storage type to appear on shelf product lists.
+          </span>
+        </label>
+        <div className="field product-dimensions-section">
+          <span className="product-section-label">Dimensions (inches)</span>
+          <div className="form-grid-3">
           <label className={`field${errors.widthMeters ? " field-invalid" : ""}`}>
-            Width (m)
+            Width (in)
             <input
               className="mono"
               type="number"
-              step="0.01"
+              step="0.1"
               min="0"
-              value={draft.widthMeters}
+              value={draft.widthInches ?? ""}
               onChange={(e) => {
-                setDraft({ ...draft, widthMeters: e.target.value });
+                setDraft({ ...draft, widthInches: e.target.value });
                 clearError("widthMeters");
               }}
             />
             <FieldError message={errors.widthMeters} />
           </label>
           <label className={`field${errors.heightMeters ? " field-invalid" : ""}`}>
-            Height (m)
+            Height (in)
             <input
               className="mono"
               type="number"
-              step="0.01"
+              step="0.1"
               min="0"
-              value={draft.heightMeters}
+              value={draft.heightInches ?? ""}
               onChange={(e) => {
-                setDraft({ ...draft, heightMeters: e.target.value });
+                setDraft({ ...draft, heightInches: e.target.value });
                 clearError("heightMeters");
               }}
             />
             <FieldError message={errors.heightMeters} />
           </label>
           <label className={`field${errors.depthMeters ? " field-invalid" : ""}`}>
-            Depth (m)
+            Depth (in)
             <input
               className="mono"
               type="number"
-              step="0.01"
+              step="0.1"
               min="0"
-              value={draft.depthMeters ?? ""}
+              value={draft.depthInches ?? ""}
               onChange={(e) => {
-                setDraft({ ...draft, depthMeters: e.target.value });
+                setDraft({ ...draft, depthInches: e.target.value });
                 clearError("depthMeters");
               }}
             />
             <FieldError message={errors.depthMeters} />
           </label>
+          <label className={`field${errors.weightKg ? " field-invalid" : ""}`}>
+            Weight (lb)
+            <input
+              className="mono"
+              type="number"
+              step="0.1"
+              min="0"
+              value={draft.weightLb ?? ""}
+              onChange={(e) => {
+                setDraft({ ...draft, weightLb: e.target.value });
+                clearError("weightKg");
+              }}
+            />
+            <FieldError message={errors.weightKg} />
+          </label>
+          </div>
+          <p className="muted product-dimensions-hint">
+            Width, height, and depth in inches drive front facings, shelf levels, and depth facings in
+            planogram and 3D. Weight caps how many units a shelf level can carry.
+          </p>
         </div>
-        <p className="muted" style={{ fontSize: 11.5, margin: 0 }}>
-          Width, height, and depth drive front facings, levels, and backward depth on shelves.
-        </p>
       </form>
     </DrawerShell>
   );

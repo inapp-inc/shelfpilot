@@ -7,7 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { correlationId } from "./middleware/correlationId.js";
 import { ensureProductImagesDir, resolveProductImagesDir } from "./services/productImages.js";
+import { ensureFloorPlansDir, resolveFloorPlansDir } from "./services/floorPlanImages.js";
 import { bootstrapProductImages } from "./services/bootstrapProductImages.js";
+import { ensureDemoReady } from "./services/bootstrapDemo.js";
+import { getDb } from "./store/sqlite.js";
 import { healthRouter } from "./routes/health.js";
 import { authRouter } from "./routes/auth.js";
 import { layoutsRouter } from "./routes/layouts.js";
@@ -39,7 +42,8 @@ const corsOrigins = (process.env.CORS_ORIGINS || "")
 
 app.use(helmet(serveWeb ? { contentSecurityPolicy: false } : undefined));
 app.use(cors(corsOrigins.length ? { origin: corsOrigins, credentials: true } : undefined));
-app.use(express.json({ limit: "2mb" }));
+// Floor-plan drawings are uploaded as base64 JSON and are far larger than thumbnails.
+app.use(express.json({ limit: "25mb" }));
 app.use(correlationId);
 app.use(morgan("combined"));
 
@@ -51,6 +55,14 @@ const mountProductImages = (mountPath) => {
 };
 mountProductImages(`${basePath}/product-images`);
 if (basePath) mountProductImages("/product-images");
+
+// Uploaded architectural floor plans, served at /floor-plans/.
+const floorPlansDir = ensureFloorPlansDir();
+const mountFloorPlans = (mountPath) => {
+  app.use(mountPath, express.static(floorPlansDir, { fallthrough: true }));
+};
+mountFloorPlans(`${basePath}/floor-plans`);
+if (basePath) mountFloorPlans("/floor-plans");
 
 const routers = [
   healthRouter,
@@ -84,6 +96,11 @@ app.use((err, _req, res, _next) => {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+  let demoBootstrap = null;
+  if (process.env.NODE_ENV !== "test" && process.env.SKIP_DEMO_BOOTSTRAP !== "1") {
+    getDb();
+    demoBootstrap = ensureDemoReady();
+  }
   app.listen(port, () => {
     console.log(
       JSON.stringify({
@@ -95,6 +112,8 @@ if (isMain) {
         webDist: serveWeb ? webDist : null,
         productImagesDir: resolveProductImagesDir(),
         productImagesBootstrapped: imageBootstrap.copied,
+        floorPlansDir: resolveFloorPlansDir(),
+        demoBootstrap,
       })
     );
   });

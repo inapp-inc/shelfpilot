@@ -60,6 +60,8 @@ npm run seed:demo
 npm run smoke:demo
 ```
 
+**Playwright E2E (Phases A–C smoke):** [`Docs/automation/`](./automation/README.md) · `cd codebase && npm run test:e2e:smoke` (app must be up at http://localhost:8080) — auth, layouts, Smart Generate, 3D, dashboard, Viewer RBAC, catalog CRUD, admin tabs, approval.
+
 **Evidence (2026-07-15):** **25 API tests passed; OpenAPI 36 operations verified**; seed + smoke scripts ship in `codebase/`.
 
 **Manual:** Run `npm run seed:demo` once for full category/product samples · Login → Catalog: add category/product via drawers · Layout editor: Merchandising tab → map category → place by level · draw polygon → generate → 2D/3D.

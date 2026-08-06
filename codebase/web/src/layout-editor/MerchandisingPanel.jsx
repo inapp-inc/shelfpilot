@@ -3,6 +3,10 @@ import { api } from "../api.js";
 import CategoryTreePicker from "../catalog/CategoryTreePicker.jsx";
 import { filterProductsForShelf } from "./categoryFilter.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { catalogProductDimensionsInches } from "../catalog/productDimensions.js";
+import { formatInchesFromMeters, formatWeightFromKg } from "../units.js";
+import { colorForCategoryId } from "../categoryColors.js";
+import { weightWarningMessage } from "../shelfLoad.js";
 import { isDoubleSided, normalizeShelfUI, shelfDisplayLabel, shelfCanvasFaceLabel, shelfFaceDisplayLabel, resolveGondolaForEditor } from "./shelfFaces.js";
 import { isShelfLike } from "./planogramSegments.js";
 
@@ -127,10 +131,13 @@ export default function MerchandisingPanel({
     if (!categoryId) return;
     const cat = categories.find((c) => c.id === categoryId);
     if (!cat) return;
-    if (kind === "aisle") onMapAisle(entity.id, cat.id, cat.color);
+    // Store the resolved colour so every mapped fixture gets a distinct hue even
+    // when the catalog category was created without one.
+    const color = colorForCategoryId(categories, cat.id);
+    if (kind === "aisle") onMapAisle(entity.id, cat.id, color);
     else {
       const { shelfId, faceId: apiFaceId } = merchApiTarget();
-      onMapShelf(shelfId, cat.id, cat.color, apiFaceId);
+      onMapShelf(shelfId, cat.id, color, apiFaceId);
     }
   }
 
@@ -149,7 +156,9 @@ export default function MerchandisingPanel({
     });
     onLayoutUpdated(updated);
     onRefreshCatalog?.();
-    toast?.(`Product placed on ${activeAisleLabel || "shelf"}, level ${levelIndex}`);
+    const overload = weightWarningMessage(updated);
+    if (overload) toast?.(overload, { type: "warning" });
+    else toast?.(`Product placed on ${activeAisleLabel || "shelf"}, level ${levelIndex}`);
   }
 
   async function removePlacement(placementId) {
@@ -285,7 +294,7 @@ export default function MerchandisingPanel({
                 {levels.map((lv, idx) => (
                   <option key={lv.levelIndex ?? idx} value={lv.levelIndex ?? idx}>
                     Level {lv.levelIndex ?? idx}
-                    {lv.heightFromFloorMeters != null ? ` · ${lv.heightFromFloorMeters} m` : ""}
+                    {lv.heightFromFloorMeters != null ? ` · ${formatInchesFromMeters(lv.heightFromFloorMeters)} high` : ""}
                   </option>
                 ))}
               </select>
@@ -327,6 +336,18 @@ export default function MerchandisingPanel({
                   <div>Front facings (wide): up to {preview.maxFacings}</div>
                   <div>Depth (backward): up to {preview.maxDepthFacings ?? 1} unit(s) deep</div>
                   <div>Levels (high): up to {preview.suggestedLevels ?? levels.length}</div>
+                  {preview.maxUnitsByWeight != null ? (
+                    <div>
+                      Weight limit: {preview.maxUnitsByWeight} unit(s) ·{" "}
+                      {formatWeightFromKg(preview.productWeightKg)} each, level holds{" "}
+                      {formatWeightFromKg(preview.levelLoadLimitKg)}
+                    </div>
+                  ) : null}
+                  {preview.fitsLevelHeight === false ? (
+                    <div style={{ color: "#A30A2A" }}>
+                      Too tall for this level ({formatInchesFromMeters(preview.levelClearHeightMeters)} clear).
+                    </div>
+                  ) : null}
                   {preview.assumedDimensions ? (
                     <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
                       Using default product size — set width/height in Catalog for accurate counts.
@@ -365,8 +386,15 @@ export default function MerchandisingPanel({
                   const prod = products.find((x) => x.id === p.productId);
                   return (
                     <div key={p.id} className="merch-placement-row">
-                      <span style={{ fontSize: 12.5 }}>
-                        {prod?.name || p.productId} · {p.facings}/{p.maxFacings}
+                      <span style={{ fontSize: 12.5, display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span>
+                          {prod?.name || p.productId} · {p.facings}/{p.maxFacings}
+                        </span>
+                        {prod ? (
+                          <span className="mono muted" style={{ fontSize: 11 }}>
+                            {catalogProductDimensionsInches(prod).label}
+                          </span>
+                        ) : null}
                       </span>
                       {!editDisabled ? (
                         <button

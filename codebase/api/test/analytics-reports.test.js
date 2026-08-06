@@ -7,6 +7,8 @@ import {
   computeCapacityVariance,
   computeAisleCompliance,
   computeCategorySpaceAllocation,
+  computeVerticalSpaceUtilization,
+  computeWalkability,
   buildLayoutAnalyticsReport,
 } from "../src/services/analyticsReports.js";
 
@@ -31,9 +33,67 @@ test("space utilization breakdown matches doc §1.1", () => {
   assert.equal(space.totalStoreAreaSqm, 100);
   assert.equal(space.allocatedAreaSqm, 20);
   assert.equal(space.aisleAreaSqm, 20);
-  assert.equal(space.blockedZoneAreaSqm, 4);
-  assert.equal(space.unusedAreaSqm, 56);
+  // Merchandising zones are overlays — not exclusive blocked floor.
+  assert.equal(space.blockedZoneAreaSqm, 0);
+  assert.equal(space.merchandisingZoneAreaSqm, 4);
+  assert.equal(space.unusedAreaSqm, 60);
   assert.equal(space.utilizationPercent, 20);
+  assert.equal(space.vacancyPercent, 60);
+});
+
+test("fixture density uses sq ft (doc benchmarking units)", () => {
+  const layout = {
+    id: "L-dens",
+    widthMeters: 10,
+    depthMeters: 10,
+    shelves: [{ id: "s1", widthMeters: 2, depthMeters: 1 }],
+  };
+  const d = computeFixtureDensity(layout);
+  assert.equal(d.fixtureCount, 1);
+  // 100 m² ≈ 1076.39 sq ft → 1 fixture / 10.7639 ≈ 0.09 per 100 sq ft
+  assert.ok(Math.abs(d.fixturesPer100SqFt - 0.09) < 0.02);
+});
+
+test("vertical utilization requires products on the level, not just category map", () => {
+  const layout = {
+    id: "L-vert",
+    widthMeters: 10,
+    depthMeters: 10,
+    shelves: [
+      {
+        id: "s1",
+        widthMeters: 2,
+        depthMeters: 1,
+        categoryId: "cat-a",
+        levels: [{ levelIndex: 0 }, { levelIndex: 1 }],
+        faces: [
+          {
+            id: "A",
+            categoryId: "cat-a",
+            planogram: [{ productId: "p1", levelIndex: 0, facings: 1 }],
+          },
+        ],
+      },
+    ],
+  };
+  const v = computeVerticalSpaceUtilization(layout);
+  const bottom = v.levels.find((l) => l.levelIndex === 0);
+  const eye = v.levels.find((l) => l.levelIndex === 1);
+  assert.equal(bottom.utilizationPercent, 100);
+  assert.equal(eye.utilizationPercent, 0);
+});
+
+test("walkability reads entryPoints", () => {
+  const layout = {
+    id: "L-walk",
+    widthMeters: 10,
+    depthMeters: 10,
+    entryPoints: [{ id: "e1", x: 1, y: 1 }],
+    shelves: [{ id: "s1", x: 2, y: 2, widthMeters: 1, depthMeters: 1 }],
+  };
+  const w = computeWalkability(layout);
+  assert.equal(w.entryCount, 1);
+  assert.equal(w.connected, true);
 });
 
 test("unmapped shelf report §1.3", () => {

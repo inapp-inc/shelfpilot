@@ -1,6 +1,9 @@
 import CategoryTreePicker from "../catalog/CategoryTreePicker.jsx";
 import { FIXTURE_TYPES } from "../referenceCatalog.js";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { formatDimensionTripleInches, formatWeightFromKg, lbInputFromKg, lbToKg } from "../units.js";
+import { defaultLevelLoadKg } from "../shelfLoad.js";
+import { colorForCategoryId } from "../categoryColors.js";
 
 const TEMPERATURE_ZONES = {
   ambient: { emoji: "🌡️", label: "Ambient" },
@@ -41,12 +44,13 @@ export default function ShelfPlanogramConfig({
   const usable = Number(shelfRaw.usableWidthMeters ?? shelfRaw.widthMeters) || 1.2;
   const depth = Number(shelfRaw.depthMeters) || 0.6;
   const height = Number(shelfRaw.heightMeters) || 2;
+  const defaultLoadKg = defaultLevelLoadKg(shelfRaw);
 
   function mapCategory(categoryId) {
     if (!categoryId || !mapTarget) return;
     const cat = categories.find((c) => c.id === categoryId);
     if (!cat) return;
-    onMapShelf?.(mapTarget.shelfId, cat.id, cat.color, mapTarget.faceId);
+    onMapShelf?.(mapTarget.shelfId, cat.id, colorForCategoryId(categories, cat.id), mapTarget.faceId);
   }
 
   return (
@@ -75,7 +79,7 @@ export default function ShelfPlanogramConfig({
         <span className="planogram-shelf-meta-chip">{typeLabel}</span>
         <span className="planogram-shelf-meta-chip">{zone.emoji} {zone.label}</span>
         <span className="planogram-shelf-meta-chip mono">
-          {usable.toFixed(1)} × {depth.toFixed(1)} × {height.toFixed(1)} m
+          {formatDimensionTripleInches(usable, depth, height)}
         </span>
         <span className="planogram-shelf-meta-chip">
           {levels.length} level{levels.length === 1 ? "" : "s"}
@@ -150,6 +154,47 @@ export default function ShelfPlanogramConfig({
           />
         </label>
       </div>
+
+      <div className="planogram-shelf-config-dims">
+        <label className="planogram-shelf-config-field">
+          <span>Max load / level (lb)</span>
+          <input
+            className="mono"
+            type="number"
+            step="1"
+            min="0"
+            disabled={editDisabled}
+            placeholder={lbInputFromKg(defaultLoadKg)}
+            value={lbInputFromKg(shelfRaw.maxLoadKgPerLevel, "")}
+            onChange={(e) =>
+              onPatchShelf?.(shelfRaw.id, {
+                maxLoadKgPerLevel: e.target.value === "" ? null : lbToKg(e.target.value),
+              })
+            }
+          />
+        </label>
+        <label className="planogram-shelf-config-field">
+          <span>Max load / unit (lb)</span>
+          <input
+            className="mono"
+            type="number"
+            step="1"
+            min="0"
+            disabled={editDisabled}
+            placeholder={lbInputFromKg(defaultLoadKg * Math.max(1, levels.length))}
+            value={lbInputFromKg(shelfRaw.maxLoadKg, "")}
+            onChange={(e) =>
+              onPatchShelf?.(shelfRaw.id, {
+                maxLoadKg: e.target.value === "" ? null : lbToKg(e.target.value),
+              })
+            }
+          />
+        </label>
+      </div>
+      <p className="muted" style={{ fontSize: 11, margin: "-2px 0 8px" }}>
+        Leave blank to use the {formatWeightFromKg(defaultLoadKg)} per-level default. Smart
+        generate and manual placement both respect these limits.
+      </p>
 
       <div className="planogram-shelf-config-field planogram-shelf-config-category">
         <span>

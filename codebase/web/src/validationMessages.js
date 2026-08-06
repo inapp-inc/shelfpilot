@@ -16,15 +16,17 @@ const ERROR_MESSAGES = {
   aisle_not_found: "Aisle not found.",
   zone_not_found: "Zone not found.",
   entry_not_found: "Entry point not found.",
-  segment_out_of_range: "Bay split is outside the shelf width.",
-  segment_overlap: "Bay segments overlap — adjust split positions.",
+  segment_out_of_range: "Position split is outside the shelf width.",
+  segment_overlap: "Position segments overlap — adjust split positions.",
   invalid_image_file: "Unsupported image file.",
-  product_category_mismatch: "Product category does not match this shelf face.",
+  product_category_mismatch: "Product category or storage type does not match this shelf face.",
   shelf_category_required: "Assign a category to this shelf face before placing products.",
   planogram_disabled: "Planogram editing is disabled for this store type.",
-  segment_not_found: "Bay segment not found on this shelf level.",
+  segment_not_found: "Position segment not found on this shelf level.",
   product_not_found: "Product not found in the catalog.",
   duplicate_email: "A user with this email already exists.",
+  category_has_children: "Remove or reassign subcategories before deleting this category.",
+  category_has_products: "Remove or reassign products before deleting this category.",
 };
 
 export function friendlyError(err, fallback = "Something went wrong. Please try again.") {
@@ -50,9 +52,9 @@ function positiveNumber(v, label, { min = 0.1, max = 9999 } = {}) {
 export function validateLayoutCreate(draft) {
   const errors = {};
   if (!trim(draft?.name)) errors.name = "Store name is required.";
-  const w = positiveNumber(draft?.widthMeters, "Width", { min: 1, max: 500 });
+  const w = positiveNumber(draft?.widthMeters, "Length", { min: 1, max: 500 });
   if (w) errors.widthMeters = w;
-  const d = positiveNumber(draft?.depthMeters, "Depth", { min: 1, max: 500 });
+  const d = positiveNumber(draft?.depthMeters, "Width", { min: 1, max: 500 });
   if (d) errors.depthMeters = d;
   const h = positiveNumber(draft?.heightMeters, "Height", { min: 1, max: 20 });
   if (h) errors.heightMeters = h;
@@ -74,6 +76,11 @@ export function validateProduct(draft) {
   if (draft?.depthMeters !== "" && draft?.depthMeters != null) {
     const d = positiveNumber(draft.depthMeters, "Depth", { min: 0.01, max: 10 });
     if (d) errors.depthMeters = d;
+  }
+  if (draft?.weightKg !== "" && draft?.weightKg != null) {
+    // 500 kg is well past any single retail unit, so anything above is a typo.
+    const wt = positiveNumber(draft.weightKg, "Weight", { min: 0.001, max: 500 });
+    if (wt) errors.weightKg = "Enter a weight between 0 and 1,100 lb.";
   }
   return { ok: Object.keys(errors).length === 0, errors };
 }

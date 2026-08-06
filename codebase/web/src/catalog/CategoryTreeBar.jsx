@@ -15,6 +15,7 @@ export default function CategoryTreeBar({
   onSelect,
   onAddCategory,
   onEditCategory,
+  onDeleteCategory,
   editDisabled,
 }) {
   const tree = buildCategoryTree(categories);
@@ -30,13 +31,13 @@ export default function CategoryTreeBar({
   const flat = flatten(tree);
 
   return (
-    <div className="cat-tree-bar">
+    <div className="cat-tree-bar" data-testid="catalog-category-bar">
       <div className="cat-tree-bar-header">
         <span className="section-label" style={{ margin: 0 }}>
           Categories
         </span>
         {!editDisabled ? (
-          <button type="button" className="btn-secondary cat-tree-add" onClick={onAddCategory}>
+          <button type="button" className="btn-secondary cat-tree-add" data-testid="catalog-category-create" onClick={onAddCategory}>
             + Add
           </button>
         ) : null}
@@ -81,6 +82,20 @@ export default function CategoryTreeBar({
                   }}
                 >
                   ✎
+                </button>
+              ) : null}
+              {!editDisabled && onDeleteCategory ? (
+                <button
+                  type="button"
+                  className="cat-bar-chip-delete"
+                  title={`Delete ${c.name}`}
+                  aria-label={`Delete ${c.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteCategory(c);
+                  }}
+                >
+                  ×
                 </button>
               ) : null}
             </span>

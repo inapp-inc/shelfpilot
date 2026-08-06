@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import DrawerShell from "./DrawerShell.jsx";
 import FieldError from "../components/FieldError.jsx";
 import { validateCategory } from "../validationMessages.js";
+import { STORAGE_TYPE_OPTIONS, normalizeStorageType, resolveCategoryStorageType } from "../storageType.js";
 
 export default function CategoryFormDrawer({ open, onClose, vertical, categories, draft, setDraft, onSubmit, editDisabled }) {
   const [errors, setErrors] = useState({});
@@ -43,6 +44,7 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
             type="submit"
             form="category-form"
             className="btn-primary"
+            data-testid="category-form-submit"
             style={{ padding: "10px 22px" }}
             disabled={editDisabled}
           >
@@ -59,6 +61,7 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
         <label className={`field${errors.name ? " field-invalid" : ""}`}>
           Name
           <input
+            data-testid="category-form-name"
             value={draft.name}
             onChange={(e) => {
               setDraft({ ...draft, name: e.target.value });
@@ -124,6 +127,23 @@ export default function CategoryFormDrawer({ open, onClose, vertical, categories
             )}
           </div>
         </div>
+        <label className="field">
+          Storage type
+          <select
+            value={normalizeStorageType(draft.storageType || "ambient")}
+            onChange={(e) => setDraft({ ...draft, storageType: e.target.value })}
+            disabled={editDisabled}
+          >
+            {STORAGE_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.id} value={opt.id}>
+                {opt.emoji} {opt.label}
+              </option>
+            ))}
+          </select>
+          <span className="muted" style={{ fontSize: 11 }}>
+            Product dropdowns on shelves only list products with this storage type.
+          </span>
+        </label>
         <div className="muted" style={{ fontSize: 12 }}>
           Vertical: <strong>{vertical}</strong>
         </div>

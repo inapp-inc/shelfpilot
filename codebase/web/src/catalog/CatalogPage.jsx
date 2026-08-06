@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import CategoryTreeBar from "./CategoryTreeBar.jsx";
 import ImportProgressPanel from "./ImportProgressPanel.jsx";
 import { categoryLabel } from "./buildCategoryTree.js";
 import { descendantCategoryIds } from "../layout-editor/categoryFilter.js";
 import { resolveAssetUrl } from "../assetUrl.js";
+import { catalogProductDimensionsInches } from "./productDimensions.js";
 
 export default function CatalogPage({
   vertical,
@@ -15,8 +16,10 @@ export default function CatalogPage({
   onSelectCategory,
   onAddCategory,
   onEditCategory,
+  onDeleteCategory,
   onAddProduct,
   onEditProduct,
+  onDeleteProduct,
   onImport,
   onExport,
   onDownloadTemplate,
@@ -25,37 +28,46 @@ export default function CatalogPage({
   onDismissImportProgress,
   editDisabled,
 }) {
-  const filtered = useMemo(() => {
+  const [search, setSearch] = useState("");
+
+  const categoryFiltered = useMemo(() => {
     if (!selectedCategoryId) return products;
     const allowed = descendantCategoryIds(selectedCategoryId, categories);
     return products.filter((p) => allowed.has(p.categoryId));
   }, [products, selectedCategoryId, categories]);
 
-  const attrOf = (p) =>
-    p.attr ??
-    (p.attributes && Object.keys(p.attributes).length
-      ? Object.entries(p.attributes)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(", ")
-      : "—");
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return categoryFiltered;
+    return categoryFiltered.filter((p) => {
+      const cat = categoryLabel(categories, p.categoryId).toLowerCase();
+      const dims = catalogProductDimensionsInches(p).label.toLowerCase();
+      return (
+        String(p.name || "").toLowerCase().includes(q) ||
+        String(p.sku || "").toLowerCase().includes(q) ||
+        cat.includes(q) ||
+        dims.includes(q)
+      );
+    });
+  }, [categoryFiltered, search, categories]);
 
   const filterName = selectedCategoryId ? categoryLabel(categories, selectedCategoryId) : "All";
 
   return (
-    <section className="fade catalog-page">
+    <section className="fade catalog-page" data-testid="catalog-page">
       <ImportProgressPanel progress={importProgress} onDismiss={onDismissImportProgress} />
       <div className="catalog-toolbar">
         <div>
           <h2 className="page-title">Products & Categories</h2>
-          <p className="muted" style={{ fontSize: 12.5, marginTop: 4 }}>
-            Import categories and products from Excel (.xlsx). Click <strong>Import Excel</strong> to choose the{" "}
-            target <strong>store type</strong> and drag &amp; drop your file — rows without a storeType use the type you pick.
+          <p className="muted catalog-toolbar-desc">
+            Product dimensions are in <strong>inches</strong> (W × H × D). Import from Excel or add products below.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="catalog-toolbar-actions">
           {verticalOptions?.length ? (
             <select
               className="catalog-vertical-select"
+              data-testid="catalog-vertical"
               value={vertical}
               onChange={(e) => onVerticalChange?.(e.target.value)}
               aria-label="Store type"
@@ -69,8 +81,8 @@ export default function CatalogPage({
           ) : null}
           <button
             type="button"
-            className="btn-secondary"
-            style={{ padding: "9px 14px" }}
+            className="btn-secondary catalog-toolbar-btn"
+            data-testid="catalog-excel-template"
             onClick={onDownloadTemplate}
             disabled={importing}
           >
@@ -78,20 +90,20 @@ export default function CatalogPage({
           </button>
           <button
             type="button"
-            className="btn-secondary"
-            style={{ padding: "9px 14px" }}
+            className="btn-secondary catalog-toolbar-btn"
+            data-testid="catalog-import"
             onClick={onImport}
             disabled={importing || editDisabled}
           >
             {importing ? "Importing…" : "Import Excel"}
           </button>
-          <button type="button" className="btn-secondary" style={{ padding: "9px 14px" }} onClick={onExport}>
+          <button type="button" className="btn-secondary catalog-toolbar-btn" data-testid="catalog-export" onClick={onExport}>
             Export
           </button>
           <button
             type="button"
-            className="btn-primary"
-            style={{ padding: "9px 14px" }}
+            className="btn-primary catalog-toolbar-btn"
+            data-testid="catalog-product-create"
             disabled={editDisabled}
             onClick={() => onAddProduct(selectedCategoryId)}
           >
@@ -108,106 +120,109 @@ export default function CatalogPage({
           onSelect={onSelectCategory}
           onAddCategory={onAddCategory}
           onEditCategory={onEditCategory}
+          onDeleteCategory={onDeleteCategory}
           editDisabled={editDisabled}
         />
       </div>
 
       <div className="panel catalog-main catalog-main-full">
-          <div className="catalog-main-header">
-            <strong style={{ fontSize: 14 }}>Products · {filterName}</strong>
-            <span className="mono muted" style={{ fontSize: 12 }}>
+        <div className="catalog-main-header">
+          <strong className="catalog-main-title">Products · {filterName}</strong>
+          <div className="catalog-main-tools">
+            <input
+              type="search"
+              className="catalog-search"
+              data-testid="catalog-search"
+              placeholder="Search name, SKU, category, dimensions…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search products"
+            />
+            <span className="mono muted catalog-count" data-testid="catalog-count">
               {filtered.length} item(s)
             </span>
           </div>
-          <div className="table-scroll">
-          <table>
+        </div>
+        <div className="table-scroll">
+          <table className="catalog-products-table" data-testid="catalog-product-list">
             <thead>
               <tr>
                 <th>Name</th>
                 <th>SKU</th>
                 <th>Category</th>
-                <th>Attr</th>
+                <th className="catalog-th-image">Product image</th>
+                <th className="catalog-th-dims">Dimensions (in)</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id || p.sku}>
-                  <td>
-                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {p.imageUrl || p.attributes?.imageUrl ? (
-                        <img
-                          src={resolveAssetUrl(p.imageUrl || p.attributes?.imageUrl)}
-                          alt=""
-                          style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 6, border: "1px solid #e5e7eb" }}
-                        />
-                      ) : (
-                        <span
-                          style={{
-                            width: 28,
-                            height: 28,
-                            borderRadius: 6,
-                            border: "1px solid #eef0f2",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: 13,
-                            background: "#fafafa",
-                          }}
-                        >
-                          📦
-                        </span>
-                      )}
+              {filtered.map((p) => {
+                const dims = catalogProductDimensionsInches(p);
+                const imgSrc = p.imageUrl || p.attributes?.imageUrl;
+                return (
+                  <tr key={p.id || p.sku}>
+                    <td className="catalog-td-name">
                       {!editDisabled ? (
-                        <button
-                          type="button"
-                          className="linklike"
-                          title={`Edit ${p.name}`}
-                          onClick={() => onEditProduct(p)}
-                        >
+                        <button type="button" className="linklike" title={`Edit ${p.name}`} onClick={() => onEditProduct(p)}>
                           {p.name}
                         </button>
                       ) : (
                         p.name
                       )}
-                    </span>
-                  </td>
-                  <td className="mono">{p.sku}</td>
-                  <td>
-                    <span className="cat-chip">
-                      <span
-                        className="cat-tree-dot"
-                        style={{ background: categories.find((c) => c.id === p.categoryId)?.color || "#ccc" }}
-                      />
-                      {categoryLabel(categories, p.categoryId)}
-                    </span>
-                  </td>
-                  <td className="mono">{attrOf(p)}</td>
-                  <td>
-                    {!editDisabled ? (
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        style={{ padding: "4px 8px", fontSize: 11 }}
-                        onClick={() => onEditProduct(p)}
-                      >
-                        Edit
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="mono">{p.sku}</td>
+                    <td>
+                      <span className="cat-chip">
+                        <span className="cat-tree-dot" style={{ background: categories.find((c) => c.id === p.categoryId)?.color || "#ccc" }} />
+                        {categoryLabel(categories, p.categoryId)}
+                      </span>
+                    </td>
+                    <td className="catalog-td-image">
+                      {imgSrc ? (
+                        <img src={resolveAssetUrl(imgSrc)} alt="" className="catalog-product-thumb" />
+                      ) : (
+                        <span className="catalog-product-thumb catalog-product-thumb--empty" aria-hidden="true">
+                          📦
+                        </span>
+                      )}
+                    </td>
+                    <td className="mono catalog-td-dims">
+                      {dims.label}
+                      {dims.assumed ? <span className="muted catalog-dims-hint"> (default)</span> : null}
+                    </td>
+                    <td className="catalog-td-actions">
+                      {!editDisabled ? (
+                        <div className="catalog-row-actions">
+                          <button type="button" className="btn-secondary catalog-edit-btn" onClick={() => onEditProduct(p)}>
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary catalog-delete-btn"
+                            onClick={() => onDeleteProduct?.(p)}
+                            title={`Delete ${p.name}`}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-          </div>
-          {!filtered.length ? (
-            <div className="empty-box" style={{ margin: 12 }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>No products in {filterName}</div>
-              <div className="muted" style={{ fontSize: 12.5 }}>
-                Add a product or pick another category.
-              </div>
+        </div>
+        {!filtered.length ? (
+          <div className="empty-box catalog-empty">
+            <div className="catalog-empty-title">
+              {search.trim() ? "No products match your search" : `No products in ${filterName}`}
             </div>
-          ) : null}
+            <div className="muted catalog-empty-desc">
+              {search.trim() ? "Try a different term or clear the search box." : "Add a product or pick another category."}
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

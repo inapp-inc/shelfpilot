@@ -6,17 +6,21 @@
   "type": "module",
   "workspaces": [
     "api",
-    "web"
+    "web",
+    "e2e"
   ],
   "scripts": {
     "start": "npm run start -w api",
     "dev:api": "npm run dev -w api",
     "dev:web": "npm run dev -w web",
     "test": "npm run test -w api",
+    "test:e2e": "npm run test -w @shelfpilot/e2e",
+    "test:e2e:smoke": "npm run test:smoke -w @shelfpilot/e2e",
+    "test:e2e:ui": "npm run test:ui -w @shelfpilot/e2e",
     "lint": "eslint api/src web/src --max-warnings=0",
     "openapi:check": "node scripts/check-openapi.mjs",
     "seed:demo-catalog": "node scripts/seed-demo-catalog.mjs",
-    "seed:demo": "node scripts/seed-demo-catalog.mjs && node scripts/seed-demo.mjs",
+    "seed:demo": "node scripts/seed-demo-catalog.mjs && node scripts/seed-demo.mjs && node scripts/seed-demo-generated-layout.mjs",
     "smoke:demo": "node scripts/smoke-demo.mjs",
     "package": "bash scripts/package.sh",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1",

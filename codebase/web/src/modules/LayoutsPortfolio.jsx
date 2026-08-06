@@ -1,6 +1,13 @@
 import { VERTICALS, STATUS_META } from "../referenceCatalog.js";
 import { STORE_TYPES } from "../storeTypes.js";
 
+const DEMO_LAYOUT_MARKERS = ["Demo Hypermarket", "demo-generated"];
+
+function isDemoReadyLayout(name) {
+  const n = String(name || "").toLowerCase();
+  return DEMO_LAYOUT_MARKERS.some((m) => n.includes(m.toLowerCase()));
+}
+
 export default function LayoutsPortfolio({
   layouts,
   statusFilter,
@@ -13,22 +20,37 @@ export default function LayoutsPortfolio({
 }) {
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
 
+  const sortedLayouts = [...layouts].sort((a, b) => {
+    const aDemo = isDemoReadyLayout(a.name) ? 0 : 1;
+    const bDemo = isDemoReadyLayout(b.name) ? 0 : 1;
+    if (aDemo !== bDemo) return aDemo - bDemo;
+    return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+  });
+
   return (
-    <section className="fade module-page">
+    <section className="fade module-page" data-testid="layouts-portfolio">
       <div className="module-header">
         <h2 className="page-title">
           <span className="module-emoji">🗺️</span> Layouts
         </h2>
-        <button className="btn-primary" style={{ padding: "11px 18px", fontSize: 14 }} onClick={onNewLayout}>
-          + New layout
-        </button>
+        {editDisabled ? null : (
+          <button
+            className="btn-primary"
+            data-testid="layout-create-open"
+            style={{ padding: "11px 18px", fontSize: 14 }}
+            onClick={onNewLayout}
+          >
+            + New layout
+          </button>
+        )}
       </div>
 
-      <div className="filter-row">
+      <div className="filter-row" data-testid="layouts-status-filters">
         {["all", "draft", "in_review", "approved", "rejected"].map((f) => (
           <button
             key={f}
             type="button"
+            data-testid={`layouts-filter-${f}`}
             className={`filter-chip ${statusFilter === f ? "active" : ""}`}
             onClick={() => onStatusFilter(f)}
           >
@@ -38,24 +60,28 @@ export default function LayoutsPortfolio({
       </div>
 
       {!layouts.length ? (
-        <div className="empty-box">
+        <div className="empty-box" data-testid="layouts-empty">
           <div style={{ fontSize: 15, fontWeight: 700 }}>No layouts match this filter</div>
           <div className="muted" style={{ fontSize: 13 }}>
             Try another status, or create a new layout.
           </div>
         </div>
       ) : (
-        <div className="grid-cards">
-          {layouts.map((l) => {
+        <div className="grid-cards" data-testid="layouts-grid">
+          {sortedLayouts.map((l) => {
             const st = statusMeta(l.status);
             const storeType = STORE_TYPES.find((s) => s.vertical === l.vertical);
             const vm = VERTICALS[l.vertical] || VERTICALS.retail;
+            const demoReady = isDemoReadyLayout(l.name);
             return (
               <div
                 key={l.id}
                 role="button"
                 tabIndex={0}
-                className="project-card"
+                data-testid={`layout-card-${l.id}`}
+                data-layout-name={l.name}
+                data-demo-ready={demoReady ? "true" : "false"}
+                className={`project-card${demoReady ? " project-card--demo" : ""}`}
                 onClick={() => onOpenLayout(l)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -66,7 +92,12 @@ export default function LayoutsPortfolio({
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                   <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.3 }}>{l.name}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {demoReady ? (
+                      <span className="status-chip" style={{ background: "#ecfdf5", color: "#047857" }}>
+                        Demo ready
+                      </span>
+                    ) : null}
                     <span className="status-chip" style={{ background: st.bg, color: st.color }}>
                       {st.label}
                     </span>

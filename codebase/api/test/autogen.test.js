@@ -93,6 +93,50 @@ test("category descendants include children", () => {
   assert.equal(productAllowedForShelf({ categoryId: "rx" }, "otc", cats), false);
 });
 
+test("autogenerate never packs aisles narrower than store min (hypermarket 1.5m)", async () => {
+  await withServer(async (port) => {
+    const token = await login(port, "Designer");
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    };
+    const create = await fetch(`http://127.0.0.1:${port}/layouts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "HM Aisle Width",
+        vertical: "hypermarket",
+        widthMeters: 24,
+        depthMeters: 16,
+      }),
+    });
+    const layout = await create.json();
+    assert.equal(create.status, 201, JSON.stringify(layout));
+
+    // Deliberately request below store rule — API must clamp up to 1.5m.
+    const gen = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/autogenerate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        orientation: "horizontal",
+        replaceExisting: true,
+        minAisleWidthMeters: 1.2,
+      }),
+    });
+    const body = await gen.json();
+    assert.equal(gen.status, 200, JSON.stringify(body));
+    assert.ok((body.aisles || []).length >= 1);
+    for (const aisle of body.aisles) {
+      assert.ok(
+        Number(aisle.widthMeters) >= 1.5 - 1e-9,
+        `aisle ${aisle.id || aisle.name} width ${aisle.widthMeters} < 1.5`
+      );
+      assert.equal((aisle.violations || []).length, 0, JSON.stringify(aisle.violations));
+    }
+    assert.equal((body.validation?.aisleViolations || []).length, 0, JSON.stringify(body.validation));
+  });
+});
+
 test("PATCH shelf outside returns containment_violation; autogenerate works", async () => {
   await withServer(async (port) => {
     const token = await login(port, "Designer");

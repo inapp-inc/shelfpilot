@@ -36,7 +36,7 @@ function countImages(dir) {
   return fs.readdirSync(dir).filter((name) => isAllowedImageFile(name)).length;
 }
 
-/** Copy seed thumbnails into the runtime folder when it is empty. */
+/** Copy seed thumbnails into the runtime folder when it is empty or behind the seed pack. */
 export function bootstrapProductImages() {
   const target = ensureProductImagesDir();
   const seed = resolveSeedDir();
@@ -51,12 +51,13 @@ export function bootstrapProductImages() {
     return { copied: 0, seed, target, existing };
   }
 
-  if (existing > 0) {
+  // Refresh when runtime is empty OR seed has many more files (stale Docker volume).
+  if (existing > 0 && existing >= Math.min(20, seedCount)) {
     return { copied: 0, seed, target, existing, seedCount };
   }
 
   const copied = copyImagesFromSource(seed, target);
-  return { copied, seed, target, existing: 0, seedCount };
+  return { copied, seed, target, existing, seedCount };
 }
 
 export function seedProductImagesFromDocs() {

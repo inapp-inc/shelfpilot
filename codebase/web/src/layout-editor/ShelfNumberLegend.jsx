@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
-import { emojiForCategory } from "../storeTypes.js";
+import { emojiForCategoryId } from "../storeTypes.js";
+import { categoryChipStyle, colorForCategoryId, withAlpha } from "../categoryColors.js";
 import { isDoubleSided, isPairedShelf, shelfFaceDisplayLabel } from "./shelfFaces.js";
 
 function buildLegendRows(layout) {
@@ -136,9 +137,9 @@ export default function ShelfNumberLegend({ layout, categories, onGoToShelf, sel
               {open ? (
                 <div className="shelf-legend-aisle-body">
                   {items.map((r) => {
-                    const cat = categories?.find((c) => c.id === r.categoryId);
-                    const emoji = emojiForCategory(r.categoryId, cat?.name, cat?.temperatureZone);
+                    const emoji = emojiForCategoryId(categories, r.categoryId);
                     const selected = selectedShelfId === r.shelfId;
+                    const color = colorForCategoryId(categories, r.categoryId);
 
                     return (
                       <button
@@ -148,14 +149,14 @@ export default function ShelfNumberLegend({ layout, categories, onGoToShelf, sel
                         onClick={() => onGoToShelf?.(r.label)}
                         disabled={!onGoToShelf}
                       >
-                        <span className="shelf-legend-emoji" aria-hidden>
+                        <span className="shelf-legend-emoji category-chip" aria-hidden style={categoryChipStyle(color)}>
                           {emoji}
                         </span>
                         <span
                           className="shelf-legend-label mono"
                           style={{
-                            background: r.color ? `${r.color}33` : "rgba(163,10,42,0.12)",
-                            borderColor: r.color || "#A30A2A",
+                            background: withAlpha(color, 0.2),
+                            borderColor: color,
                           }}
                         >
                           {r.label}

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import { MISSING_PRODUCT_MIME, serializeMissingProduct } from "./missingProductDrag.js";
 
@@ -35,6 +35,7 @@ export default function MissingProductsPanel({
   onProductDragStart,
   onProductDragEnd,
   dragHint = "Drag a product onto a shelf on the 2D canvas to place it.",
+  categoryTabs = false,
 }) {
   if (!alwaysShow && !coverage && !loading) return null;
 
@@ -43,16 +44,36 @@ export default function MissingProductsPanel({
   const placed = coverage?.placedCount ?? 0;
   const pct = coverage?.coveragePercent ?? 0;
   const grouped = useMemo(() => groupMissingByCategory(missing, categories), [missing, categories]);
+  const [activeCategoryId, setActiveCategoryId] = useState("all");
+
+  useEffect(() => {
+    setActiveCategoryId("all");
+  }, [missing.length, total, placed]);
+
+  useEffect(() => {
+    if (activeCategoryId === "all") return;
+    if (!grouped.some((g) => g.categoryId === activeCategoryId)) {
+      setActiveCategoryId("all");
+    }
+  }, [activeCategoryId, grouped]);
+
+  const visibleGroups = useMemo(() => {
+    if (!categoryTabs || activeCategoryId === "all") return grouped;
+    return grouped.filter((g) => g.categoryId === activeCategoryId);
+  }, [grouped, categoryTabs, activeCategoryId]);
+
   const isSidebar = variant === "sidebar";
 
   const categoryList = (
-    <div className={`missing-by-category${isSidebar ? " missing-by-category--sidebar" : ""}`}>
-      {grouped.map((g) => (
+    <div className={`missing-by-category${isSidebar ? " missing-by-category--sidebar" : ""}${categoryTabs ? " missing-by-category--tabs" : ""}`}>
+      {visibleGroups.map((g) => (
         <div key={g.categoryId} className={`missing-category-block${isSidebar ? " missing-category-block--sidebar" : ""}`}>
-          <div className="missing-category-head">
-            <span className="missing-category-name">{g.categoryName}</span>
-            <span className="missing-category-count mono">{g.products.length}</span>
-          </div>
+          {!(categoryTabs && activeCategoryId !== "all") ? (
+            <div className="missing-category-head">
+              <span className="missing-category-name">{g.categoryName}</span>
+              <span className="missing-category-count mono">{g.products.length}</span>
+            </div>
+          ) : null}
           <ul className={`missing-products-list${embedded ? " missing-products-list--dialog" : ""}${isSidebar ? " missing-products-list--sidebar" : ""}`}>
             {(maxProductsPerCategory != null ? g.products.slice(0, maxProductsPerCategory) : g.products).map((p) => (
               <li
@@ -116,6 +137,36 @@ export default function MissingProductsPanel({
     </div>
   );
 
+  const categoryTabsBar =
+    categoryTabs && grouped.length > 0 ? (
+      <div className="product-mapping-category-tabs" role="tablist" aria-label="Missing products by category">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeCategoryId === "all"}
+          className={`product-mapping-category-tab${activeCategoryId === "all" ? " product-mapping-category-tab--active" : ""}`}
+          onClick={() => setActiveCategoryId("all")}
+        >
+          All
+          <span className="product-mapping-category-tab-count mono">{missing.length}</span>
+        </button>
+        {grouped.map((g) => (
+          <button
+            key={g.categoryId}
+            type="button"
+            role="tab"
+            aria-selected={activeCategoryId === g.categoryId}
+            className={`product-mapping-category-tab${activeCategoryId === g.categoryId ? " product-mapping-category-tab--active" : ""}`}
+            onClick={() => setActiveCategoryId(g.categoryId)}
+            title={g.categoryName}
+          >
+            <span className="product-mapping-category-tab-label">{g.categoryName}</span>
+            <span className="product-mapping-category-tab-count mono">{g.products.length}</span>
+          </button>
+        ))}
+      </div>
+    ) : null;
+
   const body = loading ? (
     <p className="muted" style={{ fontSize: 12, margin: 0 }}>
       Loading coverage…
@@ -134,7 +185,12 @@ export default function MissingProductsPanel({
         </span>
       </div>
       {missing.length > 0 ? (
-        embedded ? (
+        categoryTabs ? (
+          <>
+            {categoryTabsBar}
+            {categoryList}
+          </>
+        ) : embedded ? (
           categoryList
         ) : (
           <details className="missing-products-details" open={defaultOpen}>

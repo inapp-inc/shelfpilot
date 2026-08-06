@@ -80,6 +80,19 @@ export function newSegmentId() {
   return `seg-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** 1-based level label for planogram UI. */
+export function levelDisplayLabel(levelIndex) {
+  return `Level ${Number(levelIndex) + 1}`;
+}
+
+/** 1-based position label within a level (replaces legacy "Bay N"). */
+export function positionDisplayLabel(positionIndex, customLabel) {
+  if (customLabel && !/^bay\s+\d+$/i.test(String(customLabel).trim())) {
+    return customLabel;
+  }
+  return `Position ${Number(positionIndex) + 1}`;
+}
+
 export function buildEqualSegmentsClient(usableWidthMeters, count) {
   const usable = Math.max(0.1, Number(usableWidthMeters) || 1.2);
   const n = Math.max(1, Math.min(12, Math.floor(Number(count) || 1)));
@@ -91,6 +104,7 @@ export function buildEqualSegmentsClient(usableWidthMeters, count) {
       offsetMeters: Number((width * i).toFixed(3)),
       widthMeters: i === n - 1 ? Number((usable - width * (n - 1)).toFixed(3)) : width,
       fillMode: "full",
+      label: positionDisplayLabel(i),
     });
   }
   return segments;

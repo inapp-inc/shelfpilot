@@ -1,5 +1,7 @@
 /** Category tree helpers for planogram filtering (client). */
 
+import { productMatchesCategoryStorage } from "../storageType.js";
+
 const LEGACY_CATEGORY_ALIASES = {
   "fresh-produce": "cat-fresh-produce",
   grocery: "cat-grocery",
@@ -109,6 +111,8 @@ export function filterProductsForShelf(products, shelfCategoryId, categories) {
   const allowed = descendantCategoryIds(shelfCategoryId, categories);
   return (products || []).filter((p) => {
     const productCat = resolveCategoryId(p.categoryId, categories);
-    return allowed.has(productCat) || allowed.has(p.categoryId);
+    const inCategory = allowed.has(productCat) || allowed.has(p.categoryId);
+    if (!inCategory) return false;
+    return productMatchesCategoryStorage(p, shelfCategoryId, categories);
   });
 }

@@ -64,6 +64,8 @@ export function clampDepthFacings(requested, maxDepthFacings) {
 }
 
 import { levelSegmentsList } from "./shelfSegments.js";
+import { faceDepthMeters, levelClearHeightMeters } from "./shelfGeometry.js";
+import { levelLoadLimitKg, productWeightKg } from "./weightMath.js";
 
 export function previewFacings({ shelf, product, levelIndex = 0, segmentId = null, faceId = "A" }) {
   const started = performance.now();
@@ -87,9 +89,20 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
     Number(
       product?.attributes?.depthMeters ?? product?.attributes?.depth ?? depthFromCm ?? dims.depthMeters ?? dims.widthMeters
     ) || dims.depthMeters || dims.widthMeters;
-  const maxDepthFacings = computeSuggestedDepthFacings(Number(shelf?.depthMeters) || 0, depthDim);
+  const usableDepth = faceDepthMeters(shelf);
+  const maxDepthFacings = computeSuggestedDepthFacings(usableDepth, depthDim);
   const maxFacings = computeMaxFacings(usable, dims.widthMeters);
   const suggestedLevels = computeSuggestedLevels(shelf?.heightMeters, dims.heightMeters);
+
+  // Level height gate: a product taller than the clear height cannot go on this level.
+  const clearHeight = levelClearHeightMeters(shelf, levelIndex);
+  const fitsLevelHeight = clearHeight <= 0 || dims.heightMeters <= clearHeight + 1e-9;
+
+  const unitWeightKg = productWeightKg(product);
+  const levelLoadLimit = levelLoadLimitKg(shelf);
+  const maxUnitsByWeight =
+    unitWeightKg > 0 ? Math.max(0, Math.floor(levelLoadLimit / unitWeightKg + 1e-9)) : null;
+
   const durationMs = Number((performance.now() - started).toFixed(3));
   console.log(
     JSON.stringify({
@@ -112,7 +125,13 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
     productHeightMeters: dims.heightMeters,
     productDepthMeters: depthDim,
     shelfDepthMeters: Number(shelf?.depthMeters) || 0,
+    usableDepthMeters: Number(usableDepth.toFixed(3)),
     usableWidthMeters: usable,
+    levelClearHeightMeters: clearHeight,
+    fitsLevelHeight,
+    productWeightKg: Number(unitWeightKg.toFixed(3)),
+    levelLoadLimitKg: Number(levelLoadLimit.toFixed(2)),
+    maxUnitsByWeight,
     assumedDimensions: dims.assumedDimensions,
     durationMs,
   };

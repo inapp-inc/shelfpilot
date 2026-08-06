@@ -65,3 +65,26 @@ export function adminTabLabel(tab) {
   if (tab === "audit") return "Audit Log";
   return tab;
 }
+
+/** Widgets restricted by role — omitted roles see all non-listed widgets. */
+export const ANALYTICS_WIDGET_ROLES = {
+  "audit-activity": ["Admin", "Approver"],
+  "layout-standardization": ["Admin", "Approver"],
+  "store-benchmarking": ["Admin", "Approver"],
+};
+
+export function canViewAnalyticsWidget(role, widgetId) {
+  if (!role) return true;
+  const allowed = ANALYTICS_WIDGET_ROLES[widgetId];
+  if (!allowed) return true;
+  return allowed.includes(role);
+}
+
+export function canCustomizeDashboard(role) {
+  if (!role) return true;
+  return role !== "Viewer";
+}
+
+export function canUseDashboardDrillDown(role) {
+  return Boolean(role);
+}

@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 import { STORE_TYPES } from "../storeTypes.js";
+import { inchesToMeters } from "../units.js";
+import { normalizeStorageType } from "../storageType.js";
 
 const HEADER = [
   "type",
@@ -11,8 +13,13 @@ const HEADER = [
   "categoryName",
   "parentId",
   "color",
+  "widthInches",
+  "heightInches",
+  "depthInches",
   "widthMeters",
   "heightMeters",
+  "storageType",
+  "storageTemp",
   "imageUrl",
 ];
 
@@ -61,6 +68,18 @@ export function resolveVertical(storeType, vertical, defaultVertical) {
   return lower || fallback;
 }
 
+function dimMeters(r, inchKey, meterKey) {
+  const inchVal = r[inchKey];
+  if (inchVal !== "" && inchVal != null && Number.isFinite(Number(inchVal))) {
+    return inchesToMeters(Number(inchVal));
+  }
+  const meterVal = r[meterKey];
+  if (meterVal !== "" && meterVal != null && Number.isFinite(Number(meterVal))) {
+    return Number(meterVal);
+  }
+  return undefined;
+}
+
 function parseRow(raw, defaultVertical) {
   const r = rowMap(raw);
   const type = cellStr(r.type).toLowerCase();
@@ -77,8 +96,11 @@ function parseRow(raw, defaultVertical) {
     categoryName: cellStr(r.categoryname),
     parentId: cellStr(r.parentid) || null,
     color: cellStr(r.color) || "#A30A2A",
-    widthMeters: r.widthmeters !== "" && r.widthmeters != null ? Number(r.widthmeters) : undefined,
-    heightMeters: r.heightmeters !== "" && r.heightmeters != null ? Number(r.heightmeters) : undefined,
+    widthMeters: dimMeters(r, "widthinches", "widthmeters"),
+    heightMeters: dimMeters(r, "heightinches", "heightmeters"),
+    depthMeters: dimMeters(r, "depthinches", "depthmeters"),
+    storageType: normalizeStorageType(cellStr(r.storagetype) || cellStr(r.temperaturezone) || "ambient"),
+    storageTemp: normalizeStorageType(cellStr(r.storagetemp) || cellStr(r.storagetype) || "ambient"),
     imageUrl: cellStr(r.imageurl),
   };
 }
@@ -103,6 +125,7 @@ export function normalizeImportPayload(rawCategories, rawProducts, defaultVertic
       vertical: row.vertical || fallbackVertical,
       parentId: row.parentId || null,
       color: row.color || "#A30A2A",
+      storageType: normalizeStorageType(row.storageType || "ambient"),
     };
     categories.push(cat);
     categoryIdSet.add(cat.id);
@@ -128,12 +151,18 @@ export function normalizeImportPayload(rawCategories, rawProducts, defaultVertic
         vertical: row.vertical || fallbackVertical,
         parentId: null,
         color: "#A30A2A",
+        storageType: "ambient",
       });
       categoryIdSet.add(categoryId);
       nameToId.set(catName.toLowerCase(), categoryId);
     }
 
     const attributes = { ...(row.attributes || {}) };
+    if (row.widthMeters != null) attributes.widthMeters = row.widthMeters;
+    if (row.heightMeters != null) attributes.heightMeters = row.heightMeters;
+    if (row.depthMeters != null) attributes.depthMeters = row.depthMeters;
+    if (row.storageTemp) attributes.storageTemp = normalizeStorageType(row.storageTemp);
+    if (row.imageUrl) attributes.imageUrl = row.imageUrl;
     products.push({
       id: row.id || undefined,
       name: row.name || row.sku,
@@ -178,6 +207,7 @@ export function parseCatalogImportWorkbook(buffer, options = {}) {
         vertical: row.vertical,
         parentId: row.parentId,
         color: row.color,
+        storageType: row.storageType,
       });
     } else {
       if (!row.name && !row.sku) continue;
@@ -187,6 +217,12 @@ export function parseCatalogImportWorkbook(buffer, options = {}) {
       }
       if (row.heightMeters != null && !Number.isNaN(row.heightMeters)) {
         attributes.heightMeters = row.heightMeters;
+      }
+      if (row.depthMeters != null && !Number.isNaN(row.depthMeters)) {
+        attributes.depthMeters = row.depthMeters;
+      }
+      if (row.storageTemp) {
+        attributes.storageTemp = row.storageTemp;
       }
       if (row.imageUrl || row.name) {
         const fileName = `${row.name || row.sku}.png`;
@@ -225,6 +261,9 @@ export function downloadCatalogImportTemplate() {
       categoryName: "",
       parentId: "",
       color: "#A30A2A",
+      widthInches: "",
+      heightInches: "",
+      depthInches: "",
       widthMeters: "",
       heightMeters: "",
       imageUrl: "",
@@ -239,8 +278,11 @@ export function downloadCatalogImportTemplate() {
       categoryName: "Example Category",
       parentId: "",
       color: "",
-      widthMeters: 0.2,
-      heightMeters: 0.25,
+      widthInches: 8,
+      heightInches: 10,
+      depthInches: 6,
+      widthMeters: "",
+      heightMeters: "",
       imageUrl: "https://example.com/product-a.jpg",
     },
     {
@@ -253,8 +295,11 @@ export function downloadCatalogImportTemplate() {
       categoryName: "Example Category",
       parentId: "",
       color: "",
-      widthMeters: 0.15,
-      heightMeters: 0.2,
+      widthInches: 6,
+      heightInches: 8,
+      depthInches: 6,
+      widthMeters: "",
+      heightMeters: "",
       imageUrl: "",
     },
   ];
@@ -273,7 +318,8 @@ export function downloadCatalogImportTemplate() {
     ["categoryName", "Optional — link product by category name instead of id"],
     ["parentId", "Optional parent category id"],
     ["color", "Category hex color"],
-    ["widthMeters / heightMeters", "Product dimensions in meters"],
+    ["widthInches / heightInches / depthInches", "Product dimensions in inches (preferred)"],
+    ["widthMeters / heightMeters", "Optional legacy dimensions in meters"],
     ["imageUrl", "Optional product image URL (shown in catalog, planogram & 3D)"],
   ]);
   const wb = XLSX.utils.book_new();

@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { VERTICALS } from "../referenceCatalog.js";
-import { storeTypeForVertical } from "../storeTypes.js";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AnalyticsWidgetBoard from "./AnalyticsWidgetBoard.jsx";
 import {
-  DASHBOARD_DEFAULT_VISIBLE_WIDGET_IDS,
-  DASHBOARD_EXCLUDED_WIDGET_IDS,
-  DASHBOARD_WIDGETS_STORAGE_KEY,
+  ANALYTICS_SECTIONS,
+  ANALYTICS_WIDGETS_STORAGE_KEY,
+  DEFAULT_VISIBLE_WIDGET_IDS,
 } from "./analyticsWidgets.js";
+import { canEditLayouts, canUseDashboardDrillDown, canViewAuditLog } from "../rolePermissions.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -25,9 +24,10 @@ const STATUS_COLORS = {
 export default function DashboardPage({
   layouts,
   token,
-  onOpenLayout,
+  toast,
   onNavigateLayouts,
-  onNavigateAnalytics,
+  onNavigateAdmin,
+  onOpenLayout,
   onNewLayout,
   role,
 }) {
@@ -45,32 +45,108 @@ export default function DashboardPage({
     return counts;
   }, [layouts]);
 
-  const featured = sorted[0] || null;
   const [analyticsLayoutId, setAnalyticsLayoutId] = useState("");
+  const [section, setSection] = useState("all");
+  const [viewTab, setViewTab] = useState("reports");
+
+  const canEditLayout = canEditLayouts(role);
 
   useEffect(() => {
     if (!analyticsLayoutId && sorted.length) setAnalyticsLayoutId(sorted[0].id);
   }, [sorted, analyticsLayoutId]);
 
-  const analyticsLayout = sorted.find((l) => l.id === analyticsLayoutId);
+  const handleDrillDown = useCallback(
+    (drill) => {
+      if (!canUseDashboardDrillDown(role) || !drill?.action) return;
+
+      switch (drill.action) {
+        case "tab":
+          setViewTab(drill.tab || "reports");
+          break;
+        case "section":
+          setViewTab("reports");
+          if (drill.section) setSection(drill.section);
+          break;
+        case "layouts":
+          onNavigateLayouts?.(drill.status && drill.status !== "all" ? drill.status : "all");
+          break;
+        case "layout-editor": {
+          const layout = sorted.find((l) => l.id === analyticsLayoutId) || sorted[0];
+          if (layout) onOpenLayout?.(layout);
+          break;
+        }
+        case "admin":
+          if (canViewAuditLog(role)) onNavigateAdmin?.(drill.adminTab || "audit");
+          break;
+        default:
+          break;
+      }
+    },
+    [role, sorted, analyticsLayoutId, onNavigateLayouts, onOpenLayout, onNavigateAdmin]
+  );
+
+  const toolbarContent = (
+    <div className="dashboard-toolbar-stack">
+      <div className="dashboard-view-tabs" role="tablist" aria-label="Dashboard views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === "reports"}
+          className={`dashboard-view-tab${viewTab === "reports" ? " dashboard-view-tab--active" : ""}`}
+          onClick={() => setViewTab("reports")}
+        >
+          Reports
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewTab === "product-mapping"}
+          className={`dashboard-view-tab${viewTab === "product-mapping" ? " dashboard-view-tab--active" : ""}`}
+          onClick={() => setViewTab("product-mapping")}
+        >
+          Product mapping
+        </button>
+      </div>
+      {viewTab === "reports" ? (
+        <div className="analytics-section-filters analytics-section-filters--toolbar" role="tablist" aria-label="Report sections">
+          {ANALYTICS_SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              aria-selected={section === s.id}
+              className={`analytics-section-chip${section === s.id ? " analytics-section-chip--active" : ""}`}
+              onClick={() => setSection(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
-    <section className="fade module-page dashboard-page">
-      <div className="module-header dashboard-header">
+    <section className="fade module-page dashboard-page" data-testid="dashboard-page">
+      <div className="module-header dashboard-header dashboard-header--compact">
         <div>
           <h2 className="page-title">
             <span className="module-emoji">📊</span> Dashboard
           </h2>
-          <p className="muted dashboard-subtitle">Portfolio overview and layout analytics at a glance</p>
         </div>
         {onNewLayout ? (
-          <button type="button" className="btn-primary dashboard-new-btn" onClick={onNewLayout}>
+          <button
+            type="button"
+            className="btn-primary dashboard-new-btn"
+            data-testid="dashboard-new-layout"
+            onClick={onNewLayout}
+          >
             + New layout
           </button>
         ) : null}
       </div>
 
-      <div className="dashboard-pipeline panel">
+      <div className="dashboard-pipeline panel" data-testid="dashboard-pipeline">
         {Object.entries(statusCounts).map(([status, count]) => (
           <button
             key={status}
@@ -85,100 +161,38 @@ export default function DashboardPage({
             </div>
           </button>
         ))}
+        {(role === "Approver" || role === "Admin") && statusCounts.in_review > 0 && onNavigateLayouts ? (
+          <button type="button" className="dashboard-pipeline-action" onClick={() => onNavigateLayouts("in_review")}>
+            Review ({statusCounts.in_review})
+          </button>
+        ) : null}
       </div>
 
-      <div className="dashboard-hero-grid">
-        <div className="panel dashboard-featured">
-          <div className="section-label">Featured layout</div>
-          {featured ? (
-            <>
-              <div className="dashboard-featured-name">{featured.name}</div>
-              <div className="dashboard-featured-meta">
-                <span
-                  className="dashboard-status-badge"
-                  style={{
-                    background: `${STATUS_COLORS[featured.status || "draft"]}22`,
-                    color: STATUS_COLORS[featured.status || "draft"],
-                  }}
-                >
-                  {STATUS_LABELS[featured.status || "draft"]}
-                </span>
-                <span className="muted">
-                  {storeTypeForVertical(featured.vertical)?.label || (VERTICALS[featured.vertical] || VERTICALS.retail).label}
-                </span>
-              </div>
-              <div className="muted dashboard-featured-dims">
-                {featured.widthMeters}×{featured.depthMeters} m · Updated {featured.updatedAt?.slice(0, 10) || "—"}
-              </div>
-              <button type="button" className="btn-primary dashboard-open-btn" onClick={() => onOpenLayout(featured)}>
-                Open in editor →
-              </button>
-            </>
-          ) : (
-            <div className="muted">No layouts yet. Create one to get started.</div>
-          )}
-        </div>
-
-        <div className="panel dashboard-actions">
-          <div className="section-label">Quick actions</div>
-          <div className="dashboard-action-list">
-            {onNewLayout ? (
-              <button type="button" className="btn-secondary" onClick={onNewLayout}>
-                + New layout
-              </button>
-            ) : null}
-            {featured ? (
-              <button type="button" className="btn-secondary" onClick={() => onOpenLayout(featured)}>
-                Open last edited
-              </button>
-            ) : null}
-            {(role === "Approver" || role === "Admin") && statusCounts.in_review > 0 && onNavigateLayouts ? (
-              <button type="button" className="btn-secondary" onClick={() => onNavigateLayouts("in_review")}>
-                Pending approvals ({statusCounts.in_review})
-              </button>
-            ) : null}
-            {onNavigateLayouts ? (
-              <button type="button" className="btn-secondary" onClick={() => onNavigateLayouts("all")}>
-                Browse all layouts →
-              </button>
-            ) : null}
-            {onNavigateAnalytics ? (
-              <button type="button" className="btn-secondary" onClick={onNavigateAnalytics}>
-                Full analytics module →
-              </button>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
-      <section className="dashboard-analytics-section">
-        <div className="dashboard-analytics-head">
-          <div>
-            <div className="section-label dashboard-analytics-title">Layout analytics</div>
-            <p className="muted dashboard-analytics-desc">
-              Space utilization and key metrics for {analyticsLayout?.name || "selected layout"}.
-            </p>
-          </div>
-        </div>
-
+      <section className="dashboard-analytics-section" data-testid="dashboard-analytics">
         {!sorted.length ? (
-          <div className="empty-box">Create a layout to see analytics on your dashboard.</div>
+          <div className="empty-box" data-testid="dashboard-analytics-empty">Create a layout to see analytics on your dashboard.</div>
         ) : (
           <AnalyticsWidgetBoard
             layouts={layouts}
             token={token}
-            storageKey={DASHBOARD_WIDGETS_STORAGE_KEY}
-            defaultVisibleIds={DASHBOARD_DEFAULT_VISIBLE_WIDGET_IDS}
+            toast={toast}
+            storageKey={ANALYTICS_WIDGETS_STORAGE_KEY}
+            defaultVisibleIds={DEFAULT_VISIBLE_WIDGET_IDS}
+            sectionFilter={section}
+            dashboardTab={viewTab}
             layoutId={analyticsLayoutId}
             onLayoutIdChange={setAnalyticsLayoutId}
             showLayoutPicker
             showCustomize
-            customizeTitle="Customize dashboard widgets"
-            kpiSectionLabel="Key metrics"
-            emptyMessage="Select a layout to view analytics."
+            customizeTitle="Customize analytics dashboard"
+            emptyMessage="Select a layout to view reports."
             className="dashboard-analytics-board"
-            excludeWidgetIds={DASHBOARD_EXCLUDED_WIDGET_IDS}
             pinFeaturedWidgets
+            enableReorder
+            toolbarExtra={toolbarContent}
+            role={role}
+            onDrillDown={handleDrillDown}
+            canEditLayout={canEditLayout}
           />
         )}
       </section>

@@ -8,7 +8,11 @@ import FunnelChart from "./charts/FunnelChart.jsx";
 import MissingProductsPanel from "../layout-editor/MissingProductsPanel.jsx";
 import SpaceUtilizationPanel from "./SpaceUtilizationPanel.jsx";
 import SpaceMetricsSplitPanel from "./SpaceMetricsSplitPanel.jsx";
+import StorageVolumePanel from "./StorageVolumePanel.jsx";
+import ShelfLoadPanel from "./ShelfLoadPanel.jsx";
 import AnalyticsWidgetCard from "./AnalyticsWidgetCard.jsx";
+import WidgetInfoTip from "./WidgetInfoTip.jsx";
+import { CHART, KPI_ACCENT, seriesColor, withSeriesColors } from "./charts/chartColors.js";
 import {
   catalogVerticalsForLayout,
   categoryDisplayName,
@@ -18,15 +22,27 @@ import {
   ANALYTICS_WIDGET_GROUPS,
   ANALYTICS_WIDGET_MAP,
   ANALYTICS_WIDGETS,
+  defaultWidgetOrder,
   defaultWidgetSizes,
+  moveWidgetInOrder,
   readWidgetBoardPrefs,
+  sortWidgetIds,
+  widgetMatchesDashboardTab,
   widgetMatchesSection,
   writeWidgetBoardPrefs,
 } from "./analyticsWidgets.js";
+import { canCustomizeDashboard, canViewAnalyticsWidget } from "../rolePermissions.js";
+import {
+  formatAreaFromSqm,
+  formatLengthFromMeters,
+  formatVolumeFromCubicMeters,
+  formatWeightFromKg,
+  sqmToSqFt,
+} from "../units.js";
 
-function CustomizePanel({ visibleSet, onToggle, onShowAll, onReset, onClose, title = "Customize dashboard", excludeWidgetIds = [] }) {
+function CustomizePanel({ visibleSet, onToggle, onShowAll, onReset, onClose, title = "Customize dashboard", excludeWidgetIds = [], role = null }) {
   const excluded = useMemo(() => new Set(excludeWidgetIds), [excludeWidgetIds]);
-  const availableWidgets = ANALYTICS_WIDGETS.filter((w) => !excluded.has(w.id));
+  const availableWidgets = ANALYTICS_WIDGETS.filter((w) => !excluded.has(w.id) && canViewAnalyticsWidget(role, w.id));
   const hiddenCount = availableWidgets.length - [...visibleSet].filter((id) => !excluded.has(id)).length;
 
   return (
@@ -35,7 +51,7 @@ function CustomizePanel({ visibleSet, onToggle, onShowAll, onReset, onClose, tit
         <div>
           <div className="section-label analytics-customize-title">{title}</div>
           <p className="muted analytics-customize-desc">
-            Show or hide widgets, drag the corner grip to resize cards, or double-click the grip to reset size.
+            Show or hide widgets, drag the ⠿ handle to reorder, resize with the corner grip, or double-click the grip to reset size.
             Your layout is saved in this browser.
           </p>
         </div>
@@ -62,6 +78,7 @@ function CustomizePanel({ visibleSet, onToggle, onShowAll, onReset, onClose, tit
                       aria-pressed={on}
                     >
                       {on ? "✓" : "+"} {widget.label}
+                      {widget.dashboardTab === "product-mapping" ? " ↗ tab" : ""}
                     </button>
                   );
                 })}
@@ -84,12 +101,21 @@ function CustomizePanel({ visibleSet, onToggle, onShowAll, onReset, onClose, tit
   );
 }
 
-function KpiContent({ label, value, hint, accent }) {
+function KpiContent({ value, hint, accent, formula }) {
   return (
     <>
-      <div className="muted analytics-kpi-label">{label}</div>
-      <div className="mono kpi-value" style={accent ? { color: accent } : undefined}>{value}</div>
-      {hint ? <div className="muted analytics-kpi-hint">{hint}</div> : null}
+      <div
+        className="mono kpi-value"
+        style={accent ? { color: accent } : undefined}
+        title={formula || hint || undefined}
+      >
+        {value}
+      </div>
+      {hint ? (
+        <div className="muted analytics-kpi-hint" title={formula || undefined}>
+          {hint}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -113,6 +139,11 @@ export default function AnalyticsWidgetBoard({
   toolbarExtra = null,
   excludeWidgetIds = [],
   pinFeaturedWidgets = false,
+  enableReorder = true,
+  dashboardTab = "reports",
+  role = null,
+  onDrillDown,
+  canEditLayout = true,
 }) {
   const excluded = useMemo(() => new Set(excludeWidgetIds), [excludeWidgetIds]);
   const sorted = useMemo(
@@ -131,24 +162,21 @@ export default function AnalyticsWidgetBoard({
 
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [compareA, setCompareA] = useState("");
-  const [compareB, setCompareB] = useState("");
-  const [comparison, setComparison] = useState(null);
   const [portfolio, setPortfolio] = useState(null);
   const [auditSummary, setAuditSummary] = useState(null);
-  const [layoutVersions, setLayoutVersions] = useState([]);
-  const [versionA, setVersionA] = useState("");
-  const [versionB, setVersionB] = useState("");
-  const [versionComparison, setVersionComparison] = useState(null);
   const [categories, setCategories] = useState([]);
   const [visibleWidgets, setVisibleWidgets] = useState(() => initialPrefs.visible);
   const [widgetSizes, setWidgetSizes] = useState(() => initialPrefs.sizes);
+  const [widgetOrder, setWidgetOrder] = useState(() => initialPrefs.order);
   const [customizeOpen, setCustomizeOpen] = useState(false);
-  const kpiGridRef = useRef(null);
-  const reportGridRef = useRef(null);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+  const dashboardGridRef = useRef(null);
 
   const visibleSet = useMemo(() => {
-    const base = new Set(visibleWidgets.filter((id) => !excluded.has(id)));
+    const base = new Set(
+      visibleWidgets.filter((id) => !excluded.has(id) && canViewAnalyticsWidget(role, id))
+    );
     if (!sectionFilter || sectionFilter === "all") return base;
     const filtered = new Set();
     for (const id of base) {
@@ -156,28 +184,37 @@ export default function AnalyticsWidgetBoard({
       if (widget && widgetMatchesSection(widget, sectionFilter)) filtered.add(id);
     }
     return filtered;
-  }, [visibleWidgets, excluded, sectionFilter]);
+  }, [visibleWidgets, excluded, sectionFilter, role]);
+
+  const allowCustomize = showCustomize && canCustomizeDashboard(role);
   const selectedLayout = sorted.find((l) => l.id === layoutId);
 
   const persistDashboard = useCallback(
-    (visible, sizes) => {
+    (visible, sizes, order = widgetOrder) => {
       setVisibleWidgets(visible);
       setWidgetSizes(sizes);
-      writeWidgetBoardPrefs({ visible, sizes }, storageKey);
+      setWidgetOrder(order);
+      writeWidgetBoardPrefs({ visible, sizes, order }, storageKey);
     },
-    [storageKey]
+    [storageKey, widgetOrder]
   );
 
   const persistVisible = useCallback(
-    (next) => persistDashboard(next, widgetSizes),
-    [persistDashboard, widgetSizes]
+    (next) => {
+      const nextOrder = [...widgetOrder];
+      for (const id of next) {
+        if (!nextOrder.includes(id)) nextOrder.push(id);
+      }
+      persistDashboard(next, widgetSizes, nextOrder);
+    },
+    [persistDashboard, widgetOrder, widgetSizes]
   );
 
   const updateWidgetSize = useCallback(
     (id, patch) => {
-      persistDashboard(visibleWidgets, { ...widgetSizes, [id]: { ...widgetSizes[id], ...patch } });
+      persistDashboard(visibleWidgets, { ...widgetSizes, [id]: { ...widgetSizes[id], ...patch } }, widgetOrder);
     },
-    [persistDashboard, visibleWidgets, widgetSizes]
+    [persistDashboard, visibleWidgets, widgetSizes, widgetOrder]
   );
 
   const hideWidget = useCallback(
@@ -202,8 +239,43 @@ export default function AnalyticsWidgetBoard({
   }, [persistVisible, excluded]);
 
   const resetWidgets = useCallback(() => {
-    persistDashboard([...defaultVisibleIds], defaultWidgetSizes());
+    const visible = [...defaultVisibleIds];
+    persistDashboard(visible, defaultWidgetSizes(), defaultWidgetOrder(visible));
   }, [defaultVisibleIds, persistDashboard]);
+
+  const onDragHandleStart = useCallback((event, id) => {
+    event.dataTransfer.setData("text/plain", id);
+    event.dataTransfer.effectAllowed = "move";
+    setDraggingId(id);
+  }, []);
+
+  const onWidgetDragOver = useCallback((event, id) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (id !== draggingId) setDragOverId(id);
+  }, [draggingId]);
+
+  const onWidgetDragLeave = useCallback(() => {
+    setDragOverId(null);
+  }, []);
+
+  const onWidgetDrop = useCallback(
+    (event, targetId) => {
+      event.preventDefault();
+      const fromId = event.dataTransfer.getData("text/plain") || draggingId;
+      setDraggingId(null);
+      setDragOverId(null);
+      if (!fromId || fromId === targetId) return;
+      const nextOrder = moveWidgetInOrder(widgetOrder, fromId, targetId);
+      persistDashboard(visibleWidgets, widgetSizes, nextOrder);
+    },
+    [draggingId, persistDashboard, visibleWidgets, widgetSizes, widgetOrder]
+  );
+
+  const onWidgetDragEnd = useCallback(() => {
+    setDraggingId(null);
+    setDragOverId(null);
+  }, []);
 
   useEffect(() => {
     if (!layoutId && sorted.length) setLayoutId(sorted[0].id);
@@ -242,20 +314,6 @@ export default function AnalyticsWidgetBoard({
   }, [token, layouts.length]);
 
   useEffect(() => {
-    if (!layoutId || !token) {
-      setLayoutVersions([]);
-      return;
-    }
-    let cancelled = false;
-    api(`/layouts/${layoutId}/versions`, { token })
-      .then((v) => !cancelled && setLayoutVersions(Array.isArray(v) ? v : v?.items || []))
-      .catch(() => !cancelled && setLayoutVersions([]));
-    return () => {
-      cancelled = true;
-    };
-  }, [layoutId, token]);
-
-  useEffect(() => {
     const v = selectedLayout?.vertical;
     if (!v || !token) {
       setCategories([]);
@@ -283,59 +341,59 @@ export default function AnalyticsWidgetBoard({
 
   const exec = summary?.executiveKpis;
   const space = summary?.spaceUtilization;
+  const storageVolume = summary?.storageVolume;
+  const categoryVolume = summary?.categoryVolumeAllocation;
+  const weightLoad = summary?.weightLoad;
 
   const categoryBars = useMemo(
     () =>
-      (summary?.categorySpaceAllocation?.rows || summary?.allocationByCategory || []).map((r) => ({
-        label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
-        value: r.areaSqm ?? r.shelfCount ?? r.fixtureCount ?? 0,
-        color: r.color,
-      })),
+      withSeriesColors(
+        (summary?.categorySpaceAllocation?.rows || summary?.allocationByCategory || []).map((r) => {
+          const sqm = Number(r.areaSqm) || 0;
+          const sqft = Math.round(sqmToSqFt(sqm));
+          return {
+            label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
+            value: sqft,
+            color: r.color,
+            title: `${r.categoryName || r.categoryId}: ${sqft} sq ft (${sqm.toFixed(2)} m²) · share ${r.areaSharePercent ?? "—"}% · floor-share ÷ mapped categories`,
+          };
+        })
+      ),
     [summary, categories]
   );
 
-  const fixtureMix = (summary?.fixtureMix || []).map((r) => ({
-    label: r.type,
-    value: r.count,
-    color: "#64748b",
-  }));
+  const fixtureMix = withSeriesColors(
+    (summary?.fixtureMix || []).map((r, i) => ({
+      label: r.type,
+      value: r.count,
+      color: seriesColor(i),
+    }))
+  );
 
   const verticalLevels = summary?.verticalSpaceUtilization?.levels || [];
   const capacity = summary?.capacityVariance;
 
-  async function runCompare() {
-    if (!compareA || !compareB) return;
-    try {
-      setComparison(await api("/analytics/compare", { token, method: "POST", body: { layoutIdA: compareA, layoutIdB: compareB } }));
-    } catch (e) {
-      toast?.(e.message);
-    }
-  }
-
-  async function runVersionCompare() {
-    if (!layoutId || !versionA || !versionB) return;
-    try {
-      setVersionComparison(
-        await api("/analytics/compare", {
-          token,
-          method: "POST",
-          body: { layoutIdA: layoutId, layoutIdB: layoutId, versionIdA: versionA, versionIdB: versionB },
-        })
-      );
-    } catch (e) {
-      toast?.(e.message);
-    }
-  }
-
-  function widgetCardProps(id, kpi = false) {
+  function widgetCardProps(id) {
+    const widget = ANALYTICS_WIDGET_MAP[id];
+    const kpi = widget?.group === "kpi";
     return {
-      widget: ANALYTICS_WIDGET_MAP[id],
+      widget,
       size: widgetSizes[id],
       gridMode: kpi ? "kpi" : "report",
-      gridRef: kpi ? kpiGridRef : reportGridRef,
+      gridRef: dashboardGridRef,
       onRemove: hideWidget,
       onSizeChange: updateWidgetSize,
       kpi,
+      enableReorder: enableReorder && dashboardTab === "reports",
+      isDragOver: dragOverId === id,
+      isDragging: draggingId === id,
+      onDragHandleStart,
+      onDragEnd: onWidgetDragEnd,
+      onDragOver: (e) => onWidgetDragOver(e, id),
+      onDragLeave: onWidgetDragLeave,
+      onDrop: (e) => onWidgetDrop(e, id),
+      onDrillDown,
+      canEditLayout,
     };
   }
 
@@ -348,8 +406,12 @@ export default function AnalyticsWidgetBoard({
     switch (id) {
       case "kpi-utilization":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
-            <KpiContent label="Utilization" value={`${exec?.utilizationPercent ?? summary.utilizationPercent}%`} hint="Allocated ÷ store area" />
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent
+              value={`${exec?.utilizationPercent ?? summary.utilizationPercent}%`}
+              hint="Fixtures ÷ usable floor"
+              formula={space?.formula?.utilizationPercent || "allocatedAreaSqm ÷ usableStoreAreaSqm × 100"}
+            />
           </AnalyticsWidgetCard>
         );
       case "kpi-product-coverage": {
@@ -358,48 +420,80 @@ export default function AnalyticsWidgetBoard({
           ? `${cov.placedCount}/${cov.totalProducts} placed${cov.missingCount ? ` · ${cov.missingCount} missing` : ""}`
           : "SKUs on shelves";
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
-            <KpiContent label="Product coverage" value={exec?.productCoveragePercent != null ? `${exec.productCoveragePercent}%` : "—"} hint={covHint} />
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent value={exec?.productCoveragePercent != null ? `${exec.productCoveragePercent}%` : "—"} hint={covHint} />
           </AnalyticsWidgetCard>
         );
       }
       case "kpi-aisle-compliance":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
-            <KpiContent label="Aisle compliance" value={`${exec?.aisleCompliancePercent ?? 100}%`} hint="Min width rules" accent={exec?.aisleCompliancePercent < 100 ? "#dc2626" : undefined} />
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent value={`${exec?.aisleCompliancePercent ?? 100}%`} hint="Min width rules" accent={exec?.aisleCompliancePercent < 100 ? KPI_ACCENT.danger : undefined} />
           </AnalyticsWidgetCard>
         );
       case "kpi-unmapped-shelves":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
-            <KpiContent label="Unmapped shelves" value={`${exec?.unmappedSpacePercent ?? 0}%`} hint="Empty shelf area" accent={exec?.unmappedSpacePercent > 0 ? "#d97706" : undefined} />
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent value={`${exec?.unmappedSpacePercent ?? 0}%`} hint="Empty shelf area" accent={exec?.unmappedSpacePercent > 0 ? KPI_ACCENT.warning : undefined} />
           </AnalyticsWidgetCard>
         );
       case "kpi-fixtures":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
-            <KpiContent label="Fixtures" value={String(exec?.fixtureCount ?? summary.fixtureCount)} hint={`${summary.fixtureDensity?.fixturesPer100Sqm ?? "—"} / 100 m²`} />
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent
+              value={String(exec?.fixtureCount ?? summary.fixtureCount)}
+              hint={`${summary.fixtureDensity?.fixturesPer100SqFt ?? summary.fixtureDensity?.fixturesPer100Sqm ?? "—"} / 100 sq ft`}
+              formula={summary.fixtureDensity?.formula?.fixturesPer100SqFt}
+            />
+          </AnalyticsWidgetCard>
+        );
+      case "kpi-storage-volume":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent
+              value={storageVolume ? `${storageVolume.fillPercent}%` : "—"}
+              hint={
+                storageVolume
+                  ? `${formatVolumeFromCubicMeters(storageVolume.usedVolumeM3)} of ${formatVolumeFromCubicMeters(storageVolume.availableVolumeM3)}`
+                  : "Shelf volume filled"
+              }
+              accent={storageVolume?.fillPercent >= 85 ? KPI_ACCENT.warning : undefined}
+            />
+          </AnalyticsWidgetCard>
+        );
+      case "kpi-shelf-load":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent
+              value={weightLoad ? `${weightLoad.utilizationPercent}%` : "—"}
+              hint={
+                weightLoad
+                  ? weightLoad.overloadedShelfCount > 0
+                    ? `${weightLoad.overloadedShelfCount} shelf(s) over limit`
+                    : `${formatWeightFromKg(weightLoad.totalLoadKg)} of ${formatWeightFromKg(weightLoad.totalCapacityKg)}`
+                  : "Weight vs capacity"
+              }
+              accent={weightLoad?.overloadedShelfCount > 0 ? KPI_ACCENT.danger : undefined}
+            />
           </AnalyticsWidgetCard>
         );
       case "kpi-capacity-variance":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
             <KpiContent
-              label="Capacity variance"
               value={capacity?.variancePercent != null ? `${capacity.variancePercent > 0 ? "+" : ""}${capacity.variancePercent}%` : "—"}
               hint={capacity ? `${capacity.actualFixtureCount} vs ${capacity.theoreticalMaxFixtures} max` : undefined}
-              accent={capacity?.variancePercent != null && Math.abs(capacity.variancePercent) > 15 ? "#dc2626" : "oklch(0.5 0.12 150)"}
+              accent={capacity?.variancePercent != null && Math.abs(capacity.variancePercent) > 15 ? KPI_ACCENT.danger : KPI_ACCENT.success}
             />
           </AnalyticsWidgetCard>
         );
       case "kpi-pending-approval":
         return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id, true)}>
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
             <KpiContent
-              label="Pending approval"
               value={String(portfolio?.approvalStatus?.pendingApproval ?? 0)}
               hint={`${portfolio?.approvalStatus?.total ?? layouts.length} layouts total`}
-              accent={portfolio?.approvalStatus?.pendingApproval > 0 ? "#d97706" : undefined}
+              accent={portfolio?.approvalStatus?.pendingApproval > 0 ? KPI_ACCENT.warning : undefined}
             />
           </AnalyticsWidgetCard>
         );
@@ -409,19 +503,40 @@ export default function AnalyticsWidgetBoard({
             <SpaceUtilizationPanel space={space} />
           </AnalyticsWidgetCard>
         );
+      case "storage-volume":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <StorageVolumePanel
+              volume={storageVolume}
+              categoryVolume={categoryVolume}
+              categories={categories}
+            />
+          </AnalyticsWidgetCard>
+        );
+      case "shelf-load":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <ShelfLoadPanel load={weightLoad} />
+          </AnalyticsWidgetCard>
+        );
       case "fixture-density": {
         const zones = summary?.fixtureDensityByZone?.rows || [];
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
-              <strong>{summary?.fixtureDensity?.fixturesPer100Sqm ?? "—"}</strong>
-              <span className="muted">fixtures / 100 m² (store avg)</span>
+              <strong>{summary?.fixtureDensity?.fixturesPer100SqFt ?? summary?.fixtureDensity?.fixturesPer100Sqm ?? "—"}</strong>
+              <span className="muted">fixtures / 100 sq ft (store avg)</span>
             </div>
             {zones.length ? (
               <BarChart
-                data={zones.map((z) => ({ label: z.label, value: z.fixturesPer100Sqm, color: "#64748b" }))}
+                data={zones.map((z) => ({
+                  label: z.label,
+                  value: z.fixturesPer100SqFt ?? z.fixturesPer100Sqm,
+                  color: CHART.secondary,
+                  title: `${z.label}: ${z.fixtureCount} units · ${z.areaSqm} m² · density per 100 sq ft`,
+                }))}
                 unit=""
+                formula="physicalUnits ÷ (zoneAreaSqFt / 100)"
               />
             ) : (
               <div className="muted">No zone data.</div>
@@ -432,26 +547,31 @@ export default function AnalyticsWidgetBoard({
       case "category-allocation":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
-            {categoryBars.length ? <BarChart data={categoryBars} unit=" m²" /> : <div className="muted">No category mappings yet.</div>}
+            {categoryBars.length ? (
+              <BarChart
+                data={categoryBars}
+                unit=" sq ft"
+                formula={summary?.categorySpaceAllocation?.formula}
+              />
+            ) : (
+              <div className="muted">No category mappings yet.</div>
+            )}
           </AnalyticsWidgetCard>
         );
       case "fixture-mix":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             {fixtureMix.length ? <DonutChart data={fixtureMix} centerValue={String(summary.fixtureCount)} centerLabel="fixtures" /> : <div className="muted">No fixtures placed.</div>}
           </AnalyticsWidgetCard>
         );
       case "capacity-compare":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             {capacity ? (
               <div className="analytics-capacity-compare">
                 <div className="analytics-capacity-col"><div className="muted">Theoretical max</div><div className="mono analytics-capacity-val">{capacity.theoreticalMaxFixtures}</div></div>
                 <div className="analytics-capacity-col"><div className="muted">Actual placed</div><div className="mono analytics-capacity-val">{capacity.actualFixtureCount}</div></div>
-                <div className="analytics-capacity-col"><div className="muted">Variance</div><div className="mono analytics-capacity-val" style={{ color: capacity.nearOptimal ? "oklch(0.5 0.12 150)" : "#dc2626" }}>{capacity.variancePercent != null ? `${capacity.variancePercent}%` : "—"}</div></div>
+                <div className="analytics-capacity-col"><div className="muted">Variance</div><div className="mono analytics-capacity-val" style={{ color: capacity.nearOptimal ? KPI_ACCENT.success : KPI_ACCENT.danger }}>{capacity.variancePercent != null ? `${capacity.variancePercent}%` : "—"}</div></div>
               </div>
             ) : (
               <div className="muted">Run Smart Generate for theoretical capacity.</div>
@@ -472,17 +592,16 @@ export default function AnalyticsWidgetBoard({
       case "aisle-compliance":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
               <strong>{summary.aisleCompliance?.compliancePercent ?? 100}%</strong>
-              <span className="muted">{summary.aisleCompliance?.compliantCount ?? 0} / {summary.aisleCompliance?.aisleCount ?? 0} aisles ≥ {summary.aisleCompliance?.minAisleWidthMeters} m</span>
+              <span className="muted">{summary.aisleCompliance?.compliantCount ?? 0} / {summary.aisleCompliance?.aisleCount ?? 0} aisles ≥ {formatLengthFromMeters(summary.aisleCompliance?.minAisleWidthMeters)}</span>
             </div>
             {(summary.aisleCompliance?.aisles || []).length ? (
               <table className="analytics-table">
                 <thead><tr><th>Aisle</th><th>Width</th><th>Status</th></tr></thead>
                 <tbody>
                   {summary.aisleCompliance.aisles.map((a) => (
-                    <tr key={a.aisleId}><td>{a.name}</td><td className="mono">{a.widthMeters} m</td><td className={a.compliant ? "analytics-pass" : "analytics-fail"}>{a.compliant ? "Compliant" : "Violation"}</td></tr>
+                    <tr key={a.aisleId}><td>{a.name}</td><td className="mono">{formatLengthFromMeters(a.widthMeters)}</td><td className={a.compliant ? "analytics-pass" : "analytics-fail"}>{a.compliant ? "Compliant" : "Violation"}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -494,17 +613,16 @@ export default function AnalyticsWidgetBoard({
       case "unmapped-shelves":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
               <strong>{summary.unmappedShelves?.emptyShelfPercent ?? 0}%</strong>
-              <span className="muted">of shelf area unmapped ({summary.unmappedShelves?.emptyShelfAreaSqm ?? 0} m²)</span>
+              <span className="muted">of shelf area unmapped ({formatAreaFromSqm(summary.unmappedShelves?.emptyShelfAreaSqm ?? 0)})</span>
             </div>
             {(summary.unmappedShelves?.unmappedShelves || []).length ? (
               <table className="analytics-table">
                 <thead><tr><th>Shelf</th><th>Area</th><th>Position</th></tr></thead>
                 <tbody>
                   {summary.unmappedShelves.unmappedShelves.map((s) => (
-                    <tr key={s.shelfId}><td>{s.label || s.shelfId}</td><td className="mono">{s.areaSqm} m²</td><td className="mono muted">{s.x != null ? `${s.x}, ${s.y}` : "—"}</td></tr>
+                    <tr key={s.shelfId}><td>{s.label || s.shelfId}</td><td className="mono">{formatAreaFromSqm(s.areaSqm)}</td><td className="mono muted">{s.x != null ? `${s.x}, ${s.y}` : "—"}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -513,21 +631,16 @@ export default function AnalyticsWidgetBoard({
             )}
           </AnalyticsWidgetCard>
         );
-      case "product-coverage":
-        return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)} className="analytics-widget--flush">
-            <MissingProductsPanel coverage={summary.productCoverage} loading={false} categories={categories} alwaysShow defaultOpen={Boolean(summary.productCoverage?.missingCount)} title={ANALYTICS_WIDGET_MAP[id].label} embedded />
-          </AnalyticsWidgetCard>
-        );
       case "facings-by-category": {
-        const facings = (summary?.facingsByCategory || []).map((r) => ({
-          label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
-          value: r.facings,
-          color: r.color,
-        }));
+        const facings = withSeriesColors(
+          (summary?.facingsByCategory || []).map((r) => ({
+            label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
+            value: r.facings,
+            color: r.color,
+          }))
+        );
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             {facings.length ? <BarChart data={facings} unit="" /> : <div className="muted">No planogram facings yet.</div>}
           </AnalyticsWidgetCard>
         );
@@ -539,10 +652,9 @@ export default function AnalyticsWidgetBoard({
         );
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
               <strong>{adj?.adjacentPairs ?? 0}</strong>
-              <span className="muted">adjacent category pairs within 2.5 m</span>
+              <span className="muted">adjacent category pairs within {formatLengthFromMeters(2.5)}</span>
             </div>
             {adj?.matrix?.length ? (
               <MatrixHeatmap matrix={adj.matrix} categories={adj.categories} categoryNames={nameMap} />
@@ -556,7 +668,6 @@ export default function AnalyticsWidgetBoard({
         const walk = summary?.walkability;
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
               <strong className={walk?.connected ? "analytics-pass" : walk?.entryCount ? "analytics-fail" : ""}>{walk?.statusLabel ?? "—"}</strong>
               <span className="muted">{walk?.entryCount ?? 0} entries · {walk?.aisleCount ?? 0} aisles</span>
@@ -566,7 +677,7 @@ export default function AnalyticsWidgetBoard({
                 <thead><tr><th>Shelf</th><th>Nearest entry</th></tr></thead>
                 <tbody>
                   {walk.unreachableZones.map((z) => (
-                    <tr key={z.shelfId}><td>{z.label}</td><td className="mono analytics-fail">{z.nearestEntryMeters} m</td></tr>
+                    <tr key={z.shelfId}><td>{z.label}</td><td className="mono analytics-fail">{formatLengthFromMeters(z.nearestEntryMeters)}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -578,9 +689,8 @@ export default function AnalyticsWidgetBoard({
         const reg = summary?.regulatoryCompliance;
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-chart-row">
-              <GaugeChart value={reg?.complianceScore ?? 100} label="compliance" color={reg?.complianceScore >= 80 ? "oklch(0.5 0.12 150)" : "#dc2626"} />
+              <GaugeChart value={reg?.complianceScore ?? 100} label="compliance" color={reg?.complianceScore >= 80 ? KPI_ACCENT.success : KPI_ACCENT.danger} />
               <div className="analytics-scorecard">
                 {(reg?.rules || []).map((r) => (
                   <div key={r.id} className={`analytics-scorecard-row${r.pass ? " analytics-scorecard-row--pass" : " analytics-scorecard-row--fail"}`}>
@@ -594,38 +704,11 @@ export default function AnalyticsWidgetBoard({
           </AnalyticsWidgetCard>
         );
       }
-      case "version-compare":
-        return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
-            <div className="analytics-compare-controls">
-              <select value={versionA} onChange={(e) => setVersionA(e.target.value)}>
-                <option value="">Version A</option>
-                {layoutVersions.map((v) => <option key={v.id} value={v.id}>{v.label || v.createdAt}</option>)}
-              </select>
-              <span className="muted">vs</span>
-              <select value={versionB} onChange={(e) => setVersionB(e.target.value)}>
-                <option value="">Version B</option>
-                {layoutVersions.map((v) => <option key={v.id} value={v.id}>{v.label || v.createdAt}</option>)}
-              </select>
-              <button type="button" className="btn-primary" disabled={!versionA || !versionB} onClick={runVersionCompare}>Compare</button>
-            </div>
-            {versionComparison ? (
-              <div className="analytics-compare-results">
-                <div><div className="muted">Utilization Δ (B − A)</div><div className="mono analytics-compare-delta">{versionComparison.utilizationDelta > 0 ? "+" : ""}{versionComparison.utilizationDelta}%</div></div>
-                <div><div className="muted">Fixture count Δ</div><div className="mono analytics-compare-delta">{versionComparison.fixtureCountDelta > 0 ? "+" : ""}{versionComparison.fixtureCountDelta}</div></div>
-              </div>
-            ) : layoutVersions.length < 2 ? (
-              <div className="muted">Save at least two layout versions to compare.</div>
-            ) : null}
-          </AnalyticsWidgetCard>
-        );
       case "audit-activity":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             {(auditSummary?.activityByDay || []).length ? (
-              <BarChart data={auditSummary.activityByDay.map((d) => ({ label: d.day.slice(5), value: d.count, color: "#64748b" }))} unit="" />
+              <BarChart data={auditSummary.activityByDay.map((d, i) => ({ label: d.day.slice(5), value: d.count, color: seriesColor(i) }))} unit="" />
             ) : null}
             {(auditSummary?.entries || []).length ? (
               <table className="analytics-table">
@@ -644,21 +727,31 @@ export default function AnalyticsWidgetBoard({
       case "approval-status":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <FunnelChart stages={portfolio?.approvalStatus?.funnel || []} />
           </AnalyticsWidgetCard>
         );
       case "store-benchmarking": {
         const bench = portfolio?.storeBenchmarking?.rows || [];
+        const peer =
+          portfolio?.storeBenchmarking?.peerAverageFixturesPer1000SqFt ??
+          portfolio?.storeBenchmarking?.peerAverageFixturesPer1000Sqm;
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
-              <strong>{portfolio?.storeBenchmarking?.peerAverageFixturesPer1000Sqm ?? "—"}</strong>
-              <span className="muted">peer avg fixtures / 1000 m²</span>
+              <strong>{peer ?? "—"}</strong>
+              <span className="muted">peer avg fixtures / 1000 sq ft</span>
             </div>
             {bench.length ? (
-              <BarChart data={bench.map((r) => ({ label: r.name, value: r.fixturesPer1000Sqm, color: "#A30A2A" }))} unit="" />
+              <BarChart
+                data={bench.map((r, i) => ({
+                  label: r.name,
+                  value: r.fixturesPer1000SqFt ?? r.fixturesPer1000Sqm,
+                  color: seriesColor(i),
+                  title: `${r.name}: ${r.fixtureCount} fixtures ÷ (${r.areaSqm} m² as sq ft / 1000) = ${r.fixturesPer1000SqFt ?? r.fixturesPer1000Sqm}; index ${r.capacityIndex}`,
+                }))}
+                unit=""
+                formula={portfolio?.storeBenchmarking?.formula}
+              />
             ) : (
               <div className="muted">Add layouts to benchmark across stores.</div>
             )}
@@ -669,7 +762,6 @@ export default function AnalyticsWidgetBoard({
         const rollout = portfolio?.rolloutProgress;
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             <div className="analytics-inline-kpi">
               <strong>{rollout?.percentComplete ?? 0}%</strong>
               <span className="muted">{rollout?.complete ?? 0} / {rollout?.total ?? 0} published</span>
@@ -684,135 +776,159 @@ export default function AnalyticsWidgetBoard({
           </AnalyticsWidgetCard>
         );
       }
-      case "vertical-comparison": {
-        const verts = portfolio?.verticalComparison || [];
-        return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
-            {verts.length ? (
-              <table className="analytics-table">
-                <thead><tr><th>Vertical</th><th>Layouts</th><th>Util %</th><th>Coverage %</th><th>Density</th><th>Compliance</th></tr></thead>
-                <tbody>
-                  {verts.map((v) => (
-                    <tr key={v.vertical}><td>{v.vertical}</td><td className="mono">{v.layoutCount}</td><td className="mono">{v.avgUtilizationPercent}%</td><td className="mono">{v.avgCoveragePercent}%</td><td className="mono">{v.avgFixtureDensity}</td><td className="mono">{v.avgAisleCompliancePercent}%</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="muted">No layouts for vertical comparison.</div>
-            )}
-          </AnalyticsWidgetCard>
-        );
-      }
+      case "vertical-comparison":
+      case "scenario-compare":
+      case "version-compare":
+        return null;
       case "layout-standardization": {
         const std = portfolio?.layoutStandardization?.rows || [];
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
             {std.length ? (
-              <BarChart data={std.map((r) => ({ label: r.name, value: r.deviationScore, color: "#d97706" }))} unit="" />
+              <BarChart data={std.map((r, i) => ({ label: r.name, value: r.deviationScore, color: seriesColor(i) }))} unit="" />
             ) : (
               <div className="muted">Need 2+ layouts to compute standardization deviation.</div>
             )}
           </AnalyticsWidgetCard>
         );
       }
-      case "scenario-compare":
-        return (
-          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
-            <div className="section-label">{ANALYTICS_WIDGET_MAP[id].label}</div>
-            <div className="analytics-compare-controls">
-              <select value={compareA} onChange={(e) => setCompareA(e.target.value)}><option value="">Layout A</option>{sorted.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
-              <span className="muted">vs</span>
-              <select value={compareB} onChange={(e) => setCompareB(e.target.value)}><option value="">Layout B</option>{sorted.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
-              <button type="button" className="btn-primary" disabled={!compareA || !compareB} onClick={runCompare}>Compare</button>
-            </div>
-            {comparison ? (
-              <div className="analytics-compare-results">
-                <div><div className="muted">Utilization Δ (B − A)</div><div className="mono analytics-compare-delta">{comparison.utilizationDelta > 0 ? "+" : ""}{comparison.utilizationDelta}%</div></div>
-                <div><div className="muted">Fixture count Δ</div><div className="mono analytics-compare-delta">{comparison.fixtureCountDelta > 0 ? "+" : ""}{comparison.fixtureCountDelta}</div></div>
-              </div>
-            ) : null}
-          </AnalyticsWidgetCard>
-        );
       default:
         return null;
     }
   }
 
-  const kpiWidgets = ANALYTICS_WIDGETS.filter((w) => w.group === "kpi" && !excluded.has(w.id));
   const pinnedFeaturedIds = pinFeaturedWidgets
-    ? ANALYTICS_WIDGETS.filter((w) => w.featured && !excluded.has(w.id)).map((w) => w.id)
+    ? ANALYTICS_WIDGETS.filter((w) => w.featured && !excluded.has(w.id) && canViewAnalyticsWidget(role, w.id)).map((w) => w.id)
     : [];
-  const reportWidgets = ANALYTICS_WIDGETS.filter(
+
+  const dashboardWidgetPool = ANALYTICS_WIDGETS.filter(
     (w) =>
-      (w.group === "report" || w.group === "tool") &&
+      (w.group === "kpi" || w.group === "report" || w.group === "tool") &&
       !excluded.has(w.id) &&
+      canViewAnalyticsWidget(role, w.id) &&
       !pinnedFeaturedIds.includes(w.id) &&
+      widgetMatchesDashboardTab(w, "reports") &&
       !(w.id === "fixture-density" && visibleSet.has("vertical-space"))
   );
-  const hasKpis = kpiWidgets.some((w) => visibleSet.has(w.id));
-  const hasReports = reportWidgets.some((w) => visibleSet.has(w.id));
+
+  const orderedDashboardWidgets = sortWidgetIds(
+    dashboardWidgetPool
+      .filter(
+        (w) =>
+          visibleSet.has(w.id) &&
+          widgetMatchesSection(w, sectionFilter) &&
+          widgetMatchesDashboardTab(w, dashboardTab)
+      )
+      .map((w) => w.id),
+    widgetOrder
+  )
+    .map((id) => ANALYTICS_WIDGET_MAP[id])
+    .filter(Boolean);
+
+  const hasDashboardWidgets = orderedDashboardWidgets.length > 0;
+  const showProductMapping = dashboardTab === "product-mapping" && visibleSet.has("product-coverage");
   const allHidden = visibleSet.size === 0;
 
   return (
-    <div className={`analytics-widget-board${className ? ` ${className}` : ""}`}>
-      {(showLayoutPicker || showCustomize || toolbarExtra) ? (
+    <div className={`analytics-widget-board${className ? ` ${className}` : ""}`} data-testid="dashboard-widgets">
+      {(showLayoutPicker || allowCustomize || toolbarExtra) ? (
         <div className="analytics-board-toolbar">
-          {toolbarExtra}
-          {showCustomize ? (
-            <button type="button" className={`btn-secondary analytics-customize-toggle${customizeOpen ? " analytics-customize-toggle--active" : ""}`} onClick={() => setCustomizeOpen((v) => !v)}>
-              {customizeOpen ? "Close" : "Customize"}
-            </button>
-          ) : null}
-          {showLayoutPicker ? (
-            <select className="analytics-layout-select" value={layoutId} onChange={(e) => setLayoutId(e.target.value)}>
-              {!sorted.length ? <option value="">No layouts</option> : null}
-              {sorted.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-          ) : null}
+          {toolbarExtra ? <div className="analytics-board-toolbar-filters">{toolbarExtra}</div> : null}
+          <div className="analytics-board-toolbar-actions">
+            {showLayoutPicker ? (
+              <select
+                className="analytics-layout-select"
+                data-testid="dashboard-layout-picker"
+                value={layoutId}
+                onChange={(e) => setLayoutId(e.target.value)}
+                aria-label="Layout for analytics"
+              >
+                {!sorted.length ? <option value="">No layouts</option> : null}
+                {sorted.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </select>
+            ) : null}
+            {allowCustomize ? (
+              <button type="button" className={`btn-secondary analytics-customize-toggle${customizeOpen ? " analytics-customize-toggle--active" : ""}`} onClick={() => setCustomizeOpen((v) => !v)}>
+                {customizeOpen ? "Close" : "Customize"}
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
-      {customizeOpen && showCustomize ? (
-        <CustomizePanel visibleSet={visibleSet} onToggle={toggleWidget} onShowAll={showAllWidgets} onReset={resetWidgets} onClose={() => setCustomizeOpen(false)} title={customizeTitle} excludeWidgetIds={excludeWidgetIds} />
+      {customizeOpen && allowCustomize ? (
+        <CustomizePanel visibleSet={visibleSet} onToggle={toggleWidget} onShowAll={showAllWidgets} onReset={resetWidgets} onClose={() => setCustomizeOpen(false)} title={customizeTitle} excludeWidgetIds={excludeWidgetIds} role={role} />
       ) : null}
       {loading && !summary && !portfolio ? (
         <div className="panel muted analytics-board-loading">Loading analytics…</div>
       ) : !summary && visibleSet.size > 0 && [...visibleSet].every((id) => ANALYTICS_WIDGET_MAP[id]?.portfolio) ? (
-        <>
-          {hasKpis ? (
-            <div className="analytics-kpi-section">
-              <div className="section-label analytics-section-label">{kpiSectionLabel}</div>
-              <div className="kpi-grid analytics-kpi-grid" ref={kpiGridRef}>{kpiWidgets.map((w) => renderWidget(w.id))}</div>
+        dashboardTab === "product-mapping" ? (
+          showProductMapping ? (
+            <div className="panel dashboard-product-mapping">
+              <div className="dashboard-product-mapping-head">
+                <span className="section-label">{ANALYTICS_WIDGET_MAP["product-coverage"].label}</span>
+                <WidgetInfoTip text={ANALYTICS_WIDGET_MAP["product-coverage"].description} />
+              </div>
+              <div className="muted dashboard-product-mapping-hint">Portfolio widgets load without a layout summary.</div>
             </div>
-          ) : null}
-          {hasReports ? (
-            <div className="dashboard-grid analytics-report-grid" ref={reportGridRef}>{reportWidgets.map((w) => renderWidget(w.id))}</div>
-          ) : null}
-        </>
+          ) : (
+            <div className="empty-box">Enable Product mapping coverage in Customize to view this tab.</div>
+          )
+        ) : hasDashboardWidgets ? (
+          <div className="analytics-unified-grid" ref={dashboardGridRef}>
+            {orderedDashboardWidgets.map((w) => renderWidget(w.id))}
+          </div>
+        ) : (
+          <div className="empty-box">No widgets match the current filters.</div>
+        )
       ) : !summary ? (
         <div className="empty-box">{emptyMessage}</div>
       ) : allHidden ? (
         <div className="empty-box analytics-empty-custom">
           <p>All widgets are hidden.</p>
-          {showCustomize ? <button type="button" className="btn-primary" onClick={() => setCustomizeOpen(true)}>Customize widgets</button> : null}
+          {allowCustomize ? <button type="button" className="btn-primary" onClick={() => setCustomizeOpen(true)}>Customize widgets</button> : null}
         </div>
       ) : (
         <>
-          {pinFeaturedWidgets && summary?.spaceUtilization && visibleSet.has("space-utilization") ? (
+          {dashboardTab === "reports" && pinFeaturedWidgets && summary?.spaceUtilization && visibleSet.has("space-utilization") ? (
             <div className="panel analytics-pinned-space">
-              <SpaceUtilizationPanel space={summary.spaceUtilization} />
+              <SpaceUtilizationPanel
+                space={summary.spaceUtilization}
+                compact
+                description={ANALYTICS_WIDGET_MAP["space-utilization"].description}
+              />
             </div>
           ) : null}
-          {hasKpis ? (
-            <div className="analytics-kpi-section">
-              <div className="section-label analytics-section-label">{kpiSectionLabel}</div>
-              <div className="kpi-grid analytics-kpi-grid" ref={kpiGridRef}>{kpiWidgets.map((w) => renderWidget(w.id))}</div>
+          {dashboardTab === "product-mapping" ? (
+            showProductMapping && summary ? (
+              <div className="panel dashboard-product-mapping">
+                <div className="dashboard-product-mapping-head">
+                  <span className="section-label">{ANALYTICS_WIDGET_MAP["product-coverage"].label}</span>
+                  <WidgetInfoTip text={ANALYTICS_WIDGET_MAP["product-coverage"].description} />
+                </div>
+                <MissingProductsPanel
+                  coverage={summary.productCoverage}
+                  loading={false}
+                  categories={categories}
+                  alwaysShow
+                  defaultOpen
+                  maxProductsPerCategory={null}
+                  categoryTabs
+                />
+              </div>
+            ) : (
+              <div className="empty-box">
+                {visibleSet.has("product-coverage")
+                  ? emptyMessage
+                  : "Enable Product mapping coverage in Customize to view this tab."}
+              </div>
+            )
+          ) : hasDashboardWidgets ? (
+            <div className="analytics-unified-grid" ref={dashboardGridRef}>
+              {orderedDashboardWidgets.map((w) => renderWidget(w.id))}
             </div>
-          ) : null}
-          {hasReports ? (
-            <div className="dashboard-grid analytics-report-grid" ref={reportGridRef}>{reportWidgets.map((w) => renderWidget(w.id))}</div>
-          ) : null}
+          ) : (
+            <div className="empty-box">No widgets match the current filters.</div>
+          )}
         </>
       )}
     </div>

@@ -7,12 +7,12 @@ const categories = [
   { id: "cat-b", name: "Chilled", color: "#222" },
 ];
 
-test("freeSpacePercent reflects fixture coverage of usable area", () => {
+test("freeSpacePercent reflects vacant floor after fixtures and aisles", () => {
   const layout = {
     id: "L1",
     widthMeters: 10,
     depthMeters: 10, // 100 sqm footprint & usable (no polygon)
-    aisles: [{ id: "ai1" }],
+    aisles: [{ id: "ai1", widthMeters: 1, lengthMeters: 10 }], // 10 sqm aisle
     shelves: [
       { id: "s1", widthMeters: 2, depthMeters: 5, categoryId: "cat-a" }, // 10 sqm
       { id: "s2", widthMeters: 2, depthMeters: 5, categoryId: "cat-b" }, // 10 sqm
@@ -21,7 +21,8 @@ test("freeSpacePercent reflects fixture coverage of usable area", () => {
   const a = computeAnalytics(layout, categories);
   assert.equal(a.usableAreaSqm, 100);
   assert.equal(a.usedAreaSqm, 20);
-  assert.equal(a.freeSpacePercent, 80); // 100 - 20%
+  // Vacancy = (usable − fixtures − aisles) ÷ usable = 70%
+  assert.equal(a.freeSpacePercent, 70);
   assert.equal(a.aisleCount, 1);
   assert.equal(a.fixtureCount, 2);
 });

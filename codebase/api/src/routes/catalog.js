@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { repo, audit } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
 import { listCategoriesForLayout, resolveCategoryId } from "../services/categoryTree.js";
+import { normalizeStorageType } from "../services/storageType.js";
 import {
   copyImagesFromSource,
   ensureProductImagesDir,
@@ -29,6 +30,7 @@ catalogRouter.post("/categories", authRequired, requireRoles("Designer", "Admin"
     vertical: String(req.body?.vertical || "retail").toLowerCase(),
     parentId: req.body?.parentId || null,
     color: req.body?.color || "#A30A2A",
+    storageType: normalizeStorageType(req.body?.storageType || "ambient"),
   };
   repo.upsertCategory(cat);
   audit(req.user.email, "category.create", cat.id);
@@ -49,9 +51,30 @@ catalogRouter.patch(
       existing.parentId = patch.parentId && patch.parentId !== existing.id ? String(patch.parentId) : null;
     }
     if (patch.vertical != null) existing.vertical = String(patch.vertical).toLowerCase();
+    if (patch.storageType != null) existing.storageType = normalizeStorageType(patch.storageType);
     repo.upsertCategory(existing);
     audit(req.user.email, "category.update", existing.id);
     res.json(existing);
+  }
+);
+
+catalogRouter.delete(
+  "/categories/:categoryId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const result = repo.deleteCategory(req.params.categoryId);
+    if (!result.ok) {
+      if (result.error === "category_has_children") {
+        return res.status(409).json({ error: "category_has_children" });
+      }
+      if (result.error === "category_has_products") {
+        return res.status(409).json({ error: "category_has_products" });
+      }
+      return res.status(404).json({ error: "not_found" });
+    }
+    audit(req.user.email, "category.delete", req.params.categoryId);
+    res.status(204).end();
   }
 );
 
@@ -75,7 +98,11 @@ catalogRouter.post("/products", authRequired, requireRoles("Designer", "Admin"),
   const attrs = { ...(req.body?.attributes || {}) };
   if (req.body?.widthMeters != null) attrs.widthMeters = Number(req.body.widthMeters);
   if (req.body?.heightMeters != null) attrs.heightMeters = Number(req.body.heightMeters);
+  if (req.body?.depthMeters != null) attrs.depthMeters = Number(req.body.depthMeters);
+  if (req.body?.weightKg != null) attrs.weightKg = Number(req.body.weightKg);
   if (req.body?.imageUrl != null) attrs.imageUrl = String(req.body.imageUrl);
+  if (req.body?.storageType != null) attrs.storageTemp = normalizeStorageType(req.body.storageType);
+  if (req.body?.attributes?.storageTemp != null) attrs.storageTemp = normalizeStorageType(req.body.attributes.storageTemp);
   const product = {
     id: req.body?.id || `prd-${randomUUID().slice(0, 6)}`,
     name: req.body?.name || "Product",
@@ -108,13 +135,40 @@ catalogRouter.patch(
     if (patch.heightMeters != null) {
       existing.attributes = { ...(existing.attributes || {}), heightMeters: Number(patch.heightMeters) };
     }
+    if (patch.depthMeters != null) {
+      existing.attributes = { ...(existing.attributes || {}), depthMeters: Number(patch.depthMeters) };
+    }
+    if (patch.weightKg !== undefined) {
+      existing.attributes = {
+        ...(existing.attributes || {}),
+        weightKg: patch.weightKg == null || patch.weightKg === "" ? undefined : Number(patch.weightKg),
+      };
+    }
     if (patch.imageUrl !== undefined) {
       existing.attributes = { ...(existing.attributes || {}), imageUrl: patch.imageUrl ? String(patch.imageUrl) : "" };
+    }
+    if (patch.storageType != null) {
+      existing.attributes = {
+        ...(existing.attributes || {}),
+        storageTemp: normalizeStorageType(patch.storageType),
+      };
     }
     if (!existing.categoryId) return res.status(400).json({ error: "missing_fields" });
     repo.upsertProduct(existing);
     audit(req.user.email, "product.update", existing.id);
     res.json(existing);
+  }
+);
+
+catalogRouter.delete(
+  "/products/:productId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const ok = repo.deleteProduct(req.params.productId);
+    if (!ok) return res.status(404).json({ error: "not_found" });
+    audit(req.user.email, "product.delete", req.params.productId);
+    res.status(204).end();
   }
 );
 
@@ -131,6 +185,7 @@ catalogRouter.post("/catalog/import", authRequired, requireRoles("Admin", "Desig
       vertical: String(c.vertical || "retail").toLowerCase(),
       parentId: c.parentId || null,
       color: c.color || "#A30A2A",
+      storageType: normalizeStorageType(c.storageType || "ambient"),
     };
     repo.upsertCategory(cat);
     categoryIds.add(cat.id);
@@ -149,6 +204,7 @@ catalogRouter.post("/catalog/import", authRequired, requireRoles("Admin", "Desig
         vertical: String(p.vertical || categories[0]?.vertical || "retail").toLowerCase(),
         parentId: null,
         color: "#A30A2A",
+        storageType: "ambient",
       };
       repo.upsertCategory(stub);
       categoryIds.add(stub.id);

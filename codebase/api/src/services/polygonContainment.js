@@ -297,6 +297,11 @@ export function zoneFootprint(zone) {
   };
 }
 
+/** Rectangular obstacle footprint (column / wall / blocked area), meters. */
+export function obstacleRect(obstacle) {
+  return zoneFootprint(obstacle);
+}
+
 export function entityInsideLayout(entity, kind, layout) {
   const poly = layoutBoundaryPolygon(layout);
   if (kind === "entryPoint") {
@@ -308,7 +313,7 @@ export function entityInsideLayout(entity, kind, layout) {
   const fp =
     kind === "aisle"
       ? aisleFootprint(entity, layout)
-      : kind === "zone"
+      : kind === "zone" || kind === "obstacle"
         ? zoneFootprint(entity)
         : shelfFootprint(entity);
   return rectFullyInsidePolygon(fp.x, fp.y, fp.w, fp.d, poly);
@@ -422,6 +427,22 @@ export function overlapsAnyAisle(shelf, layout, ignoreAisleId) {
   return null;
 }
 
+/** First obstacle a shelf collides with, or null. Columns are hard blockers. */
+export function overlapsAnyObstacle(shelf, layout) {
+  for (const o of layout?.obstacles || []) {
+    if (shelfOverlapsAisleRect(shelf, obstacleRect(o))) return o;
+  }
+  return null;
+}
+
+/** True when a plain rectangle collides with any obstacle. */
+export function rectOverlapsAnyObstacle(rect, layout) {
+  for (const o of layout?.obstacles || []) {
+    if (aabbOverlap(rect, obstacleRect(o))) return o;
+  }
+  return null;
+}
+
 export function collectOverlapViolations(layout) {
   const violations = [];
   const seen = new Set();
@@ -452,6 +473,27 @@ export function assertNoOverlapOrThrow(entity, kind, layout, { ignoreId } = {}) 
       const err = new Error("overlap_violation");
       err.code = "overlap_violation";
       throw err;
+    }
+    const blocker = overlapsAnyObstacle(entity, layout);
+    if (blocker) {
+      const err = new Error("obstacle_violation");
+      err.code = "obstacle_violation";
+      err.obstacleId = blocker.id;
+      throw err;
+    }
+    return;
+  }
+  if (kind === "obstacle") {
+    // A column cannot be dropped onto a fixture that is already standing there.
+    const rect = obstacleRect(entity);
+    const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+    for (const shelf of shelves) {
+      if (shelfOverlapsAisleRect(shelf, rect)) {
+        const err = new Error("overlap_violation");
+        err.code = "overlap_violation";
+        err.shelfId = shelf.id;
+        throw err;
+      }
     }
   }
 }

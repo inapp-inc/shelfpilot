@@ -19,8 +19,9 @@ export default function ZonesEntryPanel({
       <div className="section-label">Special zones</div>
       {zones.length === 0 ? (
         <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
-          Use the <strong>Zones</strong> palette tools (Hot / Offer / Special), then click the floor to
-          place a zone. Zones are merchandising overlays and don't affect shelf packing.
+          Use the <strong>Zones</strong> palette tools (Hot / Offer / Special), then drag on the floor to
+          draw a rectangle. A quick click places a default 3×3 m zone. Zones are merchandising overlays
+          and don't affect shelf packing.
         </div>
       ) : (
         zones.map((z) => {

@@ -9,6 +9,8 @@ import {
   syncLegacyFromFaces,
 } from "./shelfFaces.js";
 import { normalizeEntryPoint, normalizeZone } from "./zones.js";
+import { normalizeObstacle } from "./obstacles.js";
+import { normalizeFloorPlan } from "./floorPlan.js";
 import { finalizeAisleLabeling } from "./aisleLabeling.js";
 import { finalizeAisleShelfBinding } from "./aisleBinding.js";
 import { alignLayoutGeometry } from "./polygonContainment.js";
@@ -34,6 +36,9 @@ export function fixtureToShelf(f) {
     categoryId: f.categoryId,
     color: f.color,
     temperatureZone: f.temperatureZone || "ambient",
+    // Safe working load; null falls back to the fixture-type default at read time.
+    maxLoadKgPerLevel: f.maxLoadKgPerLevel != null ? Number(f.maxLoadKgPerLevel) : null,
+    maxLoadKg: f.maxLoadKg != null ? Number(f.maxLoadKg) : null,
     displayNumber: f.displayNumber ?? null,
     doubleSided: f.pairId ? false : f.doubleSided !== false,
     pairId: f.pairId || null,
@@ -59,6 +64,8 @@ export function shelfToFixture(s) {
     rotationDeg: Number(s.rotationDeg) || 0,
     categoryId: s.categoryId,
     color: s.color,
+    maxLoadKgPerLevel: s.maxLoadKgPerLevel ?? null,
+    maxLoadKg: s.maxLoadKg ?? null,
     pairId: s.pairId || null,
     pairRole: s.pairRole || null,
     doubleSided: s.doubleSided,
@@ -150,6 +157,8 @@ export function normalizeLayout(layout) {
   }
   layout.zones = (layout.zones || []).map(normalizeZone);
   layout.entryPoints = (layout.entryPoints || []).map(normalizeEntryPoint);
+  layout.obstacles = (layout.obstacles || []).map(normalizeObstacle);
+  layout.floorPlan = normalizeFloorPlan(layout.floorPlan);
   return layout;
 }
 

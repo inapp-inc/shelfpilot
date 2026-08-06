@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { isAppRootPath, navigateTo, parseAppPath, pathForModule, subscribeToPath } from "./routes.js";
+import { isAppRootPath, navigateTo, parseAppPath, pathForModule, stripBase, subscribeToPath } from "./routes.js";
 
 /** Sync React state with browser URL (pushState + popstate). */
 export function useAppRoute() {
@@ -9,6 +9,7 @@ export function useAppRoute() {
 
   useEffect(() => {
     if (isAppRootPath(pathname)) navigateTo(pathForModule("dashboard"), { replace: true });
+    if (stripBase(pathname) === "/analytics") navigateTo(pathForModule("dashboard"), { replace: true });
   }, [pathname]);
 
   return {

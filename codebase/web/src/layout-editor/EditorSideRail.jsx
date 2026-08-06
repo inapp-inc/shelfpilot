@@ -3,8 +3,9 @@ import PropertiesPanel from "./PropertiesPanel.jsx";
 import MerchandisingPanel from "./MerchandisingPanel.jsx";
 import ShelfNumberLegend from "./ShelfNumberLegend.jsx";
 import ZonesEntryPanel from "./ZonesEntryPanel.jsx";
+import FloorPlanPanel from "./FloorPlanPanel.jsx";
 
-/** Tabbed right rail: Properties | Merchandising | Zones. */
+/** Tabbed right rail: Properties | Merchandising | Zones | Floor plan. */
 export default function EditorSideRail({
   selection,
   layout,
@@ -30,6 +31,12 @@ export default function EditorSideRail({
   onPatchEntry,
   onDeleteEntry,
   onSelectZone,
+  onUploadFloorPlan,
+  onPatchFloorPlan,
+  onRemoveFloorPlan,
+  onPatchObstacle,
+  onDeleteObstacle,
+  onSelectObstacle,
   onRefreshCatalog,
   onOpenPlanogram,
   toast,
@@ -46,6 +53,7 @@ export default function EditorSideRail({
   // Jump to the right tab based on what is selected on the canvas.
   useEffect(() => {
     if (selection?.kind === "zone" || selection?.kind === "entryPoint") setTab("zones");
+    else if (selection?.kind === "obstacle") setTab("floor");
     else if (selection?.kind === "aisle") setTab("props");
     else if (selection?.kind === "shelf" || selection?.kind === "fixture") setTab("props");
   }, [selection?.kind, selection?.id]);
@@ -66,9 +74,24 @@ export default function EditorSideRail({
         <button type="button" className={tab === "zones" ? "active" : ""} onClick={() => setTab("zones")}>
           Zones
         </button>
+        <button type="button" className={tab === "floor" ? "active" : ""} onClick={() => setTab("floor")}>
+          Floor
+        </button>
       </div>
       <div className="editor-rail-body">
-        {tab === "zones" ? (
+        {tab === "floor" ? (
+          <FloorPlanPanel
+            layout={layout}
+            editDisabled={editDisabled}
+            selection={selection}
+            onUploadFloorPlan={onUploadFloorPlan}
+            onPatchFloorPlan={onPatchFloorPlan}
+            onRemoveFloorPlan={onRemoveFloorPlan}
+            onPatchObstacle={onPatchObstacle}
+            onDeleteObstacle={onDeleteObstacle}
+            onSelectObstacle={onSelectObstacle}
+          />
+        ) : tab === "zones" ? (
           <ZonesEntryPanel
             layout={layout}
             editDisabled={editDisabled}

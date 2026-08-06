@@ -1,4 +1,5 @@
 import { ZONE_TYPES } from "../referenceCatalog.js";
+import { OBSTACLE_TYPES } from "../obstacleTypes.js";
 
 /** Left sidebar palette: select, draw area, aisles, shelves. */
 export default function Palette({
@@ -15,9 +16,10 @@ export default function Palette({
   hasAppliedPolygon,
 }) {
   return (
-    <div className={`palette${compact ? " palette--compact" : ""}`}>
+    <div className={`palette${compact ? " palette--compact" : ""}`} data-testid="editor-palette">
       <button
         type="button"
+        data-testid="palette-select"
         className={`tool-btn ${paletteTool === "select" ? "active" : ""}`}
         onClick={() => setPaletteTool("select")}
       >
@@ -72,6 +74,7 @@ export default function Palette({
       <button
         type="button"
         className="tool-btn tool-btn--accent"
+        data-testid="smart-generate-open"
         disabled={editDisabled}
         onClick={onOpenGenerate}
       >
@@ -166,7 +169,37 @@ export default function Palette({
               {z.label}
             </div>
             {!compact ? (
-              <div className="tool-btn-sub mono">{z.hint} · draw rectangle</div>
+              <div className="tool-btn-sub mono">{z.hint} · drag on floor</div>
+            ) : null}
+          </button>
+        );
+      })}
+
+      <div className="section-label palette-section-label">Structure</div>
+      {Object.entries(OBSTACLE_TYPES).map(([key, o]) => {
+        const tool = `obstacle:${key}`;
+        return (
+          <button
+            key={key}
+            type="button"
+            className={`tool-btn ${paletteTool === tool ? "active" : ""}`}
+            disabled={editDisabled}
+            draggable={!editDisabled}
+            onDragStart={(e) => {
+              e.dataTransfer.setData("application/x-shelfpilot-tool", tool);
+              e.dataTransfer.effectAllowed = "copy";
+              setPaletteTool(tool);
+            }}
+            onClick={() => setPaletteTool(tool)}
+          >
+            <div className="tool-btn-title tool-btn-title--row">
+              <span className="zone-swatch" style={{ background: o.color }} />
+              {o.label}
+            </div>
+            {!compact ? (
+              <div className="tool-btn-sub mono">
+                {o.hint} · {o.widthMeters}×{o.depthMeters} m
+              </div>
             ) : null}
           </button>
         );

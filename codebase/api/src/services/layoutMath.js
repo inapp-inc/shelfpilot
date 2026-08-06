@@ -1,6 +1,7 @@
 /** Auto-calc optimal fixture count from footprint and vertical template density. */
 
 import { buildLayoutAnalyticsReport, buildPortfolioAnalyticsReport } from "./analyticsReports.js";
+import { totalObstacleAreaSqm } from "./obstacles.js";
 
 export function computeAutoCalc(layout, config) {
   const started = performance.now();
@@ -8,8 +9,10 @@ export function computeAutoCalc(layout, config) {
   const avgFixtureArea =
     (config?.fixtureTemplates || []).reduce((sum, t) => sum + (t.defaultWidthMeters || 1) * (t.defaultDepthMeters || 0.6), 0) /
       Math.max((config?.fixtureTemplates || []).length, 1) || 0.72;
+  // Columns and blocked areas are not plannable floor.
+  const plannableSqm = Math.max(0, footprintSqm - totalObstacleAreaSqm(layout));
   // Leave ~35% for aisles/circulation
-  const usable = footprintSqm * 0.65;
+  const usable = plannableSqm * 0.65;
   const maxFixtures = Math.max(0, Math.floor(usable / avgFixtureArea));
   const ms = performance.now() - started;
   console.log(

@@ -122,13 +122,17 @@ export function bindShelvesToAisles(shelves, aisles, layout) {
   return shelves;
 }
 
-/** Drop walk aisles that no shelf references after binding. */
+/**
+ * Drop auto-generated walk aisles that no shelf references after binding.
+ * Hand-drawn aisles survive: a designer may lay corridors out before any fixture
+ * exists, and silently deleting that work is worse than an unused corridor.
+ */
 export function pruneOrphanAisles(shelves, aisles) {
   const used = new Set();
   for (const s of shelves || []) {
     if (s.aisleId) used.add(s.aisleId);
   }
-  return (aisles || []).filter((a) => a?.id && used.has(a.id));
+  return (aisles || []).filter((a) => a?.id && (a.source === "manual" || used.has(a.id)));
 }
 
 /** Bind shelves to aisles, remove orphan corridors, re-bind if needed. */

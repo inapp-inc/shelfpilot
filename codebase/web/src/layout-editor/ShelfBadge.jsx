@@ -1,4 +1,5 @@
 import { categoryLabel } from "../catalog/buildCategoryTree.js";
+import { colorForShelfFace, withAlpha } from "../categoryColors.js";
 import {
   isDoubleSided,
   isPairedShelf,
@@ -14,6 +15,9 @@ import {
 export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, aisles, allShelves }) {
   const shelf = normalizeShelfUI(rawShelf);
   const w = pixelWidth || 48;
+  const colorA = colorForShelfFace(shelf, "A", categories);
+  const colorB = colorForShelfFace(shelf, "B", categories);
+  const badgeBg = (color, fallback) => (color ? withAlpha(color, 0.28) : fallback);
 
   if (isPairedShelf(shelf)) {
     const face = pairFaceId(shelf);
@@ -25,14 +29,10 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
     const role = shelf.pairRole === "back" ? "back" : "front";
     const title = `${label} · ${role} · ${cat}`;
     const fontSize = w < 36 ? 9 : w < 48 ? 10 : 11;
-    const bg =
-      face === "B"
-        ? shelf.color
-          ? `${shelf.color}44`
-          : "rgba(14,165,233,0.18)"
-        : shelf.color
-          ? `${shelf.color}44`
-          : "rgba(163,10,42,0.15)";
+    const bg = badgeBg(
+      colorA,
+      face === "B" ? "rgba(14,165,233,0.18)" : "rgba(163,10,42,0.15)"
+    );
     return (
       <span
         className="mono"
@@ -64,16 +64,13 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
   const title = tooltipParts.join(" · ");
 
   if (isDoubleSided(shelf) && shelf.faces?.length >= 2) {
-    const faceA = shelf.faces.find((f) => f.id === "A") || shelf.faces[0];
-    const faceB = shelf.faces.find((f) => f.id === "B") || shelf.faces[1];
-
     if (w < 36) {
       return (
         <span className="mono shelf-badge-compact" title={title} style={{ fontSize: 9, fontWeight: 700, color: "#1f2933" }}>
           {labelA.replace(/[A-Z]$/, "")}
           <span style={{ display: "inline-flex", gap: 2, marginLeft: 3 }}>
-            <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceA?.color || "#A30A2A" }} />
-            <span style={{ width: 5, height: 5, borderRadius: "50%", background: faceB?.color || "#0ea5e9" }} />
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: colorA || "#A30A2A" }} />
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: colorB || "#0ea5e9" }} />
           </span>
         </span>
       );
@@ -82,10 +79,10 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
     if (w < 56) {
       return (
         <div className="shelf-badge-stacked" title={title} style={{ display: "flex", flexDirection: "column", alignItems: "center", lineHeight: 1.1 }}>
-          <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: faceA?.color ? `${faceA.color}44` : "rgba(163,10,42,0.15)", padding: "1px 4px", borderRadius: 3 }}>
+          <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: badgeBg(colorA, "rgba(163,10,42,0.15)"), padding: "1px 4px", borderRadius: 3 }}>
             {labelA}
           </span>
-          <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: faceB?.color ? `${faceB.color}44` : "rgba(14,165,233,0.15)", padding: "1px 4px", borderRadius: 3, marginTop: 1 }}>
+          <span className="mono" style={{ fontSize: 9, fontWeight: 700, color: "#1f2933", background: badgeBg(colorB, "rgba(14,165,233,0.15)"), padding: "1px 4px", borderRadius: 3, marginTop: 1 }}>
             {labelB}
           </span>
         </div>
@@ -100,7 +97,7 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
             flex: 1,
             textAlign: "center",
             padding: "2px 0",
-            background: faceA?.color ? `${faceA.color}44` : "rgba(163,10,42,0.15)",
+            background: badgeBg(colorA, "rgba(163,10,42,0.15)"),
             color: "#1f2933",
             borderRight: "1px solid rgba(31,41,51,0.15)",
           }}
@@ -113,7 +110,7 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
             flex: 1,
             textAlign: "center",
             padding: "2px 0",
-            background: faceB?.color ? `${faceB.color}44` : "rgba(14,165,233,0.15)",
+            background: badgeBg(colorB, "rgba(14,165,233,0.15)"),
             color: "#1f2933",
           }}
         >

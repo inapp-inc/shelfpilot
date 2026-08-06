@@ -10,6 +10,7 @@ import {
 } from "./polygonCanvas.js";
 import { normalizeShelfUI, shelvesForScene3D } from "./shelfFaces.js";
 import { shelf3dLocalBox } from "../scene3dDimensions.js";
+import { resolveAssetUrl } from "../assetUrl.js";
 
 /** Default 3D tab zoom: 70% of fit-store distance (slightly zoomed in). */
 export const DEFAULT_OVERVIEW_ZOOM = 0.7;
@@ -135,6 +136,76 @@ export function buildStoreFloor(layout, bounds) {
   }
 
   return { group: root, disposables: disposables.filter(Boolean) };
+}
+
+/**
+ * Structural obstacles as solid volumes. Columns run floor-to-ceiling so the
+ * walkthrough shows the same blockers the 2D plan refuses to place fixtures on.
+ */
+export function buildObstacleMeshes(layout) {
+  const root = new THREE.Group();
+  const disposables = [];
+  const ceiling = Number(layout?.heightMeters) || 3;
+
+  for (const o of layout?.obstacles || []) {
+    const w = Math.max(0.05, Number(o.widthMeters) || 0.4);
+    const d = Math.max(0.05, Number(o.depthMeters) || 0.4);
+    const h = Math.max(0.1, Number(o.heightMeters) || ceiling);
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(o.color || "#475569"),
+      roughness: 0.92,
+      metalness: 0.02,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set((Number(o.x) || 0) + w / 2, h / 2, (Number(o.y) || 0) + d / 2);
+    mesh.userData.obstacleId = o.id;
+    root.add(mesh);
+    disposables.push(geo, mat);
+  }
+
+  return { group: root, disposables };
+}
+
+/**
+ * Uploaded floor-plan drawing laid flat on the store floor, using the same
+ * metre calibration as the 2D underlay so both views agree.
+ */
+export function buildFloorPlanUnderlay(layout, texLoader) {
+  const plan = layout?.floorPlan;
+  if (!plan?.url || plan.visible === false) return null;
+
+  const w = Math.max(0.5, Number(plan.widthMeters) || 10);
+  const d = Math.max(0.5, Number(plan.depthMeters) || 8);
+  const geo = new THREE.PlaneGeometry(w, d);
+  const mat = new THREE.MeshBasicMaterial({
+    transparent: true,
+    opacity: Math.min(1, Math.max(0.05, Number(plan.opacity ?? 0.5))),
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    color: 0xffffff,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = -((Number(plan.rotationDeg) || 0) * Math.PI) / 180;
+  mesh.position.set((Number(plan.x) || 0) + w / 2, 0.03, (Number(plan.y) || 0) + d / 2);
+  mesh.renderOrder = 1;
+
+  const loader = texLoader || new THREE.TextureLoader();
+  loader.load(
+    resolveAssetUrl(plan.url),
+    (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      mat.map = tex;
+      mat.needsUpdate = true;
+    },
+    undefined,
+    () => {
+      /* a missing underlay should never break the scene */
+    }
+  );
+
+  return { mesh, disposables: [geo, mat] };
 }
 
 /** Walk aisle strips. */

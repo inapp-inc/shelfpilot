@@ -6,6 +6,7 @@ export default function SmartGeneratePanel({
   open,
   onClose,
   minAisleWidth,
+  storeMinAisleWidth,
   onMinAisleWidthChange,
   orientation,
   onOrientationChange,
@@ -26,10 +27,16 @@ export default function SmartGeneratePanel({
   const canRun = total === 100 && !generating && !disabled;
 
   return (
-    <div className="panel smart-generate-panel">
+    <div className="panel smart-generate-panel" data-testid="smart-generate-panel">
       <div className="smart-gen-header">
         <strong>✨ Smart generate</strong>
-        <button type="button" className="btn-secondary" style={{ padding: "6px 10px", fontSize: 12 }} onClick={onClose}>
+        <button
+          type="button"
+          className="btn-secondary"
+          data-testid="smart-generate-close"
+          style={{ padding: "6px 10px", fontSize: 12 }}
+          onClick={onClose}
+        >
           Close
         </button>
       </div>
@@ -40,11 +47,17 @@ export default function SmartGeneratePanel({
             className="mono"
             type="number"
             step="0.1"
-            min="0.5"
+            data-testid="smart-generate-min-aisle"
+            min={storeMinAisleWidth != null ? Number(storeMinAisleWidth) : 0.5}
             value={minAisleWidth}
             disabled={disabled}
             onChange={(e) => onMinAisleWidthChange(e.target.value)}
           />
+          {storeMinAisleWidth != null ? (
+            <span className="muted" style={{ fontSize: 11 }} data-testid="smart-generate-store-rule">
+              Store rule: ≥ {storeMinAisleWidth}m (Smart Generate will not go below this)
+            </span>
+          ) : null}
         </div>
         <div className="field" style={{ margin: 0 }}>
           <label>Orientation</label>
@@ -122,7 +135,14 @@ export default function SmartGeneratePanel({
         <span className="muted" style={{ fontSize: 12, flex: 1 }}>
           Assigns categories to gondola faces and places matching products on shelf levels
         </span>
-        <button type="button" className="btn-primary" style={{ padding: "8px 14px" }} disabled={!canRun} onClick={onGenerate}>
+        <button
+          type="button"
+          className="btn-primary"
+          data-testid="smart-generate-run"
+          style={{ padding: "8px 14px" }}
+          disabled={!canRun}
+          onClick={onGenerate}
+        >
           {generating ? "Generating…" : "Run smart generate"}
         </button>
       </div>

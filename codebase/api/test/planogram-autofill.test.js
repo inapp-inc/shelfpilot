@@ -121,6 +121,40 @@ test("fillPlanogramsForLayout places products on paired front/back gondola shelv
   );
 });
 
+test("fillPlanogramsForLayout places each product on at most one shelf", () => {
+  const makeShelf = (id, categoryId) =>
+    normalizeShelf({
+      id,
+      categoryId,
+      usableWidthMeters: 1.2,
+      depthMeters: 0.6,
+      heightMeters: 2,
+      defaultLevels: 2,
+      faces: [{ id: "A", categoryId, planogram: [{ productId: "stale", levelIndex: 0 }] }],
+    });
+  const layout = {
+    vertical: "retail",
+    shelves: [
+      makeShelf("s1", "cat-dairy"),
+      makeShelf("s2", "cat-dairy"),
+      makeShelf("s3", "cat-grocery"),
+      makeShelf("s4", "cat-grocery"),
+    ],
+  };
+  fillPlanogramsForLayout(layout, products, categories);
+  const ids = [];
+  for (const shelf of layout.shelves) {
+    for (const face of shelf.faces || []) {
+      for (const p of face.planogram || []) ids.push(p.productId);
+    }
+  }
+  assert.equal(new Set(ids).size, ids.length, `duplicate placements: ${ids.join(",")}`);
+  assert.ok(ids.includes("prod-milk"));
+  assert.ok(ids.includes("prod-bread") || ids.includes("prod-unused"));
+  // Only one dairy SKU in catalog → second dairy shelf stays empty for other products elsewhere
+  assert.equal(layout.shelves[1].faces[0].planogram.length, 0);
+});
+
 test("loadProductsForLayoutVertical resolves legacy category aliases", () => {
   const legacyProducts = [{ id: "p1", categoryId: "grocery", name: "Legacy" }];
   const { products: loaded } = loadProductsForLayoutVertical(

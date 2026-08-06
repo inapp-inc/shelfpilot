@@ -8,10 +8,12 @@ export default function EditorPanelShell({ side, label, collapsed, onToggleColla
       <aside
         className={`editor-side-panel editor-side-panel--${side} is-collapsed`}
         aria-label={label}
+        data-testid={`editor-panel-${side}-collapsed`}
       >
         <button
           type="button"
           className="editor-panel-toggle"
+          data-testid={`editor-panel-${side}-expand`}
           onClick={onToggleCollapse}
           title={`Expand ${label}`}
           aria-expanded={false}
@@ -25,12 +27,17 @@ export default function EditorPanelShell({ side, label, collapsed, onToggleColla
   }
 
   return (
-    <aside className={`editor-side-panel editor-side-panel--${side}`} aria-label={label}>
+    <aside
+      className={`editor-side-panel editor-side-panel--${side}`}
+      aria-label={label}
+      data-testid={`editor-panel-${side}`}
+    >
       <div className="editor-panel-header">
         <span className="editor-panel-title">{label}</span>
         <button
           type="button"
           className="editor-panel-toggle"
+          data-testid={`editor-panel-${side}-collapse`}
           onClick={onToggleCollapse}
           title={`Collapse ${label}`}
           aria-expanded

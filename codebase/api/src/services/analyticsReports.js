@@ -5,6 +5,37 @@
 import { validateAisles } from "./layoutMath.js";
 import { listCategoriesForLayout, resolveCategoryId, categoryDisplayName } from "./categoryTree.js";
 import { computePlanogramCoverage } from "./planogramCoverage.js";
+import { obstacleAreaSqm } from "./obstacles.js";
+import { computeCategoryVolumeAllocation, computeStorageVolume } from "./volumeMath.js";
+import { computeWeightLoadReport } from "./weightMath.js";
+
+/** Square feet per square meter — US retail display / doc benchmarking. */
+export const SQFT_PER_SQM = 10.76391041671;
+
+export function sqmToSqFt(sqm) {
+  return Number(sqm) * SQFT_PER_SQM;
+}
+
+/** Fixtures per 100 sq ft from a count and area in m². */
+export function fixturesPer100SqFt(count, areaSqm) {
+  const areaSqFt = sqmToSqFt(areaSqm);
+  if (!(areaSqFt > 0)) return 0;
+  return Number(((count / areaSqFt) * 100).toFixed(2));
+}
+
+/** Fixtures per 1000 sq ft (doc §2.4). */
+export function fixturesPer1000SqFt(count, areaSqm) {
+  const areaSqFt = sqmToSqFt(areaSqm);
+  if (!(areaSqFt > 0)) return 0;
+  return Number(((count / areaSqFt) * 1000).toFixed(2));
+}
+
+/** Layout entry points — app stores `entryPoints`; accept legacy `entries`. */
+export function layoutEntryPoints(layout) {
+  if (Array.isArray(layout?.entryPoints) && layout.entryPoints.length) return layout.entryPoints;
+  if (Array.isArray(layout?.entries) && layout.entries.length) return layout.entries;
+  return [];
+}
 
 /** Shoelace area of polygon ring {x,y} points (m²). */
 export function polygonArea(points) {
@@ -30,8 +61,34 @@ export function shelfFootprintSqm(shelf) {
   return w * d;
 }
 
+/**
+ * Floor area attributable to one shelf record.
+ *
+ * A gondola pair is stored as two shelf records (front + back) sharing a single
+ * floor footprint, so each record owns half of it. Summing the raw footprint
+ * would report twice the floor space the gondola actually occupies.
+ */
+export function shelfFloorAreaShareSqm(shelf) {
+  const footprint = shelfFootprintSqm(shelf);
+  return shelf?.pairId ? footprint / 2 : footprint;
+}
+
 export function shelfLinearMeters(shelf) {
   return Number(shelf?.usableWidthMeters ?? shelf?.widthMeters) || 0;
+}
+
+/** Count of physical units on the floor (a front/back gondola pair counts once). */
+export function physicalUnitCount(shelves) {
+  const seenPairs = new Set();
+  let count = 0;
+  for (const s of shelves || []) {
+    if (s?.pairId) {
+      if (seenPairs.has(s.pairId)) continue;
+      seenPairs.add(s.pairId);
+    }
+    count += 1;
+  }
+  return count;
 }
 
 export function aisleFootprintSqm(aisle, layout) {
@@ -44,6 +101,51 @@ export function aisleFootprintSqm(aisle, layout) {
       : Math.max(2, Number(layout?.widthMeters) || 10);
   }
   return aw * len;
+}
+
+/**
+ * Merge collinear / overlapping aisle strips so the same corridor is not
+ * counted many times (walk-aisle scans often create duplicate bands).
+ */
+export function aisleAreaDedupedSqm(layout) {
+  const aisles = layout?.aisles || [];
+  if (!aisles.length) return 0;
+
+  const corridors = new Map();
+  for (const a of aisles) {
+    const vertical = a?.orientation === "vertical";
+    const width = Math.max(0.4, Number(a?.widthMeters) || 1);
+    let len = Number(a?.lengthMeters);
+    if (!Number.isFinite(len)) {
+      len = vertical
+        ? Math.max(2, Number(layout?.depthMeters) || 10)
+        : Math.max(2, Number(layout?.widthMeters) || 10);
+    }
+    const center = vertical ? Number(a?.x) || 0 : Number(a?.y) || 0;
+    const start = vertical ? Number(a?.y) || 0 : Number(a?.x) || 0;
+    const end = start + len;
+    const key = `${vertical ? "v" : "h"}:${(Math.round(center * 20) / 20).toFixed(2)}`;
+    const prev = corridors.get(key);
+    if (!prev) {
+      corridors.set(key, { width, start, end });
+      continue;
+    }
+    prev.width = Math.max(prev.width, width);
+    prev.start = Math.min(prev.start, start);
+    prev.end = Math.max(prev.end, end);
+  }
+
+  let sum = 0;
+  let hasH = false;
+  let hasV = false;
+  for (const [key, c] of corridors) {
+    if (key.startsWith("h:")) hasH = true;
+    else hasV = true;
+    sum += c.width * Math.max(0, c.end - c.start);
+  }
+  // Perpendicular corridors share intersection squares — rough correction.
+  if (hasH && hasV) sum *= 0.88;
+  return sum;
 }
 
 export function zoneFootprintSqm(zone) {
@@ -70,54 +172,100 @@ export function shelfCategoryIds(shelf) {
   return [...ids];
 }
 
-/** §1.1 Space utilization breakdown. */
+/** §1.1 Space utilization breakdown.
+ *
+ * Exclusive floor buckets (sum ≈ total store area):
+ *   fixtures + aisles + obstacles + unused
+ * Merchandising zones are category overlays and are NOT subtracted from vacant
+ * floor (they overlap fixtures by design).
+ *
+ * Utilization % = allocated ÷ usable × 100
+ *   usable = total − obstacles
+ */
 export function computeSpaceUtilization(layout) {
   const total = totalStoreArea(layout);
   const shelves = layoutShelves(layout);
-  const allocated = shelves.reduce((s, sh) => s + shelfFootprintSqm(sh), 0);
-  const aisle = (layout?.aisles || []).reduce((s, a) => s + aisleFootprintSqm(a, layout), 0);
-  const blocked = (layout?.zones || []).reduce((s, z) => s + zoneFootprintSqm(z), 0);
-  const unused = Math.max(0, total - allocated - aisle - blocked);
-  const utilizationPercent = total > 0 ? Number(((allocated / total) * 100).toFixed(1)) : 0;
+  const allocated = shelves.reduce((s, sh) => s + shelfFloorAreaShareSqm(sh), 0);
+  const merchandisingZones = (layout?.zones || []).reduce((s, z) => s + zoneFootprintSqm(z), 0);
+  const obstacles = (layout?.obstacles || []).reduce((s, o) => s + obstacleAreaSqm(o), 0);
+  const usable = Math.max(0, total - obstacles);
+
+  // Deduplicate collinear aisle strips; clamp only so fixtures + aisles cannot
+  // exceed usable (geometric ceiling — not a density heuristic).
+  const aisleRaw = aisleAreaDedupedSqm(layout);
+  const residualAfterFixtures = Math.max(0, usable - allocated);
+  const aisle = Math.min(aisleRaw, residualAfterFixtures);
+  const aisleClamped = aisleRaw > residualAfterFixtures + 1e-6;
+
+  const unused = Math.max(0, usable - allocated - aisle);
+  const utilizationPercent = usable > 0 ? Number(((allocated / usable) * 100).toFixed(1)) : 0;
+  const vacancyPercent = usable > 0 ? Number(((unused / usable) * 100).toFixed(1)) : 0;
+  const plannedPercent =
+    usable > 0 ? Number((((allocated + aisle) / usable) * 100).toFixed(1)) : 0;
+
   return {
     totalStoreAreaSqm: Number(total.toFixed(2)),
+    usableStoreAreaSqm: Number(usable.toFixed(2)),
     allocatedAreaSqm: Number(allocated.toFixed(2)),
     aisleAreaSqm: Number(aisle.toFixed(2)),
-    blockedZoneAreaSqm: Number(blocked.toFixed(2)),
+    aisleAreaRawSqm: Number(aisleRaw.toFixed(2)),
+    aisleAreaClamped: aisleClamped,
+    /** @deprecated Merchandising overlays — not exclusive floor. Prefer merchandisingZoneAreaSqm. */
+    blockedZoneAreaSqm: 0,
+    merchandisingZoneAreaSqm: Number(merchandisingZones.toFixed(2)),
+    obstacleAreaSqm: Number(obstacles.toFixed(2)),
     unusedAreaSqm: Number(unused.toFixed(2)),
     utilizationPercent,
+    vacancyPercent,
+    plannedPercent,
+    formula: {
+      utilizationPercent: "allocatedAreaSqm ÷ usableStoreAreaSqm × 100",
+      usableStoreAreaSqm: "totalStoreAreaSqm − obstacleAreaSqm",
+      unusedAreaSqm: "usableStoreAreaSqm − allocatedAreaSqm − aisleAreaSqm",
+      vacancyPercent: "unusedAreaSqm ÷ usableStoreAreaSqm × 100",
+    },
     breakdown: [
       { key: "allocated", label: "Allocated (fixtures)", areaSqm: Number(allocated.toFixed(2)), color: "#A30A2A" },
       { key: "aisle", label: "Aisles", areaSqm: Number(aisle.toFixed(2)), color: "#64748b" },
-      { key: "blocked", label: "Special zones", areaSqm: Number(blocked.toFixed(2)), color: "#8b5cf6" },
-      { key: "unused", label: "Unused / free", areaSqm: Number(unused.toFixed(2)), color: "#e5e7eb" },
+      { key: "obstacles", label: "Columns / obstacles", areaSqm: Number(obstacles.toFixed(2)), color: "#475569" },
+      { key: "unused", label: "Unused / vacant", areaSqm: Number(unused.toFixed(2)), color: "#e5e7eb" },
     ],
   };
 }
 
-/** §1.2 Fixture density. */
+/** §1.2 Fixture density, measured in physical units per usable floor area. */
 export function computeFixtureDensity(layout) {
-  const total = totalStoreArea(layout);
+  const space = computeSpaceUtilization(layout);
+  const usable = space.usableStoreAreaSqm;
   const shelves = layoutShelves(layout);
-  const count = shelves.length;
-  const density = total > 0 ? Number((count / total).toFixed(3)) : 0;
+  const units = physicalUnitCount(shelves);
+  const density = usable > 0 ? Number((units / usable).toFixed(3)) : 0;
+  const per100SqFt = fixturesPer100SqFt(units, usable);
   return {
-    fixtureCount: count,
+    fixtureCount: units,
+    shelfFaceCount: shelves.length,
     fixturesPerSqm: density,
+    /** @deprecated SI unit — UI should prefer fixturesPer100SqFt */
     fixturesPer100Sqm: Number((density * 100).toFixed(1)),
+    fixturesPer100SqFt: per100SqFt,
+    formula: {
+      fixturesPer100SqFt: "physicalUnits ÷ (usableStoreAreaSqm × 10.7639 / 100)",
+      physicalUnits: "gondola front+back pair counts as 1",
+    },
   };
 }
 
 /** §1.2 Fixture density by zone (layout zones + default store floor). */
 export function computeFixtureDensityByZone(layout) {
   const shelves = layoutShelves(layout);
+  const space = computeSpaceUtilization(layout);
   const zones = layout?.zones?.length
     ? layout.zones.map((z) => ({
         zoneId: z.id,
         label: z.label || z.name || z.id,
         areaSqm: zoneFootprintSqm(z),
       }))
-    : [{ zoneId: "store", label: "Store floor", areaSqm: totalStoreArea(layout) }];
+    : [{ zoneId: "store", label: "Store floor", areaSqm: space.usableStoreAreaSqm }];
 
   const rows = zones.map((zone) => {
     const inZone = shelves.filter((s) => {
@@ -132,8 +280,9 @@ export function computeFixtureDensityByZone(layout) {
       const zd = Number(z.depthMeters) || 0;
       return sx >= zx && sx <= zx + zw && sy >= zy && sy <= zy + zd;
     });
-    const area = zone.areaSqm || totalStoreArea(layout);
-    const count = inZone.length;
+    const area = zone.areaSqm || space.usableStoreAreaSqm;
+    const count = physicalUnitCount(inZone);
+    const per100SqFt = fixturesPer100SqFt(count, area);
     const density = area > 0 ? Number((count / area).toFixed(3)) : 0;
     return {
       zoneId: zone.zoneId,
@@ -141,10 +290,15 @@ export function computeFixtureDensityByZone(layout) {
       fixtureCount: count,
       areaSqm: Number(area.toFixed(2)),
       fixturesPer100Sqm: Number((density * 100).toFixed(1)),
+      fixturesPer100SqFt: per100SqFt,
     };
   });
 
-  return { rows, storeAverage: computeFixtureDensity(layout).fixturesPer100Sqm };
+  return {
+    rows,
+    storeAverage: computeFixtureDensity(layout).fixturesPer100SqFt,
+    formula: "physicalUnits in zone ÷ (zoneAreaSqFt / 100)",
+  };
 }
 
 /** §1.3 Unallocated / empty shelf report. */
@@ -154,7 +308,7 @@ export function computeUnmappedShelves(layout) {
   let emptyArea = 0;
   const unmapped = [];
   for (const shelf of shelves) {
-    const area = shelfFootprintSqm(shelf);
+    const area = shelfFloorAreaShareSqm(shelf);
     totalShelfArea += area;
     if (!isShelfMapped(shelf)) {
       emptyArea += area;
@@ -173,31 +327,32 @@ export function computeUnmappedShelves(layout) {
     emptyShelfAreaSqm: Number(emptyArea.toFixed(2)),
     emptyShelfPercent: emptyPercent,
     unmappedShelves: unmapped,
+    formula: "emptyShelfAreaSqm ÷ totalShelfFloorShareSqm × 100 (unmapped = no category on any face)",
   };
 }
 
-/** §1.4 Vertical space utilization by level index. */
+/** §1.4 Vertical space utilization by level index.
+ * A level counts as utilized only when it has at least one planogram product —
+ * category mapping alone does not fill empty decks.
+ */
 export function computeVerticalSpaceUtilization(layout) {
   const shelves = layoutShelves(layout);
   const byLevel = new Map();
 
   for (const shelf of shelves) {
-    const levels = shelf.levels?.length
-      ? shelf.levels
-      : [{ levelIndex: 0 }, { levelIndex: 1 }];
-    const footprint = shelfFootprintSqm(shelf);
+    const levels = shelf.levels?.length ? shelf.levels : [{ levelIndex: 0 }];
+    const footprint = shelfFloorAreaShareSqm(shelf);
     const levelArea = footprint / Math.max(levels.length, 1);
+    const faces = shelf.faces?.length ? shelf.faces : [{ planogram: shelf.planogram || [] }];
 
     for (const lv of levels) {
       const idx = Number(lv.levelIndex) || 0;
-      const hasProducts = (shelf.faces || [{ planogram: shelf.planogram }]).some((face) =>
+      const hasProducts = faces.some((face) =>
         (face.planogram || []).some((p) => Number(p.levelIndex) === idx)
       );
-      const mapped = isShelfMapped(shelf);
-      const utilized = hasProducts || mapped;
       const prev = byLevel.get(idx) || { levelIndex: idx, totalAreaSqm: 0, utilizedAreaSqm: 0, fixtureCount: 0 };
       prev.totalAreaSqm += levelArea;
-      if (utilized) prev.utilizedAreaSqm += levelArea;
+      if (hasProducts) prev.utilizedAreaSqm += levelArea;
       prev.fixtureCount += 1;
       byLevel.set(idx, prev);
     }
@@ -217,13 +372,16 @@ export function computeVerticalSpaceUtilization(layout) {
         row.levelIndex === 0 ? "Bottom" : row.levelIndex === 1 ? "Eye-level" : `Level ${row.levelIndex}`,
     }));
 
-  return { levels };
+  return {
+    levels,
+    formula: "per level: (shelf floor-share ÷ level count with products on that level) ÷ total level area × 100",
+  };
 }
 
 /** §2.1 Auto-calculated vs actual capacity. */
 export function computeCapacityVariance(layout) {
   const theoretical = Number(layout?.autoCalc?.maxFixtures) || 0;
-  const actual = layoutShelves(layout).length;
+  const actual = physicalUnitCount(layoutShelves(layout));
   const variancePercent =
     theoretical > 0 ? Number((((actual - theoretical) / theoretical) * 100).toFixed(1)) : null;
   return {
@@ -231,28 +389,41 @@ export function computeCapacityVariance(layout) {
     actualFixtureCount: actual,
     variancePercent,
     nearOptimal: variancePercent != null && Math.abs(variancePercent) <= 15,
+    formula:
+      theoretical > 0
+        ? "(actualPhysicalUnits − autoCalc.maxFixtures) ÷ autoCalc.maxFixtures × 100"
+        : "autoCalc.maxFixtures missing — run Smart Generate to populate theoretical capacity",
   };
 }
 
-/** §2.2 Fixture mix by type. */
+/** §2.2 Fixture mix by type — physical units (gondola pair = 1). */
 export function computeFixtureMix(layout) {
   const shelves = layoutShelves(layout);
   const byType = new Map();
   let totalArea = 0;
+  let totalUnits = 0;
+  const seenPairs = new Set();
+
   for (const shelf of shelves) {
+    if (shelf?.pairId) {
+      if (seenPairs.has(shelf.pairId)) continue;
+      seenPairs.add(shelf.pairId);
+    }
     const type = shelf.type || "shelf";
-    const area = shelfFootprintSqm(shelf);
-    totalArea += area;
+    // floor-share halves each pair record; counting the pair once uses full footprint.
+    const footprint = shelf.pairId ? shelfFootprintSqm(shelf) : shelfFloorAreaShareSqm(shelf);
+    totalArea += footprint;
+    totalUnits += 1;
     const prev = byType.get(type) || { type, count: 0, areaSqm: 0 };
     prev.count += 1;
-    prev.areaSqm += area;
+    prev.areaSqm += footprint;
     byType.set(type, prev);
   }
-  const total = shelves.length;
+
   return [...byType.values()].map((row) => ({
     type: row.type,
     count: row.count,
-    countPercent: total > 0 ? Number(((row.count / total) * 100).toFixed(1)) : 0,
+    countPercent: totalUnits > 0 ? Number(((row.count / totalUnits) * 100).toFixed(1)) : 0,
     areaSqm: Number(row.areaSqm.toFixed(2)),
     areaSharePercent: totalArea > 0 ? Number(((row.areaSqm / totalArea) * 100).toFixed(1)) : 0,
   }));
@@ -266,7 +437,7 @@ export function computeCategorySpaceAllocation(layout, categories) {
   let totalLinearM = 0;
 
   for (const shelf of shelves) {
-    const area = shelfFootprintSqm(shelf);
+    const area = shelfFloorAreaShareSqm(shelf);
     const linear = shelfLinearMeters(shelf);
     const catIds = shelfCategoryIds(shelf);
     if (!catIds.length) continue;
@@ -305,7 +476,7 @@ export function computeCategorySpaceAllocation(layout, categories) {
     }))
     .sort((a, b) => b.areaSqm - a.areaSqm);
 
-  return { rows, totalMappedAreaSqm: Number(totalMappedArea.toFixed(2)), totalLinearMeters: Number(totalLinearM.toFixed(2)) };
+  return { rows, totalMappedAreaSqm: Number(totalMappedArea.toFixed(2)), totalLinearMeters: Number(totalLinearM.toFixed(2)), formula: "each mapped shelf floor-share split evenly across its category IDs; share% = categoryArea ÷ totalMappedArea × 100" };
 }
 
 function shelfCenter(shelf) {
@@ -370,22 +541,24 @@ export function computeCategoryAdjacency(layout, categories) {
 
 /** §4.2 Walkability / flow (entry connectivity heuristic). */
 export function computeWalkability(layout) {
-  const entries = layout?.entries || [];
+  const entries = layoutEntryPoints(layout);
   const aisles = layout?.aisles || [];
   const shelves = layoutShelves(layout);
   const hasEntries = entries.length > 0;
-  const hasAisles = aisles.length > 0;
   const unreachable = [];
 
   if (hasEntries && shelves.length) {
     for (const shelf of shelves) {
       const c = shelfCenter(shelf);
-      const nearestEntry = entries.reduce((best, e) => {
-        const ex = Number(e.x) || 0;
-        const ey = Number(e.y) || 0;
-        const d = Math.hypot(c.x - ex, c.y - ey);
-        return d < best.dist ? { dist: d, entry: e } : best;
-      }, { dist: Infinity, entry: null });
+      const nearestEntry = entries.reduce(
+        (best, e) => {
+          const ex = Number(e.x) || 0;
+          const ey = Number(e.y) || 0;
+          const d = Math.hypot(c.x - ex, c.y - ey);
+          return d < best.dist ? { dist: d, entry: e } : best;
+        },
+        { dist: Infinity, entry: null }
+      );
       if (nearestEntry.dist > 25) {
         unreachable.push({
           shelfId: shelf.id,
@@ -404,6 +577,7 @@ export function computeWalkability(layout) {
     unreachableZones: unreachable,
     unreachableCount: unreachable.length,
     statusLabel: !hasEntries ? "No entries configured" : connected ? "Connected" : "Unreachable zones flagged",
+    formula: "shelf center within 25 m Euclidean of nearest entryPoint (not full pathfinding)",
   };
 }
 
@@ -425,7 +599,7 @@ export function computeRegulatoryCompliance(layout, config, categories) {
 
   const results = rules.map((rule) => {
     if (rule.check === "entries") {
-      const pass = (layout?.entries || []).length > 0;
+      const pass = layoutEntryPoints(layout).length > 0;
       return { ...rule, pass, detail: pass ? "Entries present" : "Add entry points" };
     }
     if (rule.check === "aisles") {
@@ -442,7 +616,13 @@ export function computeRegulatoryCompliance(layout, config, categories) {
 
   const passed = results.filter((r) => r.pass).length;
   const complianceScore = results.length > 0 ? Number(((passed / results.length) * 100).toFixed(1)) : 100;
-  return { complianceScore, rulesPassed: passed, rulesTotal: results.length, rules: results };
+  return {
+    complianceScore,
+    rulesPassed: passed,
+    rulesTotal: results.length,
+    rules: results,
+    formula: "rulesPassed ÷ rulesTotal × 100",
+  };
 }
 
 /** §5.3 Approval status across layouts. */
@@ -456,7 +636,8 @@ export function computeApprovalStatus(layouts) {
   }
   const total = layouts.length;
   const pendingApproval = counts.in_review || 0;
-  const published = counts.published || counts.approved || 0;
+  // Doc §5.3: published only — do not count approved as published.
+  const published = counts.published || 0;
   return {
     counts,
     total,
@@ -468,32 +649,37 @@ export function computeApprovalStatus(layouts) {
   };
 }
 
-/** §2.4 Store capacity benchmarking (fixtures per 1000 m²). */
+/** §2.4 Store capacity benchmarking (fixtures per 1000 sq ft). */
 export function computeStoreBenchmarking(layouts, categories) {
   const rows = layouts.map((layout) => {
     const space = computeSpaceUtilization(layout);
     const density = computeFixtureDensity(layout);
-    const area1000 = space.totalStoreAreaSqm / 1000;
-    const index = area1000 > 0 ? Number((density.fixtureCount / area1000).toFixed(1)) : 0;
+    const per1000 = fixturesPer1000SqFt(density.fixtureCount, space.totalStoreAreaSqm);
     return {
       layoutId: layout.id,
       name: layout.name || layout.id,
       vertical: layout.vertical,
       fixtureCount: density.fixtureCount,
       areaSqm: space.totalStoreAreaSqm,
-      fixturesPer1000Sqm: index,
+      fixturesPer1000SqFt: per1000,
+      /** @deprecated SI — prefer fixturesPer1000SqFt */
+      fixturesPer1000Sqm: space.totalStoreAreaSqm > 0
+        ? Number((density.fixtureCount / (space.totalStoreAreaSqm / 1000)).toFixed(1))
+        : 0,
     };
   });
-  rows.sort((a, b) => b.fixturesPer1000Sqm - a.fixturesPer1000Sqm);
-  const values = rows.map((r) => r.fixturesPer1000Sqm);
+  rows.sort((a, b) => b.fixturesPer1000SqFt - a.fixturesPer1000SqFt);
+  const values = rows.map((r) => r.fixturesPer1000SqFt);
   const peerAverage =
-    values.length > 0 ? Number((values.reduce((s, v) => s + v, 0) / values.length).toFixed(1)) : 0;
+    values.length > 0 ? Number((values.reduce((s, v) => s + v, 0) / values.length).toFixed(2)) : 0;
   return {
     rows: rows.map((r) => ({
       ...r,
-      capacityIndex: peerAverage > 0 ? Number((r.fixturesPer1000Sqm / peerAverage).toFixed(2)) : 1,
+      capacityIndex: peerAverage > 0 ? Number((r.fixturesPer1000SqFt / peerAverage).toFixed(2)) : 1,
     })),
+    peerAverageFixturesPer1000SqFt: peerAverage,
     peerAverageFixturesPer1000Sqm: peerAverage,
+    formula: "fixtureCount ÷ (totalStoreAreaSqm × 10.7639 / 1000); capacityIndex = store ÷ peer average",
   };
 }
 
@@ -508,8 +694,7 @@ export function computeRolloutProgress(layouts) {
     const v = l.vertical || "unknown";
     const prev = byVertical.get(v) || { vertical: v, total: 0, published: 0 };
     prev.total += 1;
-    const s = l.status || "draft";
-    if (s === "published" || s === "approved") prev.published += 1;
+    if ((l.status || "draft") === "published") prev.published += 1;
     byVertical.set(v, prev);
   }
   return {
@@ -520,6 +705,7 @@ export function computeRolloutProgress(layouts) {
       ...row,
       percent: row.total > 0 ? Number(((row.published / row.total) * 100).toFixed(1)) : 0,
     })),
+    formula: "publishedLayouts ÷ totalLayouts × 100 (approved alone does not count)",
   };
 }
 
@@ -662,6 +848,9 @@ export function computeExecutiveKpis(parts) {
     productCoveragePercent: parts.productCoverage?.coveragePercent ?? null,
     fixtureCount: parts.fixtureDensity?.fixtureCount ?? 0,
     capacityVariancePercent: parts.capacity?.variancePercent ?? null,
+    storageVolumeFillPercent: parts.storageVolume?.fillPercent ?? 0,
+    availableVolumeM3: parts.storageVolume?.availableVolumeM3 ?? 0,
+    overloadedShelfCount: parts.weightLoad?.overloadedShelfCount ?? 0,
   };
 }
 
@@ -675,6 +864,8 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
         ? categories
         : [];
 
+  const productList = asListProducts(listProducts)() || [];
+
   const space = computeSpaceUtilization(layout);
   const fixtureDensity = computeFixtureDensity(layout);
   const fixtureDensityByZone = computeFixtureDensityByZone(layout);
@@ -683,6 +874,11 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
   const capacity = computeCapacityVariance(layout);
   const fixtureMix = computeFixtureMix(layout);
   const categorySpace = computeCategorySpaceAllocation(layout, categoryList);
+  const storageVolume = computeStorageVolume(layout, productList);
+  const categoryVolume = computeCategoryVolumeAllocation(layout, categoryList, productList, (id) =>
+    resolveCategoryId(id, categoryList)
+  );
+  const weightLoad = computeWeightLoadReport(layout, productList);
   const aisleCompliance = computeAisleCompliance(layout, config);
   const categoryAdjacency = computeCategoryAdjacency(layout, categoryList);
   const walkability = computeWalkability(layout);
@@ -699,16 +895,15 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     productCoverage,
     fixtureDensity,
     capacity,
+    storageVolume,
+    weightLoad,
   });
 
   const footprintSqm = Number(
     (Number(layout.widthMeters || 0) * Number(layout.depthMeters || 0)).toFixed(2)
   );
-  const usedPercentOfUsable =
-    space.totalStoreAreaSqm > 0
-      ? (space.allocatedAreaSqm / space.totalStoreAreaSqm) * 100
-      : 0;
-  const freeSpacePercent = Number(Math.max(0, Math.min(100, 100 - usedPercentOfUsable)).toFixed(1));
+  // Align legacy free-space with §1.1 vacancy (unused ÷ usable).
+  const freeSpacePercent = space.vacancyPercent ?? 0;
 
   // Legacy allocationByCategory (shelf counts) for backward compatibility
   const allocationByCategory = categorySpace.rows.map((r) => ({
@@ -756,7 +951,7 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     // Legacy fields
     utilizationPercent: space.utilizationPercent,
     footprintSqm,
-    usableAreaSqm: space.totalStoreAreaSqm,
+    usableAreaSqm: space.usableStoreAreaSqm,
     usedAreaSqm: space.allocatedAreaSqm,
     freeSpacePercent,
     fixtureCount: fixtureDensity.fixtureCount,
@@ -774,6 +969,9 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     capacityVariance: capacity,
     fixtureMix,
     categorySpaceAllocation: categorySpace,
+    storageVolume,
+    categoryVolumeAllocation: categoryVolume,
+    weightLoad,
     categoryAdjacency,
     walkability,
     regulatoryCompliance,

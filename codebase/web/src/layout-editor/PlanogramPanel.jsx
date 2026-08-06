@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { filterProductsForShelf } from "./categoryFilter.js";
+import { catalogProductDimensionsInches } from "../catalog/productDimensions.js";
+import { formatInchesFromMeters } from "../units.js";
+import { weightWarningMessage } from "../shelfLoad.js";
 
 /** Per-level planogram; products filtered by shelf category + children. */
 export default function PlanogramPanel({
@@ -90,7 +93,9 @@ export default function PlanogramPanel({
       },
     });
     onLayoutUpdated(updated);
-    toast?.(`Product placed on level ${levelIndex}`);
+    const overload = weightWarningMessage(updated);
+    if (overload) toast?.(overload, { type: "warning" });
+    else toast?.(`Product placed on level ${levelIndex}`);
   }
 
   async function removePlacement(placementId) {
@@ -119,7 +124,7 @@ export default function PlanogramPanel({
         {levels.map((lv, idx) => (
           <option key={lv.levelIndex ?? idx} value={lv.levelIndex ?? idx}>
             Level {lv.levelIndex ?? idx}
-            {lv.heightFromFloorMeters != null ? ` · ${lv.heightFromFloorMeters} m` : ""}
+            {lv.heightFromFloorMeters != null ? ` · ${formatInchesFromMeters(lv.heightFromFloorMeters)} high` : ""}
           </option>
         ))}
       </select>
@@ -145,7 +150,7 @@ export default function PlanogramPanel({
       {preview ? (
         <div className="mono" style={{ fontSize: 11.5, marginTop: 8, color: "#6b7280" }}>
           Max facings {preview.maxFacings}
-          {preview.assumedDimensions ? " · assumed size 0.2×0.25 m" : ""}
+          {preview.assumedDimensions ? " · assumed size 8\" × 10\"" : ""}
         </div>
       ) : null}
       <label style={{ fontSize: 11, color: "#9aa1ab", fontWeight: 600, marginTop: 8, display: "block" }}>
@@ -183,8 +188,15 @@ export default function PlanogramPanel({
               key={p.id}
               style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}
             >
-              <span style={{ fontSize: 12.5 }}>
-                {prod?.name || p.productId} · {p.facings}/{p.maxFacings}
+              <span style={{ fontSize: 12.5, display: "flex", flexDirection: "column", gap: 2 }}>
+                <span>
+                  {prod?.name || p.productId} · {p.facings}/{p.maxFacings}
+                </span>
+                {prod ? (
+                  <span className="mono muted" style={{ fontSize: 11 }}>
+                    {catalogProductDimensionsInches(prod).label}
+                  </span>
+                ) : null}
               </span>
               {!editDisabled ? (
                 <button
@@ -212,6 +224,7 @@ export default function PlanogramPanel({
           return (
             <div key={p.id} className="mono" style={{ fontSize: 11, marginBottom: 4, color: "#6b7280" }}>
               L{p.levelIndex}: {prod?.name || p.productId} ×{p.facings}
+              {prod ? ` · ${catalogProductDimensionsInches(prod).label}` : ""}
             </div>
           );
         })

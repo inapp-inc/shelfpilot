@@ -3,7 +3,11 @@ import { FIXTURE_TYPES, ZONE_TYPES } from "../referenceCatalog.js";
 import ShelfBadge from "./ShelfBadge.jsx";
 import ShelfHoverTooltip from "./ShelfHoverTooltip.jsx";
 import { isDoubleSided, isPairedShelf, mergePairedShelfForCanvas, normalizeShelfUI, shelfCanvasFaceLabel } from "./shelfFaces.js";
-import { emojiForCategory } from "../storeTypes.js";
+import { emojiForCategoryId } from "../storeTypes.js";
+import { categoryChipStyle, colorForShelfFace, withAlpha } from "../categoryColors.js";
+import { OBSTACLE_TYPES } from "../obstacleTypes.js";
+import { resolveAssetUrl } from "../assetUrl.js";
+import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import {
   shelfLabelFitsFaceEdge,
   shelfLabelFitsGondolaFace,
@@ -29,6 +33,7 @@ import {
 import { MISSING_PRODUCT_MIME, parseMissingProduct } from "./missingProductDrag.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
+const snapFine = (v) => Math.max(0, Math.round(v * 20) / 20);
 
 const EDGE_HIT_PX = 8;
 
@@ -116,8 +121,25 @@ function isPlacerTool(tool, fixtureTypeKeys) {
     tool === "aisle-h" ||
     tool === "aisle-v" ||
     tool === "entry" ||
-    (typeof tool === "string" && tool.startsWith("zone:"))
+    isZoneTool(tool)
   );
+}
+
+function isZoneTool(tool) {
+  return typeof tool === "string" && tool.startsWith("zone:");
+}
+
+function zoneToolType(tool) {
+  return tool.slice("zone:".length);
+}
+
+function normalizeDrawRect(x0, y0, x1, y1) {
+  return {
+    x: Math.min(x0, x1),
+    y: Math.min(y0, y1),
+    w: Math.max(0.1, Math.abs(x1 - x0)),
+    h: Math.max(0.1, Math.abs(y1 - y0)),
+  };
 }
 
 function screenDeltaToLocal(dx, dy, rotationDeg) {
@@ -247,6 +269,7 @@ export default function Canvas2D({
   setDragging,
   onDropTool,
   onPlaceClick,
+  onPlaceZoneRect,
   onResize,
   onRotateShelf,
   categories,
@@ -269,9 +292,12 @@ export default function Canvas2D({
   const hoverTimerRef = useRef(null);
   const [hover, setHover] = useState(null);
   const [hoverAnchor, setHoverAnchor] = useState(null);
+  const [zoneDraw, setZoneDraw] = useState(null);
+  const zoneDrawRef = useRef(null);
   const CLOSE_VERTEX_M = 0.45;
   const drawing = paletteTool === "draw";
   const editingArea = paletteTool === "edit-area";
+  const zoneDrawing = isZoneTool(paletteTool);
   const computedBounds = useMemo(
     () =>
       layoutCanvasBounds(layout, {
@@ -354,6 +380,37 @@ export default function Canvas2D({
     return pointInPolygon(x, y, poly);
   }
 
+  useEffect(() => {
+    if (!zoneDraw) return undefined;
+    const onMove = (e) => {
+      const pt = layoutPointFromClient(e.clientX, e.clientY);
+      if (!zoneDrawRef.current) return;
+      zoneDrawRef.current = { ...zoneDrawRef.current, currentX: pt.x, currentY: pt.y };
+      setZoneDraw({ ...zoneDrawRef.current });
+    };
+    const onUp = (e) => {
+      const prev = zoneDrawRef.current;
+      zoneDrawRef.current = null;
+      setZoneDraw(null);
+      if (!prev) return;
+      const pt = layoutPointFromClient(e.clientX, e.clientY);
+      let { x, y, w, h } = normalizeDrawRect(prev.startX, prev.startY, pt.x, pt.y);
+      if (w < 0.5 && h < 0.5) {
+        w = 3;
+        h = 3;
+        x = prev.startX;
+        y = prev.startY;
+      }
+      onPlaceZoneRect?.(prev.type, x, y, w, h);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [Boolean(zoneDraw), onPlaceZoneRect, scale, bounds]);
+
   // ---- Resize gesture (zones + aisles + shelves) ----
   const [resize, setResize] = useState(null);
   const [resizePreview, setResizePreview] = useState(null);
@@ -432,10 +489,12 @@ export default function Canvas2D({
         if (dir.includes("n")) y = r.orig.y + (r.orig.h - r.min.h);
         h = r.min.h;
       }
-      x = snap(x);
-      y = snap(y);
-      w = Math.max(r.min.w, snap(w));
-      h = Math.max(r.min.h, snap(h));
+      // Columns are far smaller than fixtures, so they snap to 5 cm instead of 50 cm.
+      const snapFn = r.kind === "obstacle" ? snapFine : snap;
+      x = snapFn(x);
+      y = snapFn(y);
+      w = Math.max(r.min.w, snapFn(w));
+      h = Math.max(r.min.h, snapFn(h));
       if (r.kind !== "shelf" && !rectFits(x, y, w, h)) return;
       if (r.kind === "aisle") {
         const tentative =
@@ -465,7 +524,7 @@ export default function Canvas2D({
       const pv = previewRef.current;
       if (r && pv && pv.id === r.id && onResize) {
         let patch;
-        if (r.kind === "zone") {
+        if (r.kind === "zone" || r.kind === "obstacle") {
           patch = { x: pv.x, y: pv.y, widthMeters: pv.w, depthMeters: pv.h };
         } else if (r.kind === "shelf") {
           patch = {
@@ -786,7 +845,7 @@ export default function Canvas2D({
               backgroundImage: "none",
               border: "none",
             }),
-        cursor: drawing || editingArea || isPlacerTool(paletteTool, fixtureTypeKeys) ? "crosshair" : "default",
+        cursor: drawing || editingArea || zoneDrawing || isPlacerTool(paletteTool, fixtureTypeKeys) ? "crosshair" : "default",
       }}
       onDragOver={(e) => {
         if (handleMissingProductDragOver(e)) return;
@@ -813,6 +872,21 @@ export default function Canvas2D({
         if (e.target !== e.currentTarget) return;
         if (drawing) return;
         if (editingArea) return;
+        if (zoneDrawing && !editDisabled) {
+          const { x, y } = layoutPointFromEvent(e);
+          if (!insideZone(x, y)) return;
+          e.preventDefault();
+          const draft = {
+            type: zoneToolType(paletteTool),
+            startX: x,
+            startY: y,
+            currentX: x,
+            currentY: y,
+          };
+          zoneDrawRef.current = draft;
+          setZoneDraw(draft);
+          return;
+        }
         if (paletteTool === "select" || editDisabled) setSelection(null);
       }}
       onMouseMove={(e) => {
@@ -842,11 +916,38 @@ export default function Canvas2D({
           return;
         }
         if (paletteTool === "select") return;
+        if (isZoneTool(paletteTool)) return;
         if (!isPlacerTool(paletteTool, fixtureTypeKeys)) return;
         if (!insideZone(x, y)) return;
         onPlaceClick(paletteTool, x, y);
       }}
     >
+      {layout.floorPlan?.url && layout.floorPlan.visible !== false ? (() => {
+        const fp = layout.floorPlan;
+        const st = toStageCoords(fp.x || 0, fp.y || 0, bounds);
+        return (
+          <img
+            className="floor-plan-underlay"
+            src={resolveAssetUrl(fp.url)}
+            alt=""
+            aria-hidden
+            draggable={false}
+            style={{
+              position: "absolute",
+              left: st.x * scale,
+              top: st.y * scale,
+              width: Math.max(1, (fp.widthMeters || 10) * scale),
+              height: Math.max(1, (fp.depthMeters || 8) * scale),
+              transform: fp.rotationDeg ? `rotate(${fp.rotationDeg}deg)` : undefined,
+              transformOrigin: "top left",
+              opacity: fp.opacity ?? 0.5,
+              zIndex: 0,
+              pointerEvents: "none",
+              userSelect: "none",
+            }}
+          />
+        );
+      })() : null}
       {showFixtureFloor ? (
         <div
           className="fixture-zone-floor"
@@ -1035,6 +1136,33 @@ export default function Canvas2D({
         </svg>
       ) : null}
 
+      {zoneDraw ? (() => {
+        const meta = ZONE_TYPES[zoneDraw.type] || ZONE_TYPES.special;
+        const color = meta.color;
+        const rect = normalizeDrawRect(zoneDraw.startX, zoneDraw.startY, zoneDraw.currentX, zoneDraw.currentY);
+        const st = toStageCoords(rect.x, rect.y, bounds);
+        return (
+          <div
+            className="zone zone-draw-preview"
+            style={{
+              left: st.x * scale,
+              top: st.y * scale,
+              width: Math.max(12, rect.w * scale),
+              height: Math.max(12, rect.h * scale),
+              background: `${color}33`,
+              border: `2px dashed ${color}`,
+              zIndex: 9,
+              pointerEvents: "none",
+            }}
+            aria-hidden
+          >
+            <span className="zone-badge" style={{ background: color }}>
+              {meta.label}
+            </span>
+          </div>
+        );
+      })() : null}
+
       {(layout.zones || []).map((z) => {
         const meta = ZONE_TYPES[z.type] || ZONE_TYPES.special;
         const color = z.color || meta.color;
@@ -1104,6 +1232,92 @@ export default function Canvas2D({
                       orientation: null,
                       orig: { x: z.x || 0, y: z.y || 0, w: z.widthMeters || 1, h: z.depthMeters || 1 },
                       min: { w: 1, h: 1 },
+                    },
+                    dir,
+                    e
+                  )
+                }
+              />
+            ) : null}
+          </div>
+        );
+      })}
+
+      {(layout.obstacles || []).map((o) => {
+        const meta = OBSTACLE_TYPES[o.type] || OBSTACLE_TYPES.column;
+        const color = o.color || meta.color;
+        const selected = selection?.kind === "obstacle" && selection.id === o.id;
+        const pv = resizePreview && resizePreview.id === o.id ? resizePreview : null;
+        const ox = pv ? pv.x : o.x || 0;
+        const oy = pv ? pv.y : o.y || 0;
+        const ow = pv ? pv.w : o.widthMeters || 0.4;
+        const od = pv ? pv.h : o.depthMeters || 0.4;
+        const st = toStageCoords(ox, oy, bounds);
+        return (
+          <div
+            key={o.id}
+            className={`obstacle obstacle-${o.type}${selected ? " selected" : ""}`}
+            title={`${o.name || meta.label} · ${ow.toFixed(2)}×${od.toFixed(2)} m — blocks fixtures`}
+            style={{
+              position: "absolute",
+              left: st.x * scale,
+              top: st.y * scale,
+              width: Math.max(6, ow * scale),
+              height: Math.max(6, od * scale),
+              background: `repeating-linear-gradient(45deg, ${withAlpha(color, 0.85)} 0, ${withAlpha(color, 0.85)} 5px, ${withAlpha(color, 0.55)} 5px, ${withAlpha(color, 0.55)} 10px)`,
+              border: `1.5px solid ${color}`,
+              borderRadius: o.type === "column" ? 3 : 2,
+              boxShadow: selected ? `0 0 0 3px ${withAlpha(color, 0.4)}` : "none",
+              zIndex: selected ? 9 : 7,
+              cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
+              pointerEvents: drawing || editDisabled ? "none" : "auto",
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              if (drawing) return;
+              setSelection({ kind: "obstacle", id: o.id });
+              if (editDisabled || paletteTool !== "select") return;
+              const dir = hitTestResizeEdge(e, e.currentTarget);
+              if (dir && showHandles) {
+                startResize(
+                  {
+                    kind: "obstacle",
+                    id: o.id,
+                    orientation: null,
+                    orig: { x: o.x || 0, y: o.y || 0, w: o.widthMeters || 0.4, h: o.depthMeters || 0.4 },
+                    min: { w: 0.1, h: 0.1 },
+                  },
+                  dir,
+                  e
+                );
+                return;
+              }
+              if (!canDragFixtures) return;
+              setDragging({
+                kind: "obstacle",
+                id: o.id,
+                layoutId: layout.id,
+                startClientX: e.clientX,
+                startClientY: e.clientY,
+                origX: o.x || 0,
+                origY: o.y || 0,
+              });
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {ow * scale >= 26 && od * scale >= 20 ? (
+              <span className="obstacle-label mono">{o.name || meta.label}</span>
+            ) : null}
+            {selected && showHandles ? (
+              <ResizeHandles
+                onStart={(dir, e) =>
+                  startResize(
+                    {
+                      kind: "obstacle",
+                      id: o.id,
+                      orientation: null,
+                      orig: { x: o.x || 0, y: o.y || 0, w: o.widthMeters || 0.4, h: o.depthMeters || 0.4 },
+                      min: { w: 0.1, h: 0.1 },
                     },
                     dir,
                     e
@@ -1231,29 +1445,29 @@ export default function Canvas2D({
         const paired = isPairedShelf(f) && !f.pairDisplay;
         const splitAlongWidth = gondolaSplitAlongWidth(rot);
         const faceLayout = gondolaFaceLayout(splitAlongWidth);
-        const fillColor =
-          f.pairDisplay
-            ? "transparent"
-            : paired && f.pairRole === "back"
-              ? f.color || faceA?.color
-                ? `${f.color || faceA.color}55`
-                : "rgba(14,165,233,0.22)"
-              : paired
-                ? f.color || faceA?.color
-                  ? `${f.color || faceA.color}55`
-                  : "rgba(163,10,42,0.18)"
-                : dual && faceA?.color && faceB?.color
-                  ? splitAlongWidth
-                    ? `linear-gradient(to right, ${faceA.color}44 50%, ${faceB.color}44 50%)`
-                    : `linear-gradient(to bottom, ${faceA.color}44 50%, ${faceB.color}44 50%)`
-                  : dual && faceA?.color
-                    ? `${faceA.color}33`
-                    : f.color ||
-                      (zone === "chilled"
-                        ? "rgba(14,165,233,0.18)"
-                        : zone === "frozen"
-                          ? "rgba(56,189,248,0.22)"
-                          : "rgba(163,10,42,0.12)");
+        // Shelves are tinted by the category they merchandise; the temperature-zone
+        // tint is only a fallback for unmapped fixtures.
+        const colorA = colorForShelfFace(f, "A", categories);
+        const colorB = colorForShelfFace(f, "B", categories);
+        const unmappedFill =
+          zone === "chilled"
+            ? "rgba(14,165,233,0.18)"
+            : zone === "frozen"
+              ? "rgba(56,189,248,0.22)"
+              : "rgba(163,10,42,0.12)";
+        const fillColor = f.pairDisplay
+          ? "transparent"
+          : paired
+            ? colorA
+              ? withAlpha(colorA, 0.34)
+              : unmappedFill
+            : dual && colorA && colorB && colorA !== colorB
+              ? splitAlongWidth
+                ? `linear-gradient(to right, ${withAlpha(colorA, 0.28)} 50%, ${withAlpha(colorB, 0.28)} 50%)`
+                : `linear-gradient(to bottom, ${withAlpha(colorA, 0.28)} 50%, ${withAlpha(colorB, 0.28)} 50%)`
+              : colorA
+                ? withAlpha(colorA, 0.24)
+                : unmappedFill;
         const segments =
           (dual && f.pairDisplay
             ? f.faces?.find((face) => face.segments?.length)?.segments
@@ -1311,10 +1525,10 @@ export default function Canvas2D({
                   ? "#dc2626"
                   : showUnitSelection
                     ? "#A30A2A"
-                    : paired && f.pairRole === "back"
-                      ? "#0284c7"
-                      : f.pairDisplay
-                        ? "#334155"
+                    : f.pairDisplay
+                      ? "#334155"
+                      : colorA || colorB
+                        ? colorA || colorB
                         : zone === "chilled"
                           ? "#0ea5e9"
                           : zone === "frozen"
@@ -1334,8 +1548,13 @@ export default function Canvas2D({
               <>
                 <div
                   className="gondola-face-pane gondola-face-a"
-                  title={`${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)} · front aisle`}
-                  style={faceLayout.front}
+                  title={`${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)} · front aisle${faceA?.categoryId ? ` · ${categoryLabel(categories, faceA.categoryId)}` : ""}`}
+                  style={{
+                    ...faceLayout.front,
+                    ...(colorA
+                      ? { background: withAlpha(colorA, 0.34), borderColor: colorA }
+                      : null),
+                  }}
                 >
                   {showGondolaFaceLabels ? (
                     <span className="gondola-face-label mono">
@@ -1343,15 +1562,24 @@ export default function Canvas2D({
                     </span>
                   ) : null}
                   {showGondolaFaceLabels && faceA?.categoryId ? (
-                    <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
-                      {emojiForCategory(faceA.categoryId, null, f.temperatureZone)}
+                    <span
+                      className="gondola-category-emoji category-chip"
+                      style={{ position: "absolute", top: 2, left: 3, ...categoryChipStyle(colorA) }}
+                      aria-hidden
+                    >
+                      {emojiForCategoryId(categories, faceA.categoryId)}
                     </span>
                   ) : null}
                 </div>
                 <div
                   className="gondola-face-pane gondola-face-b"
-                  title={`${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)} · back aisle`}
-                  style={faceLayout.back}
+                  title={`${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)} · back aisle${faceB?.categoryId ? ` · ${categoryLabel(categories, faceB.categoryId)}` : ""}`}
+                  style={{
+                    ...faceLayout.back,
+                    ...(colorB
+                      ? { background: withAlpha(colorB, 0.34), borderColor: colorB }
+                      : null),
+                  }}
                 >
                   {showGondolaFaceLabels ? (
                     <span className="gondola-face-label mono">
@@ -1359,8 +1587,12 @@ export default function Canvas2D({
                     </span>
                   ) : null}
                   {showGondolaFaceLabels && faceB?.categoryId ? (
-                    <span className="gondola-category-emoji" style={{ position: "absolute", top: 2, left: 3, fontSize: 11 }} aria-hidden>
-                      {emojiForCategory(faceB.categoryId, null, f.temperatureZone)}
+                    <span
+                      className="gondola-category-emoji category-chip"
+                      style={{ position: "absolute", top: 2, left: 3, ...categoryChipStyle(colorB) }}
+                      aria-hidden
+                    >
+                      {emojiForCategoryId(categories, faceB.categoryId)}
                     </span>
                   ) : null}
                 </div>
@@ -1442,6 +1674,38 @@ export default function Canvas2D({
                 aisles={layout.aisles}
                 allShelves={layout.shelves}
               />
+            ) : null}
+            {!f.pairDisplay && (faceA?.categoryId || f.categoryId) ? (
+              <span
+                className="gondola-category-emoji category-chip"
+                style={{
+                  position: "absolute",
+                  top: 2,
+                  left: 3,
+                  pointerEvents: "none",
+                  ...categoryChipStyle(colorA),
+                }}
+                aria-hidden
+                title={categoryLabel(categories, faceA?.categoryId || f.categoryId)}
+              >
+                {emojiForCategoryId(categories, faceA?.categoryId || f.categoryId)}
+              </span>
+            ) : null}
+            {dual && !f.pairDisplay && faceB?.categoryId && showFaceEdgeLabels ? (
+              <span
+                className="gondola-category-emoji category-chip"
+                style={{
+                  position: "absolute",
+                  bottom: 2,
+                  right: 3,
+                  pointerEvents: "none",
+                  ...categoryChipStyle(colorB),
+                }}
+                aria-hidden
+                title={categoryLabel(categories, faceB.categoryId)}
+              >
+                {emojiForCategoryId(categories, faceB.categoryId)}
+              </span>
             ) : null}
             </div>
           </div>

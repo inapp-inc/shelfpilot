@@ -1,4 +1,5 @@
 import { normalizeCategoryKey, resolveCategoryId } from "./layout-editor/categoryFilter.js";
+import { resolveCategoryStorageType } from "./storageType.js";
 
 /** Store type registry — UI label → vertical key + default category mix templates. */
 
@@ -15,7 +16,6 @@ export const NAV_MODULES = [
   { id: "dashboard", emoji: "📊", label: "Dashboard", path: "/dashboard", color: "#C4183A" },
   { id: "layouts", emoji: "🗺️", label: "Layouts", path: "/layouts", color: "#0ea5e9" },
   { id: "catalog", emoji: "📦", label: "Products", path: "/products", color: "#16a34a" },
-  { id: "analytics", emoji: "📈", label: "Analytics", path: "/analytics", color: "#f59e0b" },
   { id: "admin", emoji: "⚙️", label: "Admin", path: "/admin", color: "#a855f7" },
 ];
 
@@ -82,18 +82,20 @@ const FROZEN_PATTERNS = /frozen|hm-frozen/i;
 const SEASONAL_PATTERNS = /season|promo|hm-seasonal|cv-snacks/i;
 const PHARMA_PATTERNS = /otc|prescription|rx|vitamin|💊/i;
 const BEAUTY_PATTERNS = /skin|makeup|fragrance|hair/i;
-const APPAREL_PATTERNS = /women|men|wear|foot|accessor/i;
+const ELECTRONICS_PATTERNS = /electronic|electronics|tech|appliance|computer|phone|tv|audio/i;
+const APPAREL_PATTERNS = /apparel|womens|mens|footwear|accessories|clothing|wear/i;
 
-/** Infer emoji from category name/id and temperature zone. */
-export function emojiForCategory(categoryId, categoryName, temperatureZone, templateRows = []) {
+/** Infer emoji from category name/id; storageType is category storage (not shelf fixture zone). */
+export function emojiForCategory(categoryId, categoryName, storageType, templateRows = []) {
   const hay = `${categoryId || ""} ${categoryName || ""}`.toLowerCase();
   for (const row of templateRows || []) {
     if (row.categoryId && row.categoryId === categoryId) return row.emoji || "📦";
     const tl = String(row.label || "").toLowerCase();
     if (tl && hay.includes(tl.split("/")[0].trim().slice(0, 6))) return row.emoji || "📦";
   }
-  if (FROZEN_PATTERNS.test(hay) || temperatureZone === "frozen") return "❄️";
-  if (CHILLED_PATTERNS.test(hay) || temperatureZone === "chilled") return "🧊";
+  if (ELECTRONICS_PATTERNS.test(hay)) return "📱";
+  if (FROZEN_PATTERNS.test(hay)) return "❄️";
+  if (CHILLED_PATTERNS.test(hay)) return "🧊";
   if (PRODUCE_PATTERNS.test(hay)) return "🥬";
   if (GROCERY_PATTERNS.test(hay)) return "🛒";
   if (SEASONAL_PATTERNS.test(hay)) return "🏷️";
@@ -102,7 +104,18 @@ export function emojiForCategory(categoryId, categoryName, temperatureZone, temp
   if (/personal|care|toiletries/.test(hay)) return "🧴";
   if (BEAUTY_PATTERNS.test(hay)) return "✨";
   if (APPAREL_PATTERNS.test(hay)) return "👔";
+  const zone = storageType || "ambient";
+  if (zone === "frozen") return "❄️";
+  if (zone === "chilled") return "🧊";
   return "📦";
+}
+
+/** Emoji for a catalog category — uses category storage type, never shelf fixture temperature. */
+export function emojiForCategoryId(categories, categoryId, templateRows = []) {
+  if (!categoryId) return "📦";
+  const cat = (categories || []).find((c) => c.id === categoryId);
+  const storage = resolveCategoryStorageType(categoryId, categories);
+  return emojiForCategory(categoryId, cat?.name, storage, templateRows);
 }
 
 function temperatureZoneForName(name) {

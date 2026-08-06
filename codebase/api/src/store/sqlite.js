@@ -109,6 +109,11 @@ function migrate(db) {
   } catch {
     /* already present */
   }
+  try {
+    db.exec("ALTER TABLE categories ADD COLUMN storage_type TEXT NOT NULL DEFAULT 'ambient'");
+  } catch {
+    /* already present */
+  }
 }
 
 const DEFAULT_CONFIGS = {
@@ -182,27 +187,27 @@ const DEFAULT_USERS = [
 ];
 
 const DEFAULT_CATEGORIES = [
-  { id: "otc", name: "OTC Medicines", vertical: "pharmacy", parentId: null, color: "#0ea5e9" },
-  { id: "painrelief", name: "Pain Relief", vertical: "pharmacy", parentId: "otc", color: "#38bdf8" },
-  { id: "rx", name: "Prescription", vertical: "pharmacy", parentId: null, color: "#a855f7" },
-  { id: "electronics", name: "Electronics", vertical: "retail", parentId: null, color: "#3b82f6" },
-  { id: "grocery", name: "Grocery", vertical: "retail", parentId: null, color: "#16a34a" },
-  { id: "fresh-produce", name: "Fresh Produce", vertical: "retail", parentId: null, color: "#22c55e" },
-  { id: "chilled", name: "Chilled", vertical: "retail", parentId: null, color: "#0ea5e9" },
-  { id: "frozen", name: "Frozen", vertical: "retail", parentId: null, color: "#38bdf8" },
-  { id: "hm-fresh", name: "Fresh Produce", vertical: "hypermarket", parentId: null, color: "#22c55e" },
-  { id: "hm-grocery", name: "Grocery", vertical: "hypermarket", parentId: null, color: "#16a34a" },
-  { id: "hm-chilled", name: "Chilled", vertical: "hypermarket", parentId: null, color: "#0ea5e9" },
-  { id: "hm-frozen", name: "Frozen", vertical: "hypermarket", parentId: null, color: "#38bdf8" },
-  { id: "hm-seasonal", name: "Seasonal", vertical: "hypermarket", parentId: null, color: "#ea580c" },
-  { id: "ph-chilled", name: "Chilled", vertical: "pharmacy", parentId: null, color: "#0ea5e9" },
-  { id: "cv-grocery", name: "Grocery", vertical: "convenience", parentId: null, color: "#16a34a" },
-  { id: "cv-chilled", name: "Chilled", vertical: "convenience", parentId: null, color: "#0ea5e9" },
-  { id: "cv-snacks", name: "Snacks", vertical: "convenience", parentId: null, color: "#ea580c" },
-  { id: "cv-personal", name: "Personal Care", vertical: "convenience", parentId: null, color: "#16a34a" },
-  { id: "womens", name: "Womenswear", vertical: "apparel", parentId: null, color: "#db2777" },
-  { id: "mens", name: "Menswear", vertical: "apparel", parentId: null, color: "#A30A2A" },
-  { id: "skincare", name: "Skincare", vertical: "beauty", parentId: null, color: "#f43f5e" },
+  { id: "otc", name: "OTC Medicines", vertical: "pharmacy", parentId: null, color: "#0ea5e9", storageType: "ambient" },
+  { id: "painrelief", name: "Pain Relief", vertical: "pharmacy", parentId: "otc", color: "#38bdf8", storageType: "ambient" },
+  { id: "rx", name: "Prescription", vertical: "pharmacy", parentId: null, color: "#a855f7", storageType: "ambient" },
+  { id: "electronics", name: "Electronics", vertical: "retail", parentId: null, color: "#3b82f6", storageType: "ambient" },
+  { id: "grocery", name: "Grocery", vertical: "retail", parentId: null, color: "#16a34a", storageType: "ambient" },
+  { id: "fresh-produce", name: "Fresh Produce", vertical: "retail", parentId: null, color: "#22c55e", storageType: "ambient" },
+  { id: "chilled", name: "Chilled", vertical: "retail", parentId: null, color: "#0ea5e9", storageType: "chilled" },
+  { id: "frozen", name: "Frozen", vertical: "retail", parentId: null, color: "#38bdf8", storageType: "frozen" },
+  { id: "hm-fresh", name: "Fresh Produce", vertical: "hypermarket", parentId: null, color: "#22c55e", storageType: "ambient" },
+  { id: "hm-grocery", name: "Grocery", vertical: "hypermarket", parentId: null, color: "#16a34a", storageType: "ambient" },
+  { id: "hm-chilled", name: "Chilled", vertical: "hypermarket", parentId: null, color: "#0ea5e9", storageType: "chilled" },
+  { id: "hm-frozen", name: "Frozen", vertical: "hypermarket", parentId: null, color: "#38bdf8", storageType: "frozen" },
+  { id: "hm-seasonal", name: "Seasonal", vertical: "hypermarket", parentId: null, color: "#ea580c", storageType: "ambient" },
+  { id: "ph-chilled", name: "Chilled", vertical: "pharmacy", parentId: null, color: "#0ea5e9", storageType: "chilled" },
+  { id: "cv-grocery", name: "Grocery", vertical: "convenience", parentId: null, color: "#16a34a", storageType: "ambient" },
+  { id: "cv-chilled", name: "Chilled", vertical: "convenience", parentId: null, color: "#0ea5e9", storageType: "chilled" },
+  { id: "cv-snacks", name: "Snacks", vertical: "convenience", parentId: null, color: "#ea580c", storageType: "ambient" },
+  { id: "cv-personal", name: "Personal Care", vertical: "convenience", parentId: null, color: "#16a34a", storageType: "ambient" },
+  { id: "womens", name: "Womenswear", vertical: "apparel", parentId: null, color: "#db2777", storageType: "ambient" },
+  { id: "mens", name: "Menswear", vertical: "apparel", parentId: null, color: "#A30A2A", storageType: "ambient" },
+  { id: "skincare", name: "Skincare", vertical: "beauty", parentId: null, color: "#f43f5e", storageType: "ambient" },
 ];
 
 const DEFAULT_PRODUCTS = [
@@ -220,7 +225,7 @@ function seedIfEmpty(db) {
   );
   const insertConfig = db.prepare("INSERT INTO configs (vertical, payload) VALUES (?, ?)");
   const insertCat = db.prepare(
-    "INSERT INTO categories (id, name, vertical, parent_id, color) VALUES (?, ?, ?, ?, ?)"
+    "INSERT INTO categories (id, name, vertical, parent_id, color, storage_type) VALUES (?, ?, ?, ?, ?, ?)"
   );
   const insertProd = db.prepare(
     "INSERT INTO products (id, name, sku, category_id, attributes) VALUES (?, ?, ?, ?, ?)"
@@ -235,7 +240,7 @@ function seedIfEmpty(db) {
       insertConfig.run(vertical, JSON.stringify(payload));
     }
     for (const c of DEFAULT_CATEGORIES) {
-      insertCat.run(c.id, c.name, c.vertical, c.parentId, c.color);
+      insertCat.run(c.id, c.name, c.vertical, c.parentId, c.color, c.storageType || "ambient");
     }
     for (const p of DEFAULT_PRODUCTS) {
       insertProd.run(p.id, p.name, p.sku, p.categoryId, JSON.stringify(p.attributes || {}));
@@ -282,6 +287,8 @@ function layoutToPayload(layout) {
     fixtures: n.fixtures || [],
     zones: n.zones || [],
     entryPoints: n.entryPoints || [],
+    obstacles: n.obstacles || [],
+    floorPlan: n.floorPlan || null,
     mappings: n.mappings || [],
     aisleMappings: n.aisleMappings || [],
     shelfMappings: n.shelfMappings || [],
@@ -431,20 +438,20 @@ export const repo = {
     if (vertical) {
       return getDb()
         .prepare(
-          "SELECT id, name, vertical, parent_id AS parentId, color FROM categories WHERE vertical = ?"
+          "SELECT id, name, vertical, parent_id AS parentId, color, storage_type AS storageType FROM categories WHERE vertical = ?"
         )
         .all(String(vertical).toLowerCase());
     }
     return getDb()
-      .prepare("SELECT id, name, vertical, parent_id AS parentId, color FROM categories")
+      .prepare("SELECT id, name, vertical, parent_id AS parentId, color, storage_type AS storageType FROM categories")
       .all();
   },
   insertCategory(cat) {
     getDb()
       .prepare(
-        "INSERT INTO categories (id, name, vertical, parent_id, color) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO categories (id, name, vertical, parent_id, color, storage_type) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .run(cat.id, cat.name, cat.vertical, cat.parentId || null, cat.color || "#A30A2A");
+      .run(cat.id, cat.name, cat.vertical, cat.parentId || null, cat.color || "#A30A2A", cat.storageType || "ambient");
     return cat;
   },
   listProducts(categoryId) {
@@ -503,14 +510,15 @@ export const repo = {
   upsertCategory(cat) {
     getDb()
       .prepare(
-        `INSERT INTO categories (id, name, vertical, parent_id, color) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO categories (id, name, vertical, parent_id, color, storage_type) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name=excluded.name,
            vertical=excluded.vertical,
            parent_id=excluded.parent_id,
-           color=excluded.color`
+           color=excluded.color,
+           storage_type=excluded.storage_type`
       )
-      .run(cat.id, cat.name, cat.vertical, cat.parentId || null, cat.color || "#A30A2A");
+      .run(cat.id, cat.name, cat.vertical, cat.parentId || null, cat.color || "#A30A2A", cat.storageType || "ambient");
     return cat;
   },
   upsertProduct(product) {
@@ -531,6 +539,19 @@ export const repo = {
         JSON.stringify(product.attributes || {})
       );
     return product;
+  },
+  deleteProduct(id) {
+    const info = getDb().prepare("DELETE FROM products WHERE id = ?").run(id);
+    return info.changes > 0;
+  },
+  deleteCategory(id) {
+    const db = getDb();
+    const childCount = db.prepare("SELECT COUNT(*) AS n FROM categories WHERE parent_id = ?").get(id)?.n ?? 0;
+    if (childCount > 0) return { ok: false, error: "category_has_children" };
+    const productCount = db.prepare("SELECT COUNT(*) AS n FROM products WHERE category_id = ?").get(id)?.n ?? 0;
+    if (productCount > 0) return { ok: false, error: "category_has_products" };
+    const info = db.prepare("DELETE FROM categories WHERE id = ?").run(id);
+    return info.changes > 0 ? { ok: true } : { ok: false, error: "not_found" };
   },
   getLayout(id) {
     return rowToLayout(getDb().prepare("SELECT * FROM layouts WHERE id = ?").get(id));

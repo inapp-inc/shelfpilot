@@ -16,6 +16,7 @@ import {
   rectFullyInsidePolygon,
   shelfFloorFootprint,
   shelfInsidePolygon,
+  overlapsAnyObstacle,
   overlapsAnyShelf,
 } from "./polygonContainment.js";
 import { assignDisplayNumbers, countGondolaUnits, oppositeShelfOrigin } from "./shelfFaces.js";
@@ -108,9 +109,9 @@ export function packAislesAndShelves(layout, options = {}) {
   const height = Number(tmpl.heightMeters) || 2;
   const shelfType = tmpl.type || "shelf";
   const defaultLevels = tmpl.defaultLevels;
-  const gap = 0.1;
+  const gap = 0.05;
   const compactMode = options.compactMode !== false;
-  const margin = compactMode ? 0.15 : 0.25;
+  const margin = compactMode ? 0.1 : 0.2;
   const minAisleRun = Math.max(0.8, minAisle);
 
   const xs = poly.map((p) => p.x);
@@ -260,6 +261,7 @@ export function packAislesAndShelves(layout, options = {}) {
       ...candidate,
       id: `aisle-${randomUUID().slice(0, 6)}`,
       name: `Walk aisle ${++aisleSeq}`,
+      source: "auto",
       path: candidate.path || [],
       categoryId: null,
       color: undefined,
@@ -559,6 +561,7 @@ export function packAislesAndShelves(layout, options = {}) {
     if (!shelfInsidePolygon(t, poly)) return false;
     if (overlapsExistingShelf(t)) return false;
     if (blocksEntryClearance(t)) return false;
+    if (overlapsAnyObstacle(t, layoutForCheck)) return false;
     return true;
   }
 

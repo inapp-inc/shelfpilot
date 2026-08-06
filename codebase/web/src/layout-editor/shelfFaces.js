@@ -105,15 +105,95 @@ export function shelfDisplayLabel(shelf, aisles) {
 
 function faceFromShelf(shelf, faceId = "A") {
   const existing = shelf?.faces?.find((f) => f.id === faceId) || shelf?.faces?.[0];
+  const legacyPlanogram = faceId === "A" ? shelf?.planogram : [];
+  const planogram =
+    existing?.planogram?.length ? existing.planogram : Array.isArray(legacyPlanogram) ? legacyPlanogram : [];
   return {
     id: faceId,
     categoryId: existing?.categoryId ?? shelf?.categoryId ?? null,
     color: existing?.color ?? shelf?.color,
-    planogram: existing?.planogram ?? (faceId === "A" ? shelf?.planogram : []) ?? [],
+    planogram,
     segments: existing?.segments ?? (faceId === "A" ? shelf?.segments : undefined),
     levelSegments: existing?.levelSegments,
   };
 }
+
+/** Planogram rows on one physical shelf record. Gondola halves always use face A. */
+export function planogramRowsOnPhysicalShelf(shelf, faceId = "A") {
+  if (!shelf) return [];
+  const norm = normalizeShelfUI(shelf);
+  const id = faceId === "B" ? "B" : "A";
+  const face = norm.faces?.find((f) => f.id === id) || (id === "A" ? norm.faces?.[0] : null);
+  if (face?.planogram?.length) return face.planogram;
+  if (id === "A" && norm.planogram?.length) return norm.planogram;
+  return [];
+}
+
+/** Physical shelf record that owns planogram data for a merchandising face in 3D. */
+export function physicalShelfForMerchandisingFace(sceneShelf, layout, merchandisingFaceId = "A") {
+  const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+  const id = merchandisingFaceId === "B" ? "B" : "A";
+  if (sceneShelf?.pairDisplay && sceneShelf?.pairShelfIds) {
+    const physId = id === "B" ? sceneShelf.pairShelfIds.back : sceneShelf.pairShelfIds.front;
+    return shelves.find((s) => s.id === physId) || sceneShelf;
+  }
+  if (sceneShelf?.id) {
+    return shelves.find((s) => s.id === sceneShelf.id) || sceneShelf;
+  }
+  return sceneShelf;
+}
+
+/** Face id used for segments/planogram on the physical shelf (gondola halves → always A). */
+export function storageFaceIdForScene3D(sceneShelf, merchandisingFaceId = "A") {
+  if (sceneShelf?.pairDisplay || (isPairedShelf(sceneShelf) && !sceneShelf?.pairDisplay)) {
+    return "A";
+  }
+  return merchandisingFaceId === "B" ? "B" : "A";
+}
+
+/** Exact planogram rows for 3D — same physical record + face the planogram editor writes to. */
+export function planogramForSceneFace(sceneShelf, merchandisingFaceId = "A", layout = null) {
+  const storageFaceId = storageFaceIdForScene3D(sceneShelf, merchandisingFaceId);
+  const phys = physicalShelfForMerchandisingFace(sceneShelf, layout, merchandisingFaceId);
+  let rows = planogramRowsOnPhysicalShelf(phys, storageFaceId);
+  if (rows.length) return rows;
+
+  const id = merchandisingFaceId === "B" ? "B" : "A";
+  const norm = normalizeShelfUI(sceneShelf);
+  const mergedFace = norm.faces?.find((f) => f.id === id);
+  if (mergedFace?.planogram?.length) return mergedFace.planogram;
+  if (id === "A" && norm.planogram?.length) return norm.planogram;
+  return [];
+}
+
+/** Planogram rows for one merchandising face — prefers face data, falls back to legacy shelf.planogram. */
+export function planogramForMerchandisingFace(shelf, faceId = "A", layout = null) {
+  const id = faceId === "B" ? "B" : "A";
+  const norm = normalizeShelfUI(shelf);
+
+  const mergedFace = norm.faces?.find((f) => f.id === id);
+  if (mergedFace?.planogram?.length) return mergedFace.planogram;
+
+  if (norm.pairDisplay && norm.pairShelfIds && layout) {
+    const physId = id === "B" ? norm.pairShelfIds.back : norm.pairShelfIds.front;
+    const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+    const phys = shelves.find((s) => s.id === physId);
+    if (phys) {
+      const rows = planogramRowsOnPhysicalShelf(phys, "A");
+      if (rows.length) return rows;
+    }
+  }
+
+  if (isPairedShelf(norm) && !norm.pairDisplay) {
+    return planogramRowsOnPhysicalShelf(norm, "A");
+  }
+
+  const face = norm.faces?.find((f) => f.id === id);
+  if (face?.planogram?.length) return face.planogram;
+  if (id === "A" && norm.planogram?.length) return norm.planogram;
+  return [];
+}
+
 
 export function normalizeShelfUI(shelf) {
   if (!shelf) return shelf;

@@ -6,6 +6,8 @@ import { shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb } from "./layout-e
 import { normalizeShelfUI } from "./layout-editor/shelfFaces.js";
 import { productDimensions as catalogProductDimensions } from "./productCatalog.js";
 
+import { formatLengthFromMeters } from "./units.js";
+
 export { catalogProductDimensions as productDimensions };
 
 export function layoutBounds(layout) {
@@ -33,12 +35,17 @@ export function shelf3dLocalBox(shelf, layout) {
 
   if (f.pairDisplay && f.pairShelfIds?.front) {
     const front = shelves.find((s) => s.id === f.pairShelfIds.front) || f;
+    const back = shelves.find((s) => s.id === f.pairShelfIds.back);
     const local = shelfLocalMeters(front);
+    const backD = back ? shelfLocalMeters(back).d : local.d;
+    // One mesh spans both gondola halves so Face A and Face B sit on opposite aisles.
+    const totalDepth = local.d + backD;
     return {
       widthMeters: local.w,
-      depthMeters: local.d,
+      depthMeters: totalDepth,
       heightMeters: Number(front.heightMeters ?? f.heightMeters) || 2,
       merchWidthMeters: local.w,
+      faceDepthMeters: local.d,
       originX: Number(front.x ?? f.x) || 0,
       originZ: Number(front.y ?? f.y) || 0,
       rotationRad: rotationRad(front),
@@ -52,6 +59,7 @@ export function shelf3dLocalBox(shelf, layout) {
     depthMeters: local.d,
     heightMeters: Number(f.heightMeters) || 2,
     merchWidthMeters: local.w,
+    faceDepthMeters: local.d,
     originX: Number(f.x ?? f.canvasOriginX) || 0,
     originZ: Number(f.y ?? f.canvasOriginY) || 0,
     rotationRad: rotationRad(f),
@@ -109,19 +117,22 @@ export function productFacingSize(product, slotWidthMeters, levelClearanceMeters
   const slotW = Math.max(0.08, Number(slotWidthMeters) || 0.2);
   const clearance = Math.max(0.12, Number(levelClearanceMeters) || 0.3);
   const shelfD = Math.max(0.1, Number(shelfDepthMeters) || 0.6);
-  const facingW = Math.min(slotW * 0.98, dims.w);
-  const facingH = Math.min(dims.h, clearance * 0.95);
-  const facingD = Math.min(dims.d, shelfD * 0.9);
+  // Guard against bad catalog data (cm stored as metres) — keep units shelf-plausible.
+  const catalogW = Number.isFinite(dims.w) && dims.w > 0 && dims.w < 2 ? dims.w : 0.12;
+  const catalogH = Number.isFinite(dims.h) && dims.h > 0 && dims.h < 2.5 ? dims.h : 0.2;
+  const catalogD = Number.isFinite(dims.d) && dims.d > 0 && dims.d < 1.5 ? dims.d : Math.min(catalogW, 0.12);
+  const facingW = Math.min(slotW * 0.98, catalogW);
+  const facingH = Math.min(catalogH, clearance * 0.95);
+  // One unit must leave room for depth stacking — never claim ~90% of the whole face depth.
+  const facingD = Math.min(catalogD, shelfD * 0.42);
   return {
-    w: Math.max(0.06, facingW),
-    h: Math.max(0.08, facingH),
-    d: Math.max(0.05, facingD),
+    w: Math.max(0.05, facingW),
+    h: Math.max(0.06, facingH),
+    d: Math.max(0.04, facingD),
     catalog: dims,
   };
 }
 
 export function formatMeters(value, digits = 2) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return `${n.toFixed(digits)} m`;
+  return formatLengthFromMeters(value, { dash: "—" });
 }

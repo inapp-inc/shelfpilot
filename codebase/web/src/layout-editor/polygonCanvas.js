@@ -472,7 +472,29 @@ export function entityFitsPolygon(entity, kind, bounds, layout) {
     }
     return rectFullyInsidePolygon(fp.x, fp.y, fp.w, fp.d, poly);
   }
+  if (kind === "obstacle" || kind === "zone") {
+    const fp = rectFootprintMeters(entity);
+    if (!poly) {
+      return (
+        fp.x >= bounds.minX - 1e-6 &&
+        fp.y >= bounds.minY - 1e-6 &&
+        fp.x + fp.w <= bounds.maxX + 1e-6 &&
+        fp.y + fp.d <= bounds.maxY + 1e-6
+      );
+    }
+    return rectFullyInsidePolygon(fp.x, fp.y, fp.w, fp.d, poly);
+  }
   return true;
+}
+
+/** Axis-aligned footprint for rectangle entities (zones, obstacles). */
+export function rectFootprintMeters(entity) {
+  return {
+    x: Number(entity?.x) || 0,
+    y: Number(entity?.y) || 0,
+    w: Math.max(0.05, Number(entity?.widthMeters) || 0.05),
+    d: Math.max(0.05, Number(entity?.depthMeters) || 0.05),
+  };
 }
 
 /** Shrink horizontal run length until aisle footprint fits polygon. */
@@ -590,6 +612,17 @@ export function entityOverlapsLayout(entity, kind, layout, { ignoreId } = {}) {
     for (const aisle of layout.aisles || []) {
       if (ignoreId && aisle.id === ignoreId) continue;
       if (shelfOverlapsAisleRect(entity, aisleFootprintMeters(aisle, layout))) return true;
+    }
+    // Structural obstacles are hard blockers: a fixture may never sit on one.
+    for (const obstacle of layout.obstacles || []) {
+      if (shelfOverlapsAisleRect(entity, rectFootprintMeters(obstacle))) return true;
+    }
+    return false;
+  }
+  if (kind === "obstacle") {
+    const rect = rectFootprintMeters(entity);
+    for (const shelf of shelves) {
+      if (shelfOverlapsAisleRect(shelf, rect)) return true;
     }
     return false;
   }

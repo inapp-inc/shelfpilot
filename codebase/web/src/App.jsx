@@ -12,9 +12,10 @@ import {
 import LayoutEditor from "./layout-editor/LayoutEditor.jsx";
 import CatalogPage from "./catalog/CatalogPage.jsx";
 import ProductFormDrawer from "./catalog/ProductFormDrawer.jsx";
+import { inchesInputFromMeters, lbInputFromKg } from "./units.js";
+import { normalizeStorageType, productStorageType, resolveCategoryStorageType } from "./storageType.js";
 import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
 import DashboardPage from "./modules/DashboardPage.jsx";
-import AnalyticsPage from "./modules/AnalyticsPage.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
 import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
@@ -441,17 +442,25 @@ export default function App() {
   }
 
   function openProductEditor(partial = {}) {
+    const wM = partial.widthMeters ?? partial.attributes?.widthMeters;
+    const hM = partial.heightMeters ?? partial.attributes?.heightMeters;
+    const dM = partial.depthMeters ?? partial.attributes?.depthMeters ?? wM;
     setProductEditor({
       id: null,
       name: "",
       sku: "",
       categoryId: partial.categoryId || cats[0]?.id || "",
-      widthMeters: "0.2",
-      heightMeters: "0.25",
-      depthMeters: "0.2",
       imageUrl: "",
       attributes: {},
       ...partial,
+      storageType: normalizeStorageType(
+        partial.storageType || productStorageType(partial) || resolveCategoryStorageType(partial.categoryId || cats[0]?.id, cats)
+      ),
+      widthInches: partial.widthInches ?? inchesInputFromMeters(wM, "8"),
+      heightInches: partial.heightInches ?? inchesInputFromMeters(hM, "10"),
+      depthInches: partial.depthInches ?? inchesInputFromMeters(dM, "8"),
+      weightLb:
+        partial.weightLb ?? lbInputFromKg(partial.weightKg ?? partial.attributes?.weightKg, ""),
     });
   }
 
@@ -474,29 +483,40 @@ export default function App() {
     return saved.url;
   }
 
-  async function saveProduct() {
-    if (!productEditor) return;
-    const attributes = { ...(productEditor.attributes || {}) };
-    if (productEditor.widthMeters !== "" && productEditor.widthMeters != null) {
-      attributes.widthMeters = Number(productEditor.widthMeters);
+  async function saveProduct(payload) {
+    const editor = payload || productEditor;
+    if (!editor) return;
+    const attributes = { ...(editor.attributes || {}) };
+    if (editor.widthMeters != null && editor.widthMeters !== "") {
+      attributes.widthMeters = Number(editor.widthMeters);
     }
-    if (productEditor.heightMeters !== "" && productEditor.heightMeters != null) {
-      attributes.heightMeters = Number(productEditor.heightMeters);
+    if (editor.heightMeters != null && editor.heightMeters !== "") {
+      attributes.heightMeters = Number(editor.heightMeters);
     }
-    if (productEditor.depthMeters !== "" && productEditor.depthMeters != null) {
-      attributes.depthMeters = Number(productEditor.depthMeters);
+    if (editor.depthMeters != null && editor.depthMeters !== "") {
+      attributes.depthMeters = Number(editor.depthMeters);
     }
-    attributes.imageUrl = productEditor.imageUrl || "";
+    if (editor.weightKg != null && editor.weightKg !== "") {
+      attributes.weightKg = Number(editor.weightKg);
+    } else {
+      delete attributes.weightKg;
+    }
+    attributes.imageUrl = editor.imageUrl || "";
+    if (editor.storageType) {
+      attributes.storageTemp = normalizeStorageType(editor.storageType);
+    }
     const body = {
-      name: productEditor.name,
-      sku: productEditor.sku,
-      categoryId: productEditor.categoryId,
-      imageUrl: productEditor.imageUrl || "",
+      name: editor.name,
+      sku: editor.sku,
+      categoryId: editor.categoryId,
+      imageUrl: editor.imageUrl || "",
+      storageType: normalizeStorageType(editor.storageType || productStorageType(editor)),
+      weightKg: editor.weightKg == null || editor.weightKg === "" ? null : Number(editor.weightKg),
       attributes,
     };
     try {
-      if (productEditor.id) {
-        await api(`/products/${productEditor.id}`, { token, method: "PATCH", body });
+      if (editor.id) {
+        await api(`/products/${editor.id}`, { token, method: "PATCH", body });
         toast("Product updated", { type: "success" });
       } else {
         await api("/products", { token, method: "POST", body });
@@ -517,6 +537,7 @@ export default function App() {
         vertical: catalogVertical,
         parentId: categoryEditor.parentId || null,
         color: categoryEditor.color || "#A30A2A",
+        storageType: normalizeStorageType(categoryEditor.storageType || "ambient"),
       };
       if (categoryEditor.id) {
         await api(`/categories/${categoryEditor.id}`, { token, method: "PATCH", body });
@@ -525,6 +546,32 @@ export default function App() {
         await api("/categories", { token, method: "POST", body });
         toast("Category created", { type: "success" });
       }
+      setCategoryEditor(null);
+      await loadCatalog(catalogVertical);
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
+    }
+  }
+
+  async function deleteProduct(product) {
+    if (!product?.id) return;
+    if (!window.confirm(`Delete product "${product.name || product.sku || product.id}"? This cannot be undone.`)) return;
+    try {
+      await api(`/products/${product.id}`, { token, method: "DELETE" });
+      toast("Product deleted", { type: "success" });
+      await loadCatalog(catalogVertical);
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
+    }
+  }
+
+  async function deleteCategory(category) {
+    if (!category?.id) return;
+    if (!window.confirm(`Delete category "${category.name || category.id}"? This cannot be undone.`)) return;
+    try {
+      await api(`/categories/${category.id}`, { token, method: "DELETE" });
+      toast("Category deleted", { type: "success" });
+      if (selectedCatalogCategoryId === category.id) setSelectedCatalogCategoryId(null);
       setCategoryEditor(null);
       await loadCatalog(catalogVertical);
     } catch (err) {
@@ -673,9 +720,9 @@ export default function App() {
               <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.02em" }}>ShelfPilot</div>
               <div style={{ fontSize: 16, color: "#6b7280", textAlign: "center" }}>Design store layouts in 2D and 3D</div>
             </div>
-            <form className="login-card" onSubmit={onLogin}>
+            <form className="login-card" onSubmit={onLogin} data-testid="login-form">
               {loginError ? (
-                <AlertBanner variant="error" onDismiss={() => setLoginError("")}>
+                <AlertBanner variant="error" onDismiss={() => setLoginError("")} data-testid="login-error">
                   {loginError}
                 </AlertBanner>
               ) : null}
@@ -683,6 +730,7 @@ export default function App() {
                 <label>Email</label>
                 <input
                   type="email"
+                  data-testid="login-email"
                   value={loginForm.email}
                   onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
                   placeholder="you@shelfpilot.local"
@@ -692,19 +740,29 @@ export default function App() {
                 <label>Password</label>
                 <input
                   type="password"
+                  data-testid="login-password"
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
                 />
               </div>
               <div className="field">
                 <label>Role</label>
-                <select value={loginForm.role} onChange={(e) => setLoginForm({ ...loginForm, role: e.target.value })}>
+                <select
+                  data-testid="login-role"
+                  value={loginForm.role}
+                  onChange={(e) => setLoginForm({ ...loginForm, role: e.target.value })}
+                >
                   {["Designer", "Approver", "Viewer", "Admin"].map((r) => (
                     <option key={r}>{r}</option>
                   ))}
                 </select>
               </div>
-              <button className="btn-primary" type="submit" style={{ marginTop: 6, padding: 13, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+              <button
+                className="btn-primary"
+                type="submit"
+                data-testid="login-submit"
+                style={{ marginTop: 6, padding: 13, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
+              >
                 {loginLoading ? <span className="spin" /> : null}
                 <span>{loginLoading ? "Signing in…" : "Sign in"}</span>
               </button>
@@ -741,6 +799,7 @@ export default function App() {
               <a
                 key={n.id}
                 href={n.path}
+                data-testid={`nav-${n.id}`}
                 className={`top-nav-item ${page === n.id ? "active" : ""}`}
                 onClick={(e) => {
                   e.preventDefault();
@@ -761,14 +820,21 @@ export default function App() {
               />
               <span className="header-foundry-text">BUILT BY THE FOUNDRY</span>
             </div>
-            <div className="user-chip">
+            <div className="user-chip" data-testid="user-chip">
               <div className="avatar">{initials(session.user.name)}</div>
               <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>{session.user.name}</span>
-                <span style={{ fontSize: 11, color: "#9aa1ab" }}>{session.user.role}</span>
+                <span style={{ fontSize: 11, color: "#9aa1ab" }} data-testid="user-role">
+                  {session.user.role}
+                </span>
               </div>
             </div>
-            <button className="btn-secondary" style={{ padding: "8px 14px", fontSize: 13 }} onClick={() => signOut()}>
+            <button
+              className="btn-secondary"
+              data-testid="sign-out"
+              style={{ padding: "8px 14px", fontSize: 13 }}
+              onClick={() => signOut()}
+            >
               Sign out
             </button>
           </div>
@@ -781,8 +847,7 @@ export default function App() {
                 layouts={layouts}
                 token={token}
                 role={role}
-                onOpenLayout={openLayout}
-                onNavigateAnalytics={() => navigate(pathForModule("analytics"))}
+                toast={(msg, opts) => toast(msg, opts)}
                 onNewLayout={() => {
                   navigate(pathForModule("layouts"));
                   setCreateOpen(true);
@@ -790,6 +855,11 @@ export default function App() {
                 onNavigateLayouts={(status) => {
                   setStatusFilter(status);
                   navigate(pathForModule("layouts"));
+                }}
+                onOpenLayout={openLayout}
+                onNavigateAdmin={(tab) => {
+                  setAdminTab(tab);
+                  navigate(pathForModule("admin"));
                 }}
               />
             )}
@@ -850,7 +920,7 @@ export default function App() {
                   importProgress={importProgress}
                   onDismissImportProgress={() => setImportProgress(null)}
                   onAddCategory={() =>
-                    setCategoryEditor({ name: "", parentId: null, color: "#A30A2A" })
+                    setCategoryEditor({ name: "", parentId: null, color: "#A30A2A", storageType: "ambient" })
                   }
                   onEditCategory={(c) =>
                     setCategoryEditor({
@@ -858,8 +928,10 @@ export default function App() {
                       name: c.name || "",
                       parentId: c.parentId || null,
                       color: c.color || "#A30A2A",
+                      storageType: c.storageType || "ambient",
                     })
                   }
+                  onDeleteCategory={(c) => deleteCategory(c)}
                   onAddProduct={(categoryId) =>
                     openProductEditor({ categoryId: categoryId || selectedCatalogCategoryId || cats[0]?.id })
                   }
@@ -869,13 +941,16 @@ export default function App() {
                       name: p.name || "",
                       sku: p.sku || "",
                       categoryId: p.categoryId || "",
-                      widthMeters: String(p.attributes?.widthMeters ?? "0.2"),
-                      heightMeters: String(p.attributes?.heightMeters ?? "0.25"),
-                      depthMeters: String(p.attributes?.depthMeters ?? p.attributes?.widthMeters ?? "0.2"),
+                      widthMeters: p.attributes?.widthMeters,
+                      heightMeters: p.attributes?.heightMeters,
+                      depthMeters: p.attributes?.depthMeters,
+                      weightKg: p.weightKg ?? p.attributes?.weightKg,
                       imageUrl: p.imageUrl || p.attributes?.imageUrl || "",
                       attributes: p.attributes || {},
+                      storageType: productStorageType(p),
                     })
                   }
+                  onDeleteProduct={(p) => deleteProduct(p)}
                   onImport={() => setImportOpen(true)}
                   onExport={() => handleExport()}
                   onDownloadTemplate={handleDownloadImportTemplate}
@@ -884,27 +959,29 @@ export default function App() {
               </>
             )}
 
-            {page === "analytics" && (
-              <AnalyticsPage layouts={layouts} token={token} toast={(msg, opts) => toast(msg, opts)} />
-            )}
-
             {page === "admin" && visibleAdminTabs.length > 0 && (
-              <section className="fade">
+              <section className="fade" data-testid="admin-page">
                 <h2 className="page-title" style={{ marginBottom: 16 }}>
                   {role === "Approver" ? "Audit Log" : "Admin & Config"}
                 </h2>
-                <div className="admin-tabs">
+                <div className="admin-tabs" data-testid="admin-tabs">
                   {visibleAdminTabs.map((t) => (
-                    <button key={t} className={`admin-tab ${adminTab === t ? "active" : ""}`} onClick={() => setAdminTab(t)}>
+                    <button
+                      key={t}
+                      type="button"
+                      data-testid={`admin-tab-${t}`}
+                      className={`admin-tab ${adminTab === t ? "active" : ""}`}
+                      onClick={() => setAdminTab(t)}
+                    >
                       {adminTabLabel(t)}
                     </button>
                   ))}
                 </div>
-                <div className="panel">
+                <div className="panel" data-testid={`admin-panel-${adminTab}`}>
                   {adminTab === "users" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }} data-testid="admin-users">
                       <div className="table-scroll">
-                        <table>
+                        <table data-testid="admin-users-table">
                           <thead>
                             <tr>
                               <th>Name</th>
@@ -914,7 +991,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {users.map((u) => (
-                              <tr key={u.id}>
+                              <tr key={u.id} data-testid={`admin-user-row-${u.email}`}>
                                 <td>{u.name}</td>
                                 <td>{u.email}</td>
                                 <td>{u.role}</td>
@@ -924,10 +1001,11 @@ export default function App() {
                         </table>
                       </div>
                       {canManageUsers(role) ? (
-                        <form onSubmit={createUser} className="form-grid-2">
+                        <form onSubmit={createUser} className="form-grid-2" data-testid="admin-user-create-form">
                           <div className={`field${userFormErrors.name ? " field-invalid" : ""}`}>
                             <label>Name</label>
                             <input
+                              data-testid="admin-user-name"
                               value={newUser.name}
                               onChange={(e) => {
                                 setNewUser({ ...newUser, name: e.target.value });
@@ -940,6 +1018,7 @@ export default function App() {
                             <label>Email</label>
                             <input
                               type="email"
+                              data-testid="admin-user-email"
                               value={newUser.email}
                               onChange={(e) => {
                                 setNewUser({ ...newUser, email: e.target.value });
@@ -950,7 +1029,11 @@ export default function App() {
                           </div>
                           <div className="field">
                             <label>Role</label>
-                            <select value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
+                            <select
+                              data-testid="admin-user-role"
+                              value={newUser.role}
+                              onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                            >
                               {["Designer", "Approver", "Viewer", "Admin"].map((r) => (
                                 <option key={r}>{r}</option>
                               ))}
@@ -960,6 +1043,7 @@ export default function App() {
                             <label>Password</label>
                             <input
                               type="password"
+                              data-testid="admin-user-password"
                               value={newUser.password}
                               onChange={(e) => {
                                 setNewUser({ ...newUser, password: e.target.value });
@@ -968,7 +1052,12 @@ export default function App() {
                             />
                             <FieldError message={userFormErrors.password} />
                           </div>
-                          <button className="btn-primary form-grid-span-all" type="submit" style={{ padding: "10px 14px" }}>
+                          <button
+                            className="btn-primary form-grid-span-all"
+                            type="submit"
+                            data-testid="admin-user-create-submit"
+                            style={{ padding: "10px 14px" }}
+                          >
                             Create user
                           </button>
                         </form>
@@ -978,10 +1067,11 @@ export default function App() {
                     </div>
                   )}
                   {adminTab === "stores" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="admin-stores">
                       <div className="field" style={{ maxWidth: 280 }}>
                         <label>Store type</label>
                         <select
+                          data-testid="admin-stores-vertical"
                           value={vertical}
                           onChange={(e) => setVertical(e.target.value)}
                           style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #e5e7eb", width: "100%" }}
@@ -1032,11 +1122,12 @@ export default function App() {
                     </div>
                   )}
                   {adminTab === "approval" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="admin-approval">
                       <div style={{ fontWeight: 700 }}>Layouts require Approver sign-off before publishing</div>
                       <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }}>
                         <input
                           type="checkbox"
+                          data-testid="admin-approval-enabled"
                           checked={configForm.approvalWorkflowEnabled}
                           disabled={!canManageUsers(role)}
                           onChange={(e) => {
@@ -1052,10 +1143,11 @@ export default function App() {
                     </div>
                   )}
                   {adminTab === "configuration" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="admin-configuration">
                       <div className="field" style={{ maxWidth: 280 }}>
                         <label>Store type / vertical</label>
                         <select
+                          data-testid="admin-config-vertical"
                           value={vertical}
                           onChange={(e) => setVertical(e.target.value)}
                           style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #e5e7eb", width: "100%" }}
@@ -1077,13 +1169,19 @@ export default function App() {
                           className="mono"
                           type="number"
                           step="0.1"
+                          data-testid="admin-config-min-aisle"
                           value={configForm.minAisleWidthMeters}
                           disabled={!canManageUsers(role)}
                           onChange={(e) => setConfigForm({ ...configForm, minAisleWidthMeters: e.target.value })}
                         />
                       </div>
                       {canManageUsers(role) ? (
-                        <button className="btn-primary" style={{ padding: "10px 14px", width: "fit-content" }} onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}>
+                        <button
+                          className="btn-primary"
+                          data-testid="admin-config-save"
+                          style={{ padding: "10px 14px", width: "fit-content" }}
+                          onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
+                        >
                           Save store configuration
                         </button>
                       ) : (
@@ -1092,7 +1190,7 @@ export default function App() {
                     </div>
                   )}
                   {adminTab === "audit" && (
-                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    <ul style={{ margin: 0, paddingLeft: 18 }} data-testid="admin-audit-list">
                       {audit.slice(0, 20).map((a) => (
                         <li key={a.id} className="mono" style={{ fontSize: 12, marginBottom: 6 }}>
                           {a.at} · {a.actorEmail} · {a.action} · {a.detail}
@@ -1129,7 +1227,7 @@ export default function App() {
         draft={productEditor}
         setDraft={setProductEditor}
         categories={cats}
-        onSubmit={() => saveProduct()}
+        onSubmit={saveProduct}
         onUploadImage={catalogEditDisabled ? undefined : uploadProductImage}
         editDisabled={catalogEditDisabled}
       />

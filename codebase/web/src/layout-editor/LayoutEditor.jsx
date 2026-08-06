@@ -8,10 +8,12 @@ import { FIXTURE_TYPES, VERTICALS, ZONE_TYPES } from "../referenceCatalog.js";
 import { fixtureForType, fixturePaletteEntries } from "../fixtureCatalog.js";
 import Scene3D from "../Scene3D.jsx";
 import { formatMeters, layoutBounds, shelf3dLocalBox } from "../scene3dDimensions.js";
+import { formatDimensionTripleInches } from "../units.js";
 import Palette from "./Palette.jsx";
 import Canvas2D from "./Canvas2D.jsx";
 import FloorPlan2D from "./FloorPlan2D.jsx";
 import SmartGeneratePanel from "./SmartGeneratePanel.jsx";
+import FloorPlanPanel from "./FloorPlanPanel.jsx";
 import EditorPanelShell from "./EditorPanelShell.jsx";
 import PlanogramEditorModal from "./PlanogramEditorModal.jsx";
 import MissingProductsDialog from "./MissingProductsDialog.jsx";
@@ -21,9 +23,12 @@ import {
   shelfLabelFitsShelfBadge,
 } from "./canvasLabelZoom.js";
 import { mixForVertical, buildCategoryMix, storeTypeForVertical } from "../storeTypes.js";
+import { obstacleLabel, obstacleMeta } from "../obstacleTypes.js";
 import { layoutCanvasBounds, layoutContentBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, layoutFixturePolygon, fixtureZoneDistinctFromEnvelope, polygonDimensions, normalizeFixtureRectangle, shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb, aisleFootprintMeters, defaultAisleRun, fitRectanglePolygonInEnvelope, polygonInsideEnvelope, centeredStoreEnvelope, layoutFixtureZoneRect } from "./polygonCanvas.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
+/** Columns and blocked areas are much smaller than fixtures — snap them to 5 cm. */
+const snapFine = (v) => Math.max(0, Math.round(v * 20) / 20);
 
 /** Hybrid WebGL 2D disabled — CSS floor grid is reliable for demo. Set VITE_USE_WEBGL_2D=true to re-enable. */
 const USE_WEBGL_2D = import.meta.env.VITE_USE_WEBGL_2D === "true";
@@ -51,13 +56,14 @@ const EDITOR_PANELS_STORAGE_KEY = "shelfpilot.editorPanels";
 function readEditorPanelPrefs() {
   try {
     const raw = localStorage.getItem(EDITOR_PANELS_STORAGE_KEY);
-    if (!raw) return { palette: true };
+    if (!raw) return { palette: true, floorPlan: true };
     const parsed = JSON.parse(raw);
     return {
       palette: Boolean(parsed.palette),
+      floorPlan: parsed.floorPlan !== false,
     };
   } catch {
-    return { palette: true };
+    return { palette: true, floorPlan: true };
   }
 }
 
@@ -143,6 +149,7 @@ export default function LayoutEditor({
   const pendingZoomScrollRef = useRef(null);
   const [editorFullscreen, setEditorFullscreen] = useState(false);
   const [paletteCollapsed, setPaletteCollapsed] = useState(() => readEditorPanelPrefs().palette);
+  const [floorPanelCollapsed, setFloorPanelCollapsed] = useState(() => readEditorPanelPrefs().floorPlan);
   zoomRef.current = zoom;
 
   const editDisabled = !["Designer", "Admin"].includes(role);
@@ -413,9 +420,9 @@ export default function LayoutEditor({
   useEffect(() => {
     localStorage.setItem(
       EDITOR_PANELS_STORAGE_KEY,
-      JSON.stringify({ palette: paletteCollapsed })
+      JSON.stringify({ palette: paletteCollapsed, floorPlan: floorPanelCollapsed })
     );
-  }, [paletteCollapsed]);
+  }, [paletteCollapsed, floorPanelCollapsed]);
 
   const toggleEditorFullscreen = useCallback(async () => {
     const el = editorRootRef.current;
@@ -653,7 +660,10 @@ export default function LayoutEditor({
     const entity =
       dragging.kind === "aisle"
         ? (layout.aisles || []).find((a) => a.id === dragging.id)
-        : (layout.shelves || layout.fixtures || []).find((s) => s.id === dragging.id);
+        : dragging.kind === "obstacle"
+          ? (layout.obstacles || []).find((o) => o.id === dragging.id)
+          : (layout.shelves || layout.fixtures || []).find((s) => s.id === dragging.id);
+    const snapDrag = dragging.kind === "obstacle" ? snapFine : snap;
     const toPos = (clientX, clientY) => {
       const dx = (clientX - dragging.startClientX) / scale;
       const dy = (clientY - dragging.startClientY) / scale;
@@ -677,18 +687,20 @@ export default function LayoutEditor({
         e.clientY - dragging.startClientY
       );
       const { x, y } = toPos(e.clientX, e.clientY);
-      const nx = snap(x);
-      const ny = snap(y);
+      const nx = snapDrag(x);
+      const ny = snapDrag(y);
       setDragging(null);
       setDragPos(null);
-      if (movedPx < 4 || (nx === snap(dragging.origX) && ny === snap(dragging.origY))) {
+      if (movedPx < 4 || (nx === snapDrag(dragging.origX) && ny === snapDrag(dragging.origY))) {
         return;
       }
       if (entity && !entityPlacementValid({ ...entity, x: nx, y: ny }, dragging.kind, canvasBounds, layout, { ignoreId: dragging.id })) {
         toast(
           dragging.kind === "aisle"
             ? "Aisles cannot overlap shelves — place corridors in open floor space."
-            : "Shelves cannot overlap aisle corridors."
+            : dragging.kind === "obstacle"
+              ? "Keep columns and blocked areas inside the store outline."
+              : "Shelves cannot overlap aisle corridors."
         );
         return;
       }
@@ -696,7 +708,9 @@ export default function LayoutEditor({
         const path =
           dragging.kind === "aisle"
             ? `/layouts/${dragging.layoutId}/aisles/${dragging.id}`
-            : `/layouts/${dragging.layoutId}/shelves/${dragging.id}`;
+            : dragging.kind === "obstacle"
+              ? `/layouts/${dragging.layoutId}/obstacles/${dragging.id}`
+              : `/layouts/${dragging.layoutId}/shelves/${dragging.id}`;
         const updated = await api(path, {
           token,
           method: "PATCH",
@@ -810,9 +824,21 @@ export default function LayoutEditor({
     }
   }
 
-  async function addZone(type, x, y) {
-    if (!placementAllowed(x, y)) {
-      toast("Place zones inside the drawn floor area only.");
+  function rectPlacementAllowed(x, y, w, h) {
+    const poly = canvasBounds.polygon;
+    if (!poly) return true;
+    const corners = [
+      { x, y },
+      { x: x + w, y },
+      { x, y: y + h },
+      { x: x + w, y: y + h },
+    ];
+    return corners.every((c) => pointInPolygon(c.x, c.y, poly));
+  }
+
+  async function addZone(type, x, y, widthMeters = 3, depthMeters = 3) {
+    if (!rectPlacementAllowed(x, y, widthMeters, depthMeters)) {
+      toast("Draw zones inside the drawn floor area only.");
       return;
     }
     const meta = ZONE_TYPES[type] || ZONE_TYPES.special;
@@ -821,7 +847,14 @@ export default function LayoutEditor({
       const updated = await api(`/layouts/${layout.id}/zones`, {
         token,
         method: "POST",
-        body: { type, x: snap(x), y: snap(y), widthMeters: 3, depthMeters: 3, color: meta.color },
+        body: {
+          type,
+          x: snap(x),
+          y: snap(y),
+          widthMeters: snap(widthMeters),
+          depthMeters: snap(depthMeters),
+          color: meta.color,
+        },
       });
       setLayout(updated);
       setPaletteTool("select");
@@ -834,6 +867,14 @@ export default function LayoutEditor({
           ? "Zone must fit inside the drawn floor area."
           : e.message
       );
+    }
+  }
+
+  async function onPlaceZoneRect(type, x, y, widthMeters, depthMeters) {
+    try {
+      await addZone(type, x, y, widthMeters, depthMeters);
+    } catch (e) {
+      toast(e.message);
     }
   }
 
@@ -852,12 +893,53 @@ export default function LayoutEditor({
     toast("Entry point added");
   }
 
+  async function addObstacle(type, x, y) {
+    const meta = obstacleMeta(type);
+    const w = meta.widthMeters;
+    const d = meta.depthMeters;
+    if (!rectPlacementAllowed(x, y, w, d)) {
+      toast("Place columns and blocked areas inside the drawn floor area.");
+      return;
+    }
+    const prevIds = new Set((layout.obstacles || []).map((o) => o.id));
+    try {
+      const updated = await api(`/layouts/${layout.id}/obstacles`, {
+        token,
+        method: "POST",
+        body: {
+          type,
+          x: snapFine(x),
+          y: snapFine(y),
+          widthMeters: w,
+          depthMeters: d,
+          heightMeters: type === "column" || type === "wall" ? layout.ceilingHeightMeters || 3 : 1,
+        },
+      });
+      setLayout(updated);
+      setPaletteTool("select");
+      const created = (updated.obstacles || []).find((o) => !prevIds.has(o.id));
+      if (created) setSelection({ kind: "obstacle", id: created.id });
+      toast(`${meta.label} added — fixtures can no longer be placed here`);
+    } catch (e) {
+      toast(
+        e.message === "containment_violation"
+          ? `${meta.label} must fit inside the drawn floor area.`
+          : e.message === "overlap_violation"
+            ? `A fixture already occupies that spot — move it before adding the ${meta.label.toLowerCase()}.`
+            : e.message
+      );
+    }
+  }
+
   async function dispatchPlace(tool, x, y) {
     if (tool === "aisle" || tool === "aisle-h") return addAisle(x, y, "horizontal");
     if (tool === "aisle-v") return addAisle(x, y, "vertical");
     if (tool === "entry") return addEntry(x, y);
     if (typeof tool === "string" && tool.startsWith("zone:")) {
       return addZone(tool.slice("zone:".length), x, y);
+    }
+    if (typeof tool === "string" && tool.startsWith("obstacle:")) {
+      return addObstacle(tool.slice("obstacle:".length), x, y);
     }
     if (fixtureTypeKeys.has(tool)) return addShelf(tool, x, y);
     return undefined;
@@ -1298,9 +1380,28 @@ export default function LayoutEditor({
           return;
         }
       } else {
-        toast("Draw and apply a floor area first (3+ vertices), then Generate.");
-        setPaletteTool("draw");
-        return;
+        const w = Number(activeLayout.widthMeters);
+        const d = Number(activeLayout.depthMeters);
+        if (Number.isFinite(w) && Number.isFinite(d) && w > 0 && d > 0) {
+          const rectPoly = [
+            { x: 0, y: 0 },
+            { x: w, y: 0 },
+            { x: w, y: d },
+            { x: 0, y: d },
+          ];
+          try {
+            activeLayout = await patchLayout({ shape: "polygon", polygon: rectPoly });
+            setLayout(activeLayout);
+          } catch (e) {
+            toast(e.message === "invalid_polygon" ? "Invalid floor area." : e.message);
+            setPaletteTool("draw");
+            return;
+          }
+        } else {
+          toast("Draw and apply a floor area first (3+ vertices), then Generate.");
+          setPaletteTool("draw");
+          return;
+        }
       }
     }
     const hasContent = (activeLayout.aisles || []).length > 0 || (activeLayout.shelves || []).length > 0;
@@ -1321,7 +1422,7 @@ export default function LayoutEditor({
         body: {
           orientation: genOrientation,
           replaceExisting: true,
-          minAisleWidthMeters: Number(genMinAisle) || minAisle,
+          minAisleWidthMeters: Math.max(Number(genMinAisle) || Number(minAisle) || 0, Number(minAisle) || 0),
           categoryMix: mixPayload,
           fillPlanogram: genFillPlanogram,
         },
@@ -1407,7 +1508,9 @@ export default function LayoutEditor({
       const path =
         kind === "zone"
           ? `/layouts/${layout.id}/zones/${id}`
-          : `/layouts/${layout.id}/aisles/${id}`;
+          : kind === "obstacle"
+            ? `/layouts/${layout.id}/obstacles/${id}`
+            : `/layouts/${layout.id}/aisles/${id}`;
       const updated = await api(path, { token, method: "PATCH", body: patch });
       setLayout(updated);
     } catch (err) {
@@ -1429,6 +1532,57 @@ export default function LayoutEditor({
     const updated = await api(`/layouts/${layout.id}/zones/${zoneId}`, { token, method: "DELETE" });
     setLayout(updated);
     setSelection(null);
+  }
+
+  async function patchObstacle(obstacleId, body) {
+    const updated = await api(`/layouts/${layout.id}/obstacles/${obstacleId}`, {
+      token,
+      method: "PATCH",
+      body,
+    });
+    setLayout(updated);
+  }
+
+  async function deleteObstacle(obstacleId) {
+    const updated = await api(`/layouts/${layout.id}/obstacles/${obstacleId}`, {
+      token,
+      method: "DELETE",
+    });
+    setLayout(updated);
+    setSelection(null);
+  }
+
+  async function uploadFloorPlan({ dataBase64, fileName }) {
+    const updated = await api(`/layouts/${layout.id}/floor-plan`, {
+      token,
+      method: "POST",
+      body: { dataBase64, fileName },
+    });
+    setLayout(updated);
+    toast("Floor plan added — set its real width to calibrate the scale");
+  }
+
+  async function patchFloorPlan(body) {
+    try {
+      const updated = await api(`/layouts/${layout.id}/floor-plan`, {
+        token,
+        method: "PATCH",
+        body,
+      });
+      setLayout(updated);
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+
+  async function removeFloorPlan() {
+    try {
+      const updated = await api(`/layouts/${layout.id}/floor-plan`, { token, method: "DELETE" });
+      setLayout(updated);
+      toast("Floor plan removed");
+    } catch (err) {
+      toast(err.message);
+    }
   }
 
   async function patchEntry(entryId, body) {
@@ -1468,7 +1622,7 @@ export default function LayoutEditor({
       const uw = Number(s.usableWidthMeters ?? s.widthMeters) || 0;
       const dep = Number(s.depthMeters) || 0;
       const ht = Number(s.heightMeters) || 0;
-      const dim = `${uw.toFixed(1)}×${dep.toFixed(1)}×${ht.toFixed(1)} m`;
+      const dim = formatDimensionTripleInches(uw, dep, ht);
       const shelfType =
         fixtureTypes.find((t) => t.type === s.type)?.label ||
         FIXTURE_TYPES[s.type]?.label ||
@@ -1486,6 +1640,17 @@ export default function LayoutEditor({
     if (kind === "zone") {
       const z = (layout.zones || []).find((x) => x.id === id);
       return z ? { kind, id, label: z.name || "Zone", run: () => deleteZone(id) } : null;
+    }
+    if (kind === "obstacle") {
+      const o = (layout.obstacles || []).find((x) => x.id === id);
+      if (!o) return null;
+      return {
+        kind,
+        id,
+        label: obstacleLabel(o),
+        detail: `${Number(o.widthMeters || 0).toFixed(2)}×${Number(o.depthMeters || 0).toFixed(2)} m`,
+        run: () => deleteObstacle(id),
+      };
     }
     if (kind === "entryPoint") {
       const e = (layout.entryPoints || []).find((x) => x.id === id);
@@ -1562,16 +1727,20 @@ export default function LayoutEditor({
   return (
     <section
       ref={editorRootRef}
+      data-testid="layout-editor"
       className={`fade editor-layout-root${editorFullscreen ? " editor-layout-fullscreen" : ""}${view3d ? " editor-layout-root--3d" : ""}${planogram3dReturn ? " editor-layout-root--3d-focus" : ""}`}
     >
       <div className="editor-toolbar-row editor-toolbar-row--compact">
         <div className="editor-toolbar-left">
-          <button className="btn-secondary editor-back-btn" onClick={onBack}>
+          <button className="btn-secondary editor-back-btn" data-testid="editor-back" onClick={onBack}>
             ←
           </button>
-          <div className="editor-toolbar-title">{layout.name}</div>
+          <div className="editor-toolbar-title" data-testid="editor-layout-name">
+            {layout.name}
+          </div>
           <span
             className="status-chip status-chip--sm"
+            data-testid="editor-layout-status"
             style={{ background: statusMeta(layout.status).bg, color: statusMeta(layout.status).color }}
           >
             {statusMeta(layout.status).label}
@@ -1585,6 +1754,7 @@ export default function LayoutEditor({
             <>
               <button
                 className="btn-secondary editor-toolbar-action"
+                data-testid="editor-reject"
                 style={{ color: "#A30A2A", fontWeight: 700 }}
                 onClick={() => setRejectOpen(true)}
               >
@@ -1592,6 +1762,7 @@ export default function LayoutEditor({
               </button>
               <button
                 className="btn-primary editor-toolbar-action"
+                data-testid="editor-approve"
                 style={{ background: "oklch(0.5 0.12 150)", boxShadow: "none" }}
                 onClick={() => approveLayout()}
               >
@@ -1605,18 +1776,23 @@ export default function LayoutEditor({
                 <button
                   type="button"
                   className={`btn-secondary editor-toolbar-action${missingProductCount > 0 ? " editor-toolbar-action--warn" : ""}`}
+                  data-testid="editor-find-products"
                   onClick={() => setMissingProductsOpen(true)}
                   disabled={coverageLoading && !planogramCoverage}
                   title={
                     missingProductCount > 0
-                      ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves`
-                      : "All catalog products are placed on shelves"
+                      ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves — find placements`
+                      : "Find product / category placements on shelves"
                   }
                 >
-                  Missing products{missingProductCount > 0 ? ` (${missingProductCount})` : ""}
+                  Find products{missingProductCount > 0 ? ` (${missingProductCount} missing)` : ""}
                 </button>
               ) : null}
-              <button className="btn-secondary editor-toolbar-action" onClick={() => submitForReview()}>
+              <button
+                className="btn-secondary editor-toolbar-action"
+                data-testid="editor-submit-review"
+                onClick={() => submitForReview()}
+              >
                 Submit
               </button>
             </>
@@ -1628,11 +1804,11 @@ export default function LayoutEditor({
               disabled={coverageLoading && !planogramCoverage}
               title={
                 missingProductCount > 0
-                  ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves`
-                  : "All catalog products are placed on shelves"
+                  ? `${missingProductCount} catalog product${missingProductCount === 1 ? "" : "s"} not on shelves — find placements`
+                  : "Find product / category placements on shelves"
               }
             >
-              Missing products{missingProductCount > 0 ? ` (${missingProductCount})` : ""}
+              Find products{missingProductCount > 0 ? ` (${missingProductCount} missing)` : ""}
             </button>
           ) : null}
           {(role === "Designer" || role === "Admin") && onDeleteLayout ? (
@@ -1648,15 +1824,19 @@ export default function LayoutEditor({
               onClick={() => toggleEditorFullscreen()}
               title={editorFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen (F)"}
             >
-              {editorFullscreen ? "⛶" : "⛶"}
+              {editorFullscreen ? "Exit full" : "Full"}
             </button>
             <button
+              type="button"
+              data-testid="view-2d"
               className={!view3d ? "active" : ""}
               onClick={() => exit3dView()}
             >
               2D
             </button>
             <button
+              type="button"
+              data-testid="view-3d"
               className={view3d && !walkMode ? "active" : ""}
               onClick={() => {
                 setPlanogram3dReturn(null);
@@ -1668,6 +1848,8 @@ export default function LayoutEditor({
               3D
             </button>
             <button
+              type="button"
+              data-testid="view-walk"
               className={view3d && walkMode ? "active" : ""}
               onClick={() => {
                 setPlanogram3dReturn(null);
@@ -1695,13 +1877,14 @@ export default function LayoutEditor({
       ) : null}
 
       {rejectOpen ? (
-        <div className="review-modal-backdrop" role="dialog" aria-modal="true">
+        <div className="review-modal-backdrop" role="dialog" aria-modal="true" data-testid="reject-modal">
           <div className="review-modal">
             <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>Reject layout</div>
             <p className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
               A comment is required so the designer knows what to fix.
             </p>
             <textarea
+              data-testid="reject-comment"
               value={rejectComment}
               onChange={(e) => {
                 setRejectComment(e.target.value);
@@ -1712,12 +1895,21 @@ export default function LayoutEditor({
             />
             <FieldError message={rejectError} />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
-              <button type="button" className="btn-secondary" onClick={() => { setRejectOpen(false); setRejectError(""); }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid="reject-cancel"
+                onClick={() => {
+                  setRejectOpen(false);
+                  setRejectError("");
+                }}
+              >
                 Cancel
               </button>
               <button
                 type="button"
                 className="btn-danger"
+                data-testid="reject-confirm"
                 disabled={rejectSubmitting || !rejectComment.trim()}
                 onClick={() => confirmReject()}
               >
@@ -1758,14 +1950,7 @@ export default function LayoutEditor({
             hasAppliedPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
             onApplyArea={() => applyArea()}
             onClearDraft={() => setDraftPolygon([])}
-            onOpenGenerate={() => {
-              if (layout.shape !== "polygon" || (layout.polygon?.length ?? 0) < 3) {
-                toast("Draw floor area first: click vertices, then Apply area.");
-                setPaletteTool("draw");
-                return;
-              }
-              setGenOpen(true);
-            }}
+            onOpenGenerate={() => setGenOpen(true)}
           />
         </EditorPanelShell>
         ) : null}
@@ -1806,6 +1991,7 @@ export default function LayoutEditor({
               <AlertBanner
                 key={text}
                 variant="error"
+                data-testid="editor-aisle-violation"
                 onDismiss={() => dismissAlert(`aisle:${text}`)}
               >
                 {text}
@@ -1815,6 +2001,7 @@ export default function LayoutEditor({
           {!planogram3dReturn && (layout.validation?.containmentViolations || []).length > 0 && !dismissedAlerts.has("containment") ? (
             <AlertBanner
               variant="error"
+              data-testid="editor-containment-violation"
               className="alert-banner--clickable"
               onDismiss={() => dismissAlert("containment")}
               role="button"
@@ -1844,6 +2031,7 @@ export default function LayoutEditor({
               open={genOpen}
               onClose={() => setGenOpen(false)}
               minAisleWidth={genMinAisle}
+              storeMinAisleWidth={minAisle}
               onMinAisleWidthChange={setGenMinAisle}
               orientation={genOrientation}
               onOrientationChange={setGenOrientation}
@@ -1860,7 +2048,7 @@ export default function LayoutEditor({
             />
           ) : null}
 
-          <div className={`canvas-stage${view3d ? " canvas-stage--3d" : ""}`} ref={stageRef}>
+          <div className={`canvas-stage${view3d ? " canvas-stage--3d" : ""}`} ref={stageRef} data-testid="editor-canvas-stage">
             {!view3d && selectionInfo ? (
               <div className="selection-bar selection-bar--overlay">
                 <span className="selection-bar-kind">{selectionInfo.kind}</span>
@@ -1915,6 +2103,7 @@ export default function LayoutEditor({
                 <Scene3D
                   layout={layout}
                   products={products}
+                  categories={categories}
                   walkMode={walkMode}
                   highlightShelfId={highlightShelf3d?.shelfId}
                   highlightPairId={highlightShelf3d?.pairId}
@@ -1944,6 +2133,7 @@ export default function LayoutEditor({
                 setDragging={setDragging}
                 onDropTool={onDropTool}
                 onPlaceClick={onPlaceClick}
+                onPlaceZoneRect={onPlaceZoneRect}
                 onResize={resizeEntity}
                 onRotateShelf={(id, deg) => rotateShelf(id, deg)}
                 categories={categories}
@@ -1970,6 +2160,7 @@ export default function LayoutEditor({
                 setDragging={setDragging}
                 onDropTool={onDropTool}
                 onPlaceClick={onPlaceClick}
+                onPlaceZoneRect={onPlaceZoneRect}
                 onResize={resizeEntity}
                 onRotateShelf={(id, deg) => rotateShelf(id, deg)}
                 categories={categories}
@@ -1985,6 +2176,27 @@ export default function LayoutEditor({
             </div>
           </div>
         </div>
+
+        {!view3d ? (
+          <EditorPanelShell
+            side="right"
+            label="Floor plan"
+            collapsed={floorPanelCollapsed}
+            onToggleCollapse={() => setFloorPanelCollapsed((v) => !v)}
+          >
+            <FloorPlanPanel
+              layout={layout}
+              editDisabled={editDisabled}
+              selection={selection}
+              onUploadFloorPlan={uploadFloorPlan}
+              onPatchFloorPlan={patchFloorPlan}
+              onRemoveFloorPlan={removeFloorPlan}
+              onPatchObstacle={(id, body) => patchObstacle(id, body).catch((e) => notifyError(e))}
+              onDeleteObstacle={(id) => deleteObstacle(id).catch((e) => notifyError(e))}
+              onSelectObstacle={(id) => setSelection({ kind: "obstacle", id })}
+            />
+          </EditorPanelShell>
+        ) : null}
       </div>
 
       <PlanogramEditorModal
@@ -2019,6 +2231,13 @@ export default function LayoutEditor({
         loading={coverageLoading}
         onRefresh={refreshPlanogramCoverage}
         categories={categories}
+        layout={layout}
+        products={products}
+        onLocateShelf={(shelfId) => {
+          selectShelf(shelfId, "A", { openPlanogram: false });
+          setFocus3dRequest((n) => n + 1);
+          if (!view3d) frameShelfIds([shelfId]);
+        }}
       />
     </section>
   );

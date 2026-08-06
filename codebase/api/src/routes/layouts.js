@@ -27,6 +27,10 @@ import {
   validatePolygonRing,
 } from "../services/polygonContainment.js";
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../services/zones.js";
+import { normalizeObstacle, normalizeObstacleType } from "../services/obstacles.js";
+import { normalizeFloorPlan, patchFloorPlan } from "../services/floorPlan.js";
+import { deleteFloorPlanImage, saveFloorPlanImage } from "../services/floorPlanImages.js";
+import { computeShelfLoad } from "../services/weightMath.js";
 import { packAislesAndShelves } from "../services/layoutPacker.js";
 import { bindShelvesToAisles, finalizeAisleShelfBinding } from "../services/aisleBinding.js";
 import { finalizeAisleLabeling } from "../services/aisleLabeling.js";
@@ -117,6 +121,9 @@ function containmentError(res, err) {
   }
   if (err?.code === "overlap_violation") {
     return res.status(400).json({ error: "overlap_violation" });
+  }
+  if (err?.code === "obstacle_violation") {
+    return res.status(400).json({ error: "obstacle_violation", obstacleId: err.obstacleId });
   }
   throw err;
 }
@@ -450,6 +457,7 @@ layoutsRouter.post("/layouts/:layoutId/aisles", authRequired, requireRoles("Desi
     path: req.body?.path || [],
     categoryId: req.body?.categoryId,
     color: req.body?.color,
+    source: "manual",
     violations: [],
   };
   layout.aisles = layout.aisles || [];
@@ -584,6 +592,164 @@ layoutsRouter.delete(
   }
 );
 
+// ---- Architectural obstacles (columns / walls / blocked areas) ----
+layoutsRouter.post(
+  "/layouts/:layoutId/obstacles",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    const obstacle = normalizeObstacle(req.body || {});
+    try {
+      assertInsideOrThrow(obstacle, "obstacle", layout);
+      assertNoOverlapOrThrow(obstacle, "obstacle", layout);
+    } catch (err) {
+      return containmentError(res, err);
+    }
+    layout.obstacles = layout.obstacles || [];
+    layout.obstacles.push(obstacle);
+    saveNormalized(layout);
+    audit(req.user.email, "layout.obstacle.add", `${layout.id}:${obstacle.id}`);
+    res.status(201).json(layout);
+  }
+);
+
+layoutsRouter.patch(
+  "/layouts/:layoutId/obstacles/:obstacleId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    const obstacle = (layout.obstacles || []).find((o) => o.id === req.params.obstacleId);
+    if (!obstacle) return res.status(404).json({ error: "obstacle_not_found" });
+    const patch = req.body || {};
+    if (patch.type != null) obstacle.type = normalizeObstacleType(patch.type);
+    if (patch.name !== undefined) obstacle.name = patch.name || obstacle.name;
+    if (patch.color !== undefined) obstacle.color = patch.color || obstacle.color;
+    for (const key of ["x", "y", "widthMeters", "depthMeters", "heightMeters"]) {
+      if (patch[key] != null) obstacle[key] = Number(patch[key]);
+    }
+    try {
+      assertInsideOrThrow(obstacle, "obstacle", layout);
+      assertNoOverlapOrThrow(obstacle, "obstacle", layout);
+    } catch (err) {
+      return containmentError(res, err);
+    }
+    saveNormalized(layout);
+    audit(req.user.email, "layout.obstacle.patch", `${layout.id}:${obstacle.id}`);
+    res.json(layout);
+  }
+);
+
+layoutsRouter.delete(
+  "/layouts/:layoutId/obstacles/:obstacleId",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    const before = (layout.obstacles || []).length;
+    layout.obstacles = (layout.obstacles || []).filter((o) => o.id !== req.params.obstacleId);
+    if (layout.obstacles.length === before) return res.status(404).json({ error: "obstacle_not_found" });
+    saveNormalized(layout);
+    audit(req.user.email, "layout.obstacle.delete", `${layout.id}:${req.params.obstacleId}`);
+    res.json(layout);
+  }
+);
+
+// ---- Floor-plan underlay (uploaded architectural drawing) ----
+layoutsRouter.post(
+  "/layouts/:layoutId/floor-plan",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+
+    const dataBase64 = String(req.body?.dataBase64 || req.body?.data || "");
+    if (!dataBase64) return res.status(400).json({ error: "data_required" });
+
+    let buffer;
+    try {
+      const raw = dataBase64.includes(",") ? dataBase64.split(",").pop() : dataBase64;
+      buffer = Buffer.from(raw, "base64");
+    } catch {
+      return res.status(400).json({ error: "invalid_image_data" });
+    }
+    if (!buffer?.length) return res.status(400).json({ error: "invalid_image_data" });
+
+    let saved;
+    try {
+      saved = saveFloorPlanImage(buffer, layout.id, req.body?.fileName || "floor-plan.png");
+    } catch {
+      return res.status(400).json({ error: "invalid_image_file" });
+    }
+
+    // Default the underlay to the store envelope so it lands on-screen ready to calibrate.
+    const envelope = layout.storeEnvelope || {};
+    const previous = layout.floorPlan;
+    layout.floorPlan = normalizeFloorPlan({
+      url: saved.url,
+      fileName: saved.fileName,
+      x: req.body?.x ?? envelope.x ?? 0,
+      y: req.body?.y ?? envelope.y ?? 0,
+      widthMeters: req.body?.widthMeters ?? envelope.widthMeters ?? layout.widthMeters,
+      depthMeters: req.body?.depthMeters ?? envelope.depthMeters ?? layout.depthMeters,
+      opacity: req.body?.opacity ?? 0.5,
+      visible: true,
+    });
+    if (previous?.fileName && previous.fileName !== saved.fileName) {
+      try {
+        deleteFloorPlanImage(previous.fileName);
+      } catch {
+        /* stale file is harmless */
+      }
+    }
+
+    saveNormalized(layout);
+    audit(req.user.email, "layout.floorplan.upload", `${layout.id}:${saved.fileName}`);
+    res.status(201).json(layout);
+  }
+);
+
+layoutsRouter.patch(
+  "/layouts/:layoutId/floor-plan",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    if (!layout.floorPlan) return res.status(404).json({ error: "floor_plan_not_found" });
+    layout.floorPlan = patchFloorPlan(layout.floorPlan, req.body || {});
+    saveNormalized(layout);
+    audit(req.user.email, "layout.floorplan.patch", layout.id);
+    res.json(layout);
+  }
+);
+
+layoutsRouter.delete(
+  "/layouts/:layoutId/floor-plan",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    const existing = layout.floorPlan;
+    if (!existing) return res.status(404).json({ error: "floor_plan_not_found" });
+    layout.floorPlan = null;
+    try {
+      deleteFloorPlanImage(existing.fileName);
+    } catch {
+      /* stale file is harmless */
+    }
+    saveNormalized(layout);
+    audit(req.user.email, "layout.floorplan.delete", layout.id);
+    res.json(layout);
+  }
+);
+
 // ---- Store entry points ----
 layoutsRouter.post(
   "/layouts/:layoutId/entry-points",
@@ -696,6 +862,11 @@ layoutsRouter.patch(
     for (const key of ["x", "y", "widthMeters", "depthMeters", "heightMeters", "rotationDeg", "usableWidthMeters"]) {
       if (patch[key] != null) target[key] = Number(patch[key]);
     }
+    for (const key of ["maxLoadKgPerLevel", "maxLoadKg"]) {
+      if (patch[key] !== undefined) {
+        target[key] = patch[key] == null || patch[key] === "" ? null : Number(patch[key]);
+      }
+    }
     if (patch.label != null) target.label = patch.label;
     try {
       assertInsideOrThrow(target, "shelf", layout);
@@ -802,6 +973,11 @@ layoutsRouter.patch(
     for (const key of ["x", "y", "widthMeters", "depthMeters", "heightMeters", "usableWidthMeters"]) {
       if (patch[key] != null) shelf[key] = Number(patch[key]);
     }
+    for (const key of ["maxLoadKgPerLevel", "maxLoadKg"]) {
+      if (patch[key] !== undefined) {
+        shelf[key] = patch[key] == null || patch[key] === "" ? null : Number(patch[key]);
+      }
+    }
     if (patch.rotationDeg != null) shelf.rotationDeg = normalizeRotationDeg(patch.rotationDeg);
     if (patch.label != null) shelf.label = patch.label;
     if (patch.type != null) shelf.type = patch.type;
@@ -851,16 +1027,21 @@ layoutsRouter.patch(
       patch.widthMeters != null ||
       patch.depthMeters != null ||
       patch.usableWidthMeters != null;
-    const mate = poseChanged ? syncPairMatePose(layout, shelf) : findPairMate(layout, shelf);
-    try {
-      assertInsideOrThrow(shelf, "shelf", layout);
-      assertNoOverlapOrThrow(shelf, "shelf", layout, { ignoreId: shelf.id });
-      if (mate) {
-        assertInsideOrThrow(mate, "shelf", layout);
-        assertNoOverlapOrThrow(mate, "shelf", layout, { ignoreId: mate.id });
+    // Segment / category / label edits must not re-run aisle overlap checks — many
+    // generated layouts have aisle bands that kiss shelf footprints, and blocking
+    // Split/Merge for that is a false positive.
+    if (poseChanged) {
+      const mate = syncPairMatePose(layout, shelf);
+      try {
+        assertInsideOrThrow(shelf, "shelf", layout);
+        assertNoOverlapOrThrow(shelf, "shelf", layout, { ignoreId: shelf.id });
+        if (mate) {
+          assertInsideOrThrow(mate, "shelf", layout);
+          assertNoOverlapOrThrow(mate, "shelf", layout, { ignoreId: mate.id });
+        }
+      } catch (err) {
+        return containmentError(res, err);
       }
-    } catch (err) {
-      return containmentError(res, err);
     }
     saveNormalized(layout);
     audit(req.user.email, "layout.shelf.patch", `${layout.id}:${shelf.id}`);
@@ -986,8 +1167,22 @@ layoutsRouter.post(
     pog.push(placement);
     syncLegacyFromFaces(shelf);
     saveNormalized(layout);
+
+    // Manual placement is never blocked on weight — the planner is told and decides.
+    const load = computeShelfLoad(shelf, repo.listProducts());
+    const level = load.levels.find((l) => l.levelIndex === placement.levelIndex);
+    const weightWarning =
+      level?.overloaded
+        ? {
+            code: "level_overloaded",
+            levelIndex: level.levelIndex,
+            loadKg: level.loadKg,
+            limitKg: level.limitKg,
+          }
+        : null;
+
     audit(req.user.email, "layout.planogram.add", `${layout.id}:${shelf.id}:${productId}`);
-    res.status(201).json(layout);
+    res.status(201).json(weightWarning ? { ...layout, weightWarning } : layout);
   }
 );
 
@@ -1063,10 +1258,17 @@ layoutsRouter.post(
       body.shelfTemplate?.type ||
       (layout.vertical === "hypermarket" ? "gondola" : "shelf");
     const shelfTmpl = templates.find((t) => t.type === preferredType) || templates.find((t) => t.type === "shelf") || {};
-    const minAisle =
-      body.minAisleWidthMeters != null
+    const configMinAisle = Math.max(0.9, Number(config.minAisleWidthMeters) || 1.2);
+    const requestedAisle =
+      body.minAisleWidthMeters != null && body.minAisleWidthMeters !== ""
         ? Number(body.minAisleWidthMeters)
-        : Math.min(Number(config.minAisleWidthMeters) || 1.2, 1.0);
+        : configMinAisle;
+    // Never pack narrower than the store-type rule — otherwise Smart Generate
+    // immediately produces aisle-width violations on the layout.
+    const minAisle = Math.max(
+      configMinAisle,
+      Number.isFinite(requestedAisle) ? requestedAisle : configMinAisle
+    );
     const packed = packAislesAndShelves(layout, {
       orientation: body.orientation || "auto",
       minAisleWidthMeters: minAisle,
@@ -1081,6 +1283,10 @@ layoutsRouter.post(
       },
     });
     layout.aisles = packed.aisles;
+    // Hard guarantee: every generated aisle meets the validated minimum width.
+    for (const aisle of layout.aisles || []) {
+      if (Number(aisle.widthMeters) < minAisle) aisle.widthMeters = minAisle;
+    }
     layout.aisleMappings = [];
 
     const categoryMix = Array.isArray(body.categoryMix) ? body.categoryMix : [];
