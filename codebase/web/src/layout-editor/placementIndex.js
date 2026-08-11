@@ -9,12 +9,7 @@ import {
   effectiveSegmentsForLevel,
   resolveSegmentId,
 } from "./planogramSegments.js";
-import {
-  normalizeShelfUI,
-  planogramRowsOnPhysicalShelf,
-  shelfDisplayLabel,
-  segmentFaceIdForShelf,
-} from "./shelfFaces.js";
+import { aisleDisplayLabel, normalizeShelfUI, planogramRowsOnPhysicalShelf, shelfDisplayLabel, segmentFaceIdForShelf } from "./shelfFaces.js";
 
 function positionForPlacement(shelf, faceId, placement) {
   const levelIndex = Number(placement?.levelIndex) || 0;
@@ -62,6 +57,8 @@ export function collectLayoutPlacements(layout, products = [], categories = []) 
     if (!raw || raw.pairDisplay) continue;
     const shelf = normalizeShelfUI(raw);
     const shelfLabel = shelfDisplayLabel(shelf, aisles);
+    const aisle = (aisles || []).find((a) => a.id === shelf?.aisleId);
+    const aisleLabel = aisle ? aisleDisplayLabel(aisle) : null;
     const faceIds =
       shelf.faces?.some((f) => f.id === "B" && (f.planogram?.length || f.segments?.length))
         ? ["A", "B"]
@@ -84,6 +81,8 @@ export function collectLayoutPlacements(layout, products = [], categories = []) 
           categoryName: categoryId ? categoryLabel(categories, categoryId) : "Uncategorized",
           shelfId: shelf.id,
           shelfLabel: `${shelfLabel || shelf.label || shelf.id}${faceSuffix}`,
+          aisleId: aisle?.id || shelf?.aisleId || null,
+          aisleLabel,
           levelIndex: Number(placement.levelIndex) || 0,
           levelLabel: levelDisplayLabel(placement.levelIndex),
           positionIndex: pos.positionIndex,
@@ -94,6 +93,9 @@ export function collectLayoutPlacements(layout, products = [], categories = []) 
           footprintSqm: space.footprintSqm,
           volumeM3: space.volumeM3,
           locationText: `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
+          directionsText: aisleLabel
+            ? `Aisle ${aisleLabel} · Shelf ${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`
+            : `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
         });
       }
     }

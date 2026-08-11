@@ -7,23 +7,28 @@ import {
   layoutCanvasBounds,
   layoutFixtureZoneRect,
   layoutStoreEnvelope,
+  shelfCanvasAabb,
 } from "./polygonCanvas.js";
 import { normalizeShelfUI, shelvesForScene3D } from "./shelfFaces.js";
 import { shelf3dLocalBox } from "../scene3dDimensions.js";
 import { resolveAssetUrl } from "../assetUrl.js";
+import { AISLE_ACTIVE, BRAND, FACE_A, FACE_B, hexToThree, NEUTRAL } from "../designTokens.js";
 
 /** Default 3D tab zoom: 70% of fit-store distance (slightly zoomed in). */
 export const DEFAULT_OVERVIEW_ZOOM = 0.7;
 
 export const SCENE_COLORS = {
-  background: 0xe9e5e0,
-  storeFill: 0xfbfaf8,
+  background: hexToThree(NEUTRAL.canvas),
+  storeFill: hexToThree(NEUTRAL.floor),
   storeBorder: 0x475569,
   fixtureFill: 0xfffbf8,
-  fixtureBorder: 0xa30a2a,
-  aisleDefault: 0x9aa1ab,
-  grid: 0xe5e7eb,
-  shelfDefault: 0xa30a2a,
+  fixtureBorder: hexToThree(BRAND.hex),
+  aisleDefault: 0x94a3b8,
+  grid: hexToThree(NEUTRAL.line),
+  shelfDefault: hexToThree(BRAND.hex),
+  faceA: hexToThree(FACE_A.hex),
+  faceB: hexToThree(FACE_B.hex),
+  aisleActive: hexToThree(AISLE_ACTIVE.hex),
 };
 
 /** Layout bounds for 3D camera + floor (polygon-aware). */
@@ -208,35 +213,92 @@ export function buildFloorPlanUnderlay(layout, texLoader) {
   return { mesh, disposables: [geo, mat] };
 }
 
-/** Walk aisle strips. */
-export function buildAisleMeshes(layout, { overview = true } = {}) {
+function rotationRad(shelf) {
+  return ((((Number(shelf?.rotationDeg) || 0) % 360) + 360) % 360) * (Math.PI / 180);
+}
+
+/** Shopper-side corridor strip in front of each bound merchandising face (FR-AISLE-02). */
+export function buildFaceAisleCorridors(layout, { highlightAisleId = null } = {}) {
   const root = new THREE.Group();
   const disposables = [];
+  const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+  const hasFocus = Boolean(highlightAisleId);
+
+  for (const shelf of shelves) {
+    const aisleId = shelf?.aisleId;
+    if (!aisleId || aisleId === "aisle-check") continue;
+
+    const local = shelf3dLocalBox(normalizeShelfUI(shelf), layout);
+    const w = Math.max(0.55, local.widthMeters * 0.94);
+    const d = Math.max(0.15, local.depthMeters);
+    const rot = rotationRad(shelf);
+    const nx = -Math.sin(rot);
+    const nz = -Math.cos(rot);
+    const aabb = shelfCanvasAabb(shelf);
+    const cx = aabb.x + aabb.w / 2;
+    const cz = aabb.y + aabb.d / 2;
+    const corridorDepth = 0.62;
+    const offset = d / 2 + corridorDepth / 2 + 0.12;
+    const wx = cx + nx * offset;
+    const wz = cz + nz * offset;
+    const isActive = hasFocus && aisleId === highlightAisleId;
+
+    const geo = new THREE.BoxGeometry(w, isActive ? 0.055 : 0.038, corridorDepth);
+    const mat = new THREE.MeshStandardMaterial({
+      color: isActive ? SCENE_COLORS.aisleActive : SCENE_COLORS.aisleDefault,
+      roughness: 0.82,
+      transparent: true,
+      opacity: isActive ? 0.78 : hasFocus ? 0.22 : 0.42,
+      emissive: isActive ? new THREE.Color(SCENE_COLORS.aisleActive) : new THREE.Color(0x000000),
+      emissiveIntensity: isActive ? 0.42 : 0,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(wx, isActive ? 0.05 : 0.036, wz);
+    mesh.rotation.y = -rot;
+    mesh.userData.aisleId = aisleId;
+    mesh.userData.shelfId = shelf.id;
+    root.add(mesh);
+    disposables.push(geo, mat);
+  }
+
+  return { group: root, disposables };
+}
+
+/** Walk aisle strips. Optionally emphasize the aisle in front of the selected shelf. */
+export function buildAisleMeshes(layout, { overview = true, highlightAisleId = null } = {}) {
+  const root = new THREE.Group();
+  const disposables = [];
+  const hasFocus = Boolean(highlightAisleId);
   for (const a of layout.aisles || []) {
     const aw = Math.max(0.4, Number(a.widthMeters) || 1);
     const len =
       a.lengthMeters != null ? Number(a.lengthMeters) : Math.max(2, (layout.widthMeters || 10) * 0.35);
     const vertical = a.orientation === "vertical";
     const geo = vertical
-      ? new THREE.BoxGeometry(aw, 0.035, len)
-      : new THREE.BoxGeometry(len, 0.035, aw);
+      ? new THREE.BoxGeometry(aw, hasFocus && a.id === highlightAisleId ? 0.06 : 0.035, len)
+      : new THREE.BoxGeometry(len, hasFocus && a.id === highlightAisleId ? 0.06 : 0.035, aw);
     let color = SCENE_COLORS.aisleDefault;
     try {
       if (a.color) color = new THREE.Color(a.color);
     } catch {
       /* keep */
     }
+    const isActive = hasFocus && a.id === highlightAisleId;
     const mat = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.9,
+      color: isActive ? SCENE_COLORS.aisleActive : color,
+      roughness: 0.85,
       transparent: true,
-      opacity: overview ? 0.28 : 0.38,
+      opacity: isActive ? 0.72 : hasFocus ? (overview ? 0.12 : 0.18) : overview ? 0.28 : 0.38,
+      emissive: isActive ? new THREE.Color(SCENE_COLORS.aisleActive) : new THREE.Color(0x000000),
+      emissiveIntensity: isActive ? 0.35 : 0,
     });
     const mesh = new THREE.Mesh(geo, mat);
     const ax = a.x != null ? Number(a.x) : 1;
     const az = a.y != null ? Number(a.y) : 1;
-    if (vertical) mesh.position.set(ax + aw / 2, 0.032, az + len / 2);
-    else mesh.position.set(ax + len / 2, 0.032, az + aw / 2);
+    const y = isActive ? 0.045 : 0.032;
+    if (vertical) mesh.position.set(ax + aw / 2, y, az + len / 2);
+    else mesh.position.set(ax + len / 2, y, az + aw / 2);
+    mesh.userData.aisleId = a.id;
     root.add(mesh);
     disposables.push(geo, mat);
   }
@@ -354,6 +416,87 @@ export function setupSceneLighting(scene) {
   const fill = new THREE.DirectionalLight(0xffffff, 0.32);
   fill.position.set(-10, 12, -6);
   scene.add(fill);
+}
+
+/** Floor-level walk path for shopper kiosk — axis-aligned segments only. */
+export function buildShopperRouteOverlay(routePoints, { y = 0.22 } = {}) {
+  const group = new THREE.Group();
+  const disposables = [];
+  if (!routePoints || routePoints.length < 2) return { group, disposables };
+
+  const routeMat = new THREE.MeshStandardMaterial({
+    color: 0x16a34a,
+    emissive: 0x16a34a,
+    emissiveIntensity: 0.42,
+    roughness: 0.35,
+    metalness: 0.05,
+  });
+  const nodeMat = new THREE.MeshStandardMaterial({
+    color: 0xa30a2a,
+    emissive: 0xa30a2a,
+    emissiveIntensity: 0.45,
+    roughness: 0.4,
+  });
+  disposables.push(routeMat, nodeMat);
+
+  const up = new THREE.Vector3(0, 1, 0);
+  const dir = new THREE.Vector3();
+
+  for (let i = 0; i < routePoints.length - 1; i += 1) {
+    const a = routePoints[i];
+    const b = routePoints[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.y - a.y;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.04) continue;
+    const geo = new THREE.CylinderGeometry(0.1, 0.1, len, 10);
+    const mesh = new THREE.Mesh(geo, routeMat);
+    mesh.position.set((a.x + b.x) / 2, y, (a.y + b.y) / 2);
+    dir.set(dx / len, 0, dz / len);
+    mesh.quaternion.setFromUnitVectors(up, dir);
+    group.add(mesh);
+    disposables.push(geo);
+  }
+
+  for (let i = 1; i < routePoints.length - 1; i += 1) {
+    const p = routePoints[i];
+    const geo = new THREE.SphereGeometry(0.14, 10, 10);
+    const mesh = new THREE.Mesh(geo, nodeMat);
+    mesh.position.set(p.x, y + 0.02, p.y);
+    group.add(mesh);
+    disposables.push(geo);
+  }
+
+  return { group, disposables };
+}
+
+/** Green ring at store entry for shopper kiosk. */
+export function buildShopperEntryMarker(entryPoint, { y = 0.1 } = {}) {
+  const group = new THREE.Group();
+  const disposables = [];
+  if (!entryPoint) return { group, disposables };
+
+  const x = Number(entryPoint.x) || 0;
+  const z = Number(entryPoint.y) || 0;
+  const ringMat = new THREE.MeshStandardMaterial({
+    color: 0x16a34a,
+    emissive: 0x16a34a,
+    emissiveIntensity: 0.55,
+    roughness: 0.35,
+  });
+  const ringGeo = new THREE.RingGeometry(0.35, 0.55, 24);
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, y, z);
+  group.add(ring);
+
+  const postGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.5, 8);
+  const post = new THREE.Mesh(postGeo, ringMat);
+  post.position.set(x, 0.25, z);
+  group.add(post);
+
+  disposables.push(ringGeo, postGeo, ringMat);
+  return { group, disposables };
 }
 
 export function disposeObject3D(obj) {

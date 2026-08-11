@@ -3,8 +3,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   buildAisleMeshes,
+  buildFaceAisleCorridors,
   buildFloorPlanUnderlay,
   buildObstacleMeshes,
+  buildShopperEntryMarker,
+  buildShopperRouteOverlay,
   buildStoreFloor,
   createWebGLRenderer,
   DEFAULT_OVERVIEW_ZOOM,
@@ -20,10 +23,10 @@ import {
   physicalShelfForMerchandisingFace,
   planogramForSceneFace,
   planogramForMerchandisingFace,
+  shelfCanvasFaceLabel,
   storageFaceIdForScene3D,
   shelvesForScene3D,
   shelfDisplayLabel,
-  shelfFaceDisplayLabel,
 } from "./layout-editor/shelfFaces.js";
 import { effectiveSegmentsForLevel, resolveSegmentId, shelfLevels } from "./layout-editor/planogramSegments.js";
 import {
@@ -37,8 +40,12 @@ import {
   levelClearanceMeters,
   productFacingSize,
   shelf3dLocalBox,
-  shelfWorldFocus,
+  shelfFaceWorldFocus,
 } from "./scene3dDimensions.js";
+
+function faceHighlightColor(faceId = "A") {
+  return faceId === "B" ? SCENE_COLORS.faceB : SCENE_COLORS.faceA;
+}
 
 function insideFloor(x, z, layout) {
   if (layout.shape === "polygon" && layout.polygon?.length >= 3) {
@@ -131,21 +138,30 @@ function makeShelfNumberLabel(text, emphasized = false) {
   return { sprite, disposables: [tex, mat] };
 }
 
-function scene3dShelfNumber(raw, layout) {
+function scene3dFaceLabels(raw, layout, { dual, shelfFocusMode, isHighlighted, highlightFaceId }) {
   const aisles = layout?.aisles || [];
-  const all = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
-  if (raw?.pairDisplay && raw?.pairShelfIds) {
-    const front = all.find((s) => s.id === raw.pairShelfIds.front);
-    const back = all.find((s) => s.id === raw.pairShelfIds.back);
-    const a = front ? shelfFaceDisplayLabel(front, aisles) : null;
-    const b = back ? shelfFaceDisplayLabel(back, aisles) : null;
-    if (a && b && a !== b) return `${a}/${b}`;
-    return a || b || shelfDisplayLabel(raw, aisles);
+  const allShelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+
+  function labelForFace(faceId) {
+    const text = shelfCanvasFaceLabel(raw, faceId, aisles, allShelves);
+    if (!text || text === "—") return null;
+    return text;
   }
-  const label = shelfDisplayLabel(raw, aisles);
-  if (label && label !== "—") return label;
-  if (raw?.displayNumber != null) return String(raw.displayNumber);
-  return raw?.label || null;
+
+  if (dual) {
+    const faces = ["A", "B"];
+    const labels = [];
+    for (const faceId of faces) {
+      if (shelfFocusMode && isHighlighted && highlightFaceId !== faceId) continue;
+      const text = labelForFace(faceId);
+      if (text) labels.push({ faceId, text });
+    }
+    return labels;
+  }
+
+  const text = labelForFace("A") || shelfDisplayLabel(raw, aisles);
+  if (!text || text === "—") return [];
+  return [{ faceId: "A", text }];
 }
 
 function buildWalkerAvatar() {
@@ -233,8 +249,9 @@ function buildWalkerAvatar() {
 const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
 const UNIT_PLANE = new THREE.PlaneGeometry(1, 1);
 const MAX_FACINGS = 16000;
-/** In store overview, limit depth rows so every shelf still gets visible facings. */
-const OVERVIEW_MAX_DEPTH = 2;
+
+/** Survives scene rebuilds so planogram → 3D does not lose loaded product images. */
+const productTextureCache = new Map();
 
 function facingVisualSize(unitW, unitH, unitD, overviewBoost) {
   return {
@@ -275,7 +292,7 @@ function createBoxMaterial(inst, matCache, disposables, texture = null) {
     polygonOffsetUnits: -2,
   });
   if (inst.emphasized) {
-    mat.emissive = new THREE.Color(0xa30a2a);
+    mat.emissive = new THREE.Color(SCENE_COLORS.shelfDefault);
     mat.emissiveIntensity = inst.shelfFocus ? 0.14 : 0.22;
   } else if (inst.overviewBoost && !inst.dimmed) {
     mat.emissive = texture ? new THREE.Color(0x222222) : baseColor.clone();
@@ -302,14 +319,14 @@ function createPlaneMaterial(imageUrl, texCache, disposables) {
   return mat;
 }
 
-function preloadProductTextures(texLoader, texCache, urls, disposables) {
+function preloadProductTextures(texLoader, urls) {
   const unique = [...new Set((urls || []).filter(Boolean))];
   if (!unique.length) return Promise.resolve();
   return Promise.all(
     unique.map(
       (url) =>
         new Promise((resolve) => {
-          if (texCache.has(url)) {
+          if (productTextureCache.has(url)) {
             resolve();
             return;
           }
@@ -320,8 +337,7 @@ function preloadProductTextures(texLoader, texCache, urls, disposables) {
               tex.minFilter = THREE.LinearFilter;
               tex.magFilter = THREE.LinearFilter;
               tex.generateMipmaps = false;
-              texCache.set(url, tex);
-              disposables.push(tex);
+              productTextureCache.set(url, tex);
               resolve();
             },
             undefined,
@@ -330,6 +346,23 @@ function preloadProductTextures(texLoader, texCache, urls, disposables) {
         })
     )
   );
+}
+
+function applyProductImagesToJobs(expandedJobs, { matCache, disposables }) {
+  for (const job of expandedJobs) {
+    if (!job.instances.length) continue;
+    const anyLoaded = job.instances.some(
+      (inst) => inst.imageUrl && productTextureCache.has(inst.imageUrl)
+    );
+    if (!anyLoaded) continue;
+    clearProductMeshes(job.group);
+    addInstancedFacings(job.group, job.instances, {
+      texCache: productTextureCache,
+      matCache,
+      disposables,
+      showImages: true,
+    });
+  }
 }
 
 function collectShelfFacingInstances({
@@ -345,6 +378,7 @@ function collectShelfFacingInstances({
   h,
   overviewProductBoost,
   faceDepthMeters,
+  highlightProductId = null,
 }) {
   const instances = [];
   const facePlanograms = resolveFacePlanograms(
@@ -389,6 +423,7 @@ function collectShelfFacingInstances({
         Math.max(1, Math.round(Number(placement.facings) || 1))
       );
       const depthCount = Math.max(1, Math.round(Number(placement.depthFacings) || 1));
+      const stackLayers = Math.max(1, Math.round(Number(placement.stackLayers) || 1));
       const slotW = segW / facingsCount;
       const clearance = levelClearanceMeters(lv, levels, h);
       const depthSign = face.id === "B" ? -1 : 1;
@@ -401,6 +436,7 @@ function collectShelfFacingInstances({
         clearance,
         facingsCount,
         depthCount,
+        stackLayers,
         depthSign,
         faceZ: face.z,
         rotY: face.rotY,
@@ -409,9 +445,14 @@ function collectShelfFacingInstances({
         merchW: segW,
         segmentOffset: Number(seg?.offsetMeters) || 0,
         overviewProductBoost,
-        emphasized: isHighlighted,
-        dimmed: Boolean(shelfFocusMode && !isHighlighted),
-        shelfFocus: shelfFocusMode && isHighlighted,
+        emphasized: Boolean(
+          (isHighlighted && face.id === activeFace) ||
+            (highlightProductId && placement.productId === highlightProductId)
+        ),
+        dimmed: Boolean(
+          shelfFocusMode && !(isHighlighted && face.id === activeFace)
+        ),
+        shelfFocus: Boolean(shelfFocusMode && isHighlighted && face.id === activeFace),
         shelfDepth: faceDepth,
       });
     }
@@ -431,51 +472,60 @@ function expandFacingInstances(rawInstances, productLookup, maxDim, facingBudget
       facing = overviewFacingSize(facing, raw.slotW);
     }
 
+    const stackLayers = Math.max(1, Math.round(Number(raw.stackLayers) || 1));
+    const maxStackVisual = Math.max(
+      1,
+      Math.floor((raw.clearance - 0.028) / Math.max(0.05, facing.h + 0.008))
+    );
+    const stackLimit = Math.min(stackLayers, maxStackVisual);
+
     // Keep the depth stack inside the face — never spill into the aisle.
     const maxStack = Math.max(0.1, raw.shelfDepth * 0.88);
     const depthLimit = Math.max(
       1,
       Math.min(
         raw.depthCount,
-        overview ? OVERVIEW_MAX_DEPTH : raw.depthCount,
         Math.max(1, Math.floor(maxStack / Math.max(0.05, facing.d) + 1e-9))
       )
     );
     const unitDFit = Math.min(facing.d, maxStack / depthLimit - 0.008);
     const unitWFit = Math.min(facing.w, raw.slotW * 0.92);
 
-    for (let depthIdx = 0; depthIdx < depthLimit; depthIdx += 1) {
-      for (let faceIdx = 0; faceIdx < raw.facingsCount; faceIdx += 1) {
-        if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
-        let unitW = unitWFit;
-        let unitH = facing.h;
-        let unitD = Math.max(0.04, unitDFit);
-        if (raw.overviewProductBoost) {
-          const boosted = overviewBlockSize({ w: unitW, h: unitH, d: unitD }, raw.slotW, maxDim);
-          unitW = Math.min(boosted.w, raw.slotW * 0.92);
-          unitH = boosted.h;
-          unitD = Math.min(boosted.d, unitDFit);
+    for (let stackIdx = 0; stackIdx < stackLimit; stackIdx += 1) {
+      for (let depthIdx = 0; depthIdx < depthLimit; depthIdx += 1) {
+        for (let faceIdx = 0; faceIdx < raw.facingsCount; faceIdx += 1) {
+          if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
+          let unitW = unitWFit;
+          let unitH = facing.h;
+          let unitD = Math.max(0.04, unitDFit);
+          if (raw.overviewProductBoost) {
+            const boosted = overviewBlockSize({ w: unitW, h: unitH, d: unitD }, raw.slotW, maxDim);
+            unitW = Math.min(boosted.w, raw.slotW * 0.92);
+            unitH = boosted.h;
+            unitD = Math.min(boosted.d, unitDFit);
+          }
+          const xLocal = (raw.segmentOffset || 0) + raw.slotW * (faceIdx + 0.5);
+          const z = raw.faceZ + raw.depthSign * (unitD * 0.5 + depthIdx * (unitD + 0.01));
+          const vis = facingVisualSize(unitW, unitH, unitD, raw.overviewProductBoost);
+          out.push({
+            x: xLocal,
+            y: raw.boardY + 0.028 + vis.h / 2 + stackIdx * (vis.h + 0.008),
+            z,
+            rotY: raw.rotY,
+            unitW: vis.w,
+            unitH: vis.h,
+            unitD: vis.d,
+            product,
+            imageUrl,
+            emphasized: raw.emphasized,
+            dimmed: raw.dimmed,
+            overviewBoost: raw.overviewProductBoost,
+            shelfFocus: raw.shelfFocus,
+          });
+          facingBudgetRef.count += 1;
+          shelfCount += 1;
         }
-        const xLocal = (raw.segmentOffset || 0) + raw.slotW * (faceIdx + 0.5);
-        const z = raw.faceZ + raw.depthSign * (unitD * 0.5 + depthIdx * (unitD + 0.01));
-        const vis = facingVisualSize(unitW, unitH, unitD, raw.overviewProductBoost);
-        out.push({
-          x: xLocal,
-          y: raw.boardY + 0.028 + vis.h / 2,
-          z,
-          rotY: raw.rotY,
-          unitW: vis.w,
-          unitH: vis.h,
-          unitD: vis.d,
-          product,
-          imageUrl,
-          emphasized: raw.emphasized,
-          dimmed: raw.dimmed,
-          overviewBoost: raw.overviewProductBoost,
-          shelfFocus: raw.shelfFocus,
-        });
-        facingBudgetRef.count += 1;
-        shelfCount += 1;
+        if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
       }
       if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
     }
@@ -595,7 +645,14 @@ function overviewBlockSize(block, segW, maxDim) {
 
 function planogramRowsForFace(f, layout, faceId, focusPhysicalShelfId, shelfFocusMode, isHighlighted, activeFace) {
   if (shelfFocusMode && isHighlighted && focusPhysicalShelfId) {
-    return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, activeFace);
+    // Only the selected aisle face carries planogram products in focus mode.
+    if (f.pairDisplay && f.pairShelfIds) {
+      const physId = faceId === "B" ? f.pairShelfIds.back : f.pairShelfIds.front;
+      if (physId !== focusPhysicalShelfId) return [];
+      return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, "A");
+    }
+    if (faceId !== activeFace) return [];
+    return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, faceId);
   }
   const id = faceId === "B" ? "B" : "A";
   const norm = normalizeShelfUI(f);
@@ -648,7 +705,25 @@ function faceShopperRotY(dual, faceId) {
   return faceId === "B" ? 0 : Math.PI;
 }
 
-function shelfFocusCamera(highlight, faceId = "A") {
+/** Which merchandising face on a (possibly merged) 3D shelf matches the selected physical id. */
+function resolveActiveFaceForHighlight(f, highlightShelfId, highlightFaceId = "A") {
+  if (f?.pairDisplay && f?.pairShelfIds) {
+    if (highlightShelfId && highlightShelfId === f.pairShelfIds.back) return "B";
+    if (highlightShelfId && highlightShelfId === f.pairShelfIds.front) return "A";
+  }
+  return highlightFaceId === "B" ? "B" : "A";
+}
+
+function unitTouchesPhysicalShelf(f, highlightShelfId) {
+  if (!highlightShelfId) return false;
+  return (
+    f.id === highlightShelfId ||
+    f.pairShelfIds?.front === highlightShelfId ||
+    f.pairShelfIds?.back === highlightShelfId
+  );
+}
+
+function shelfFocusCamera(highlight, faceId = "A", { peek = false } = {}) {
   const cx = highlight.x;
   const cz = highlight.z;
   const h = highlight.h || 2;
@@ -656,9 +731,11 @@ function shelfFocusCamera(highlight, faceId = "A") {
   const dual = Boolean(highlight.dual);
   const merchW = highlight.merchW || highlight.w || 1.2;
   const span = Math.max(merchW, highlight.d || 0.6);
-  const dist = Math.max(1.35, Math.min(2.6, span * 1.35));
-  const eyeY = Math.max(1.05, h * 0.5);
-  const lookY = Math.max(0.62, h * 0.46);
+  const dist = peek
+    ? Math.max(2.4, Math.min(4.2, span * 2.1))
+    : Math.max(1.35, Math.min(2.6, span * 1.35));
+  const eyeY = peek ? Math.max(2.2, h * 0.85) : Math.max(1.05, h * 0.5);
+  const lookY = peek ? Math.max(0.75, h * 0.42) : Math.max(0.62, h * 0.46);
   const faceFlip = dual && faceId === "B" ? Math.PI : 0;
   const approach = rot + Math.PI + faceFlip;
   const lookOffset = dual ? (span * 0.08) * (faceId === "B" ? 1 : -1) : 0;
@@ -685,10 +762,16 @@ export default function Scene3D({
   highlightShelfId = null,
   highlightPairId = null,
   highlightFaceId = "A",
+  highlightAisleId = null,
   focusPhysicalShelfId = null,
   shelfFocusMode = false,
   focusRequest = 0,
   contentRevision = 0,
+  routePoints = null,
+  entryPoint = null,
+  shopperMode = false,
+  highlightProductId = null,
+  fitStoreRequest = 0,
 }) {
   const ref = useRef(null);
   const orbitApiRef = useRef(null);
@@ -705,6 +788,16 @@ export default function Scene3D({
   }, [navSeq]);
 
   useEffect(() => {
+    if (!focusRequest || !highlightShelfId) return;
+    setNavSeq({ type: "focusShelf", n: focusRequest });
+  }, [focusRequest, highlightShelfId]);
+
+  useEffect(() => {
+    if (!shopperMode || !fitStoreRequest) return;
+    setNavSeq({ type: "fitStore", n: fitStoreRequest });
+  }, [fitStoreRequest, shopperMode]);
+
+  useEffect(() => {
     const el = ref.current;
     if (!el || !layout) return undefined;
 
@@ -714,7 +807,6 @@ export default function Scene3D({
 
     const productLookup = buildProductLookup(products);
     const texLoader = new THREE.TextureLoader();
-    const texCache = new Map();
 
     const readSize = () => ({
       width: Math.max(320, el.clientWidth || 640),
@@ -745,9 +837,18 @@ export default function Scene3D({
     scene.add(floorLayer.group);
     disposables.push(...floorLayer.disposables);
 
-    const aisleLayer = buildAisleMeshes(layout, { overview: storeOverview });
+    const aisleLayer = buildAisleMeshes(layout, {
+      overview: storeOverview,
+      highlightAisleId: highlightAisleId || null,
+    });
     scene.add(aisleLayer.group);
     disposables.push(...aisleLayer.disposables);
+
+    const faceAisleLayer = buildFaceAisleCorridors(layout, {
+      highlightAisleId: highlightAisleId || null,
+    });
+    scene.add(faceAisleLayer.group);
+    disposables.push(...faceAisleLayer.disposables);
 
     const planUnderlay = buildFloorPlanUnderlay(layout, texLoader);
     if (planUnderlay) {
@@ -758,6 +859,18 @@ export default function Scene3D({
     const obstacleLayer = buildObstacleMeshes(layout);
     scene.add(obstacleLayer.group);
     disposables.push(...obstacleLayer.disposables);
+
+    if (routePoints?.length >= 2) {
+      const routeLayer = buildShopperRouteOverlay(routePoints);
+      scene.add(routeLayer.group);
+      disposables.push(...routeLayer.disposables);
+    }
+
+    if (entryPoint) {
+      const entryLayer = buildShopperEntryMarker(entryPoint);
+      scene.add(entryLayer.group);
+      disposables.push(...entryLayer.disposables);
+    }
 
     let highlightCenter = null;
     let highlightFocus = null;
@@ -793,12 +906,9 @@ export default function Scene3D({
       const faceA = f.faces?.find((face) => face.id === "A");
       const faceB = f.faces?.find((face) => face.id === "B");
 
-      const isHighlighted =
-        highlightShelfId &&
-        (f.id === highlightShelfId ||
-          f.pairShelfIds?.front === highlightShelfId ||
-          f.pairShelfIds?.back === highlightShelfId ||
-          (highlightPairId && f.pairId === highlightPairId));
+      // FR-AISLE-02: highlight only the selected physical shelf/face — never by pairId.
+      const isHighlighted = unitTouchesPhysicalShelf(f, highlightShelfId);
+      const activeFace = resolveActiveFaceForHighlight(f, highlightShelfId, highlightFaceId);
 
       const dimOthers = false;
 
@@ -823,12 +933,12 @@ export default function Scene3D({
       const frameMat = new THREE.MeshStandardMaterial({
         color: baseColor,
         roughness: 0.7,
-        transparent: dimOthers,
-        opacity: dimOthers ? 0.28 : 1,
+        transparent: dimOthers || (isHighlighted && dual),
+        opacity: dimOthers ? 0.28 : isHighlighted && dual ? 0.55 : 1,
       });
-      if (isHighlighted) {
-        frameMat.emissive = new THREE.Color(0xa30a2a);
-        frameMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.45;
+      if (isHighlighted && !dual) {
+        frameMat.emissive = new THREE.Color(faceHighlightColor(activeFace));
+        frameMat.emissiveIntensity = shelfFocusMode ? 0.28 : 0.2;
       }
       const frame = new THREE.Mesh(frameGeo, frameMat);
       frame.position.set(w / 2, 0.03, d / 2);
@@ -847,9 +957,12 @@ export default function Scene3D({
       disposables.push(uprightGeo, uprightMat);
 
       if (isHighlighted) {
-        const focus = shelfWorldFocus(raw, layout, highlightPairId);
-        highlightCenter = { x: focus.x, z: focus.z };
-        highlightFocus = focus;
+        const focusPt = shelfFaceWorldFocus(raw, layout, {
+          physicalShelfId: highlightShelfId,
+          faceId: activeFace,
+        });
+        highlightCenter = { x: focusPt.x, z: focusPt.z };
+        highlightFocus = { ...focusPt, dual, activeFace };
       }
 
       if (dual) {
@@ -861,24 +974,34 @@ export default function Scene3D({
         disposables.push(spineGeo, spineMat);
 
         const halfBoardGeo = new THREE.BoxGeometry(w * 0.94, 0.03, faceDepth * 0.88);
-        const boardA = new THREE.Mesh(
-          halfBoardGeo,
-          new THREE.MeshStandardMaterial({
-            color: faceColorA ? new THREE.Color(faceColorA) : 0xf3f0eb,
-            roughness: 0.85,
-          })
-        );
+        const boardAMat = new THREE.MeshStandardMaterial({
+          color: faceColorA ? new THREE.Color(faceColorA) : 0xf3f0eb,
+          roughness: 0.85,
+        });
+        if (isHighlighted && activeFace === "A") {
+          boardAMat.emissive = new THREE.Color(SCENE_COLORS.faceA);
+          boardAMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
+        } else if (isHighlighted && activeFace !== "A") {
+          boardAMat.transparent = true;
+          boardAMat.opacity = 0.18;
+        }
+        const boardA = new THREE.Mesh(halfBoardGeo, boardAMat);
         boardA.position.set(w / 2, 0.35, faceDepth * 0.5);
         group.add(boardA);
-        disposables.push(halfBoardGeo, boardA.material);
+        disposables.push(halfBoardGeo, boardAMat);
 
-        const boardB = new THREE.Mesh(
-          halfBoardGeo.clone(),
-          new THREE.MeshStandardMaterial({
-            color: faceColorB ? new THREE.Color(faceColorB) : 0xe8eef5,
-            roughness: 0.85,
-          })
-        );
+        const boardBMat = new THREE.MeshStandardMaterial({
+          color: faceColorB ? new THREE.Color(faceColorB) : 0xe8eef5,
+          roughness: 0.85,
+        });
+        if (isHighlighted && activeFace === "B") {
+          boardBMat.emissive = new THREE.Color(SCENE_COLORS.faceB);
+          boardBMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
+        } else if (isHighlighted && activeFace !== "B") {
+          boardBMat.transparent = true;
+          boardBMat.opacity = 0.18;
+        }
+        const boardB = new THREE.Mesh(halfBoardGeo.clone(), boardBMat);
         boardB.position.set(w / 2, 0.35, d - faceDepth * 0.5);
         group.add(boardB);
         disposables.push(boardB.geometry, boardB.material);
@@ -910,6 +1033,13 @@ export default function Scene3D({
             color: boardTint(faceColorA, 0xf3f0eb),
             roughness: 0.85,
           });
+          if (isHighlighted && activeFace === "A") {
+            shelfAMat.emissive = new THREE.Color(SCENE_COLORS.faceA);
+            shelfAMat.emissiveIntensity = 0.22;
+          } else if (isHighlighted && activeFace !== "A") {
+            shelfAMat.transparent = true;
+            shelfAMat.opacity = 0.4;
+          }
           const shelfA = new THREE.Mesh(shelfGeo, shelfAMat);
           shelfA.position.set(w / 2, y, faceDepth * 0.5);
           group.add(shelfA);
@@ -920,6 +1050,13 @@ export default function Scene3D({
             color: boardTint(faceColorB, 0xe8eef5),
             roughness: 0.85,
           });
+          if (isHighlighted && activeFace === "B") {
+            shelfBMat.emissive = new THREE.Color(SCENE_COLORS.faceB);
+            shelfBMat.emissiveIntensity = 0.22;
+          } else if (isHighlighted && activeFace !== "B") {
+            shelfBMat.transparent = true;
+            shelfBMat.opacity = 0.4;
+          }
           const shelfB = new THREE.Mesh(shelfBGeo, shelfBMat);
           shelfB.position.set(w / 2, y, d - faceDepth * 0.5);
           group.add(shelfB);
@@ -927,8 +1064,8 @@ export default function Scene3D({
         }
       }
 
-      const activeFace = highlightFaceId === "B" ? "B" : "A";
-      const overviewProductBoost = storeOverview && (!shelfFocusMode || isHighlighted);
+      const overviewProductBoost =
+        (shopperMode && !shelfFocusMode) || (storeOverview && (!shelfFocusMode || isHighlighted));
       const rawPlacements = collectShelfFacingInstances({
         f,
         layout,
@@ -942,41 +1079,48 @@ export default function Scene3D({
         h,
         overviewProductBoost,
         faceDepthMeters: faceDepth,
+        highlightProductId: shopperMode ? highlightProductId : null,
       });
       if (rawPlacements.length) {
         productBuildJobs.push({ group, rawPlacements });
       }
 
-      if (isHighlighted && shelfFocusMode) {
-        const ringGeo = new THREE.RingGeometry(Math.max(w, d) * 0.55, Math.max(w, d) * 0.62, 48);
+      if (isHighlighted) {
+        const ringGeo = new THREE.RingGeometry(Math.max(w, d) * 0.38, Math.max(w, d) * 0.46, 48);
         const ringMat = new THREE.MeshBasicMaterial({
-          color: 0xa30a2a,
+          color: faceHighlightColor(activeFace),
           transparent: true,
-          opacity: 0.35,
+          opacity: shelfFocusMode ? 0.42 : 0.28,
           side: THREE.DoubleSide,
         });
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.rotation.x = -Math.PI / 2;
-        ring.position.set(w / 2, 0.05, d / 2);
+        // Sit the ring toward the selected aisle face, not the gondola centre.
+        const ringZ = dual
+          ? activeFace === "B"
+            ? d - faceDepth * 0.35
+            : faceDepth * 0.35
+          : d / 2;
+        ring.position.set(w / 2, 0.05, ringZ);
         group.add(ring);
         disposables.push(ringGeo, ringMat);
       }
 
-      const shelfLabelText = scene3dShelfNumber(raw, layout);
-      if (shelfLabelText && shelfLabelText !== "—") {
-        const { sprite, disposables: labelDisp } = makeShelfNumberLabel(shelfLabelText, Boolean(isHighlighted));
-        // Sit just above the fixture top, centered on the unit (or on the focused face).
-        let labelZ = d / 2;
-        if (dual) {
-          const faceInset = Math.min(0.18, faceDepth * 0.45);
-          if (shelfFocusMode && isHighlighted) {
-            labelZ = highlightFaceId === "B" ? d - faceInset : faceInset;
-          }
-        } else {
-          labelZ = Math.min(0.16, d * 0.35);
-        }
+      const faceLabels = scene3dFaceLabels(raw, layout, {
+        dual,
+        shelfFocusMode,
+        isHighlighted,
+        highlightFaceId: activeFace,
+      });
+      for (const { faceId, text } of faceLabels) {
+        const faceActive = isHighlighted && faceId === activeFace;
+        const { sprite, disposables: labelDisp } = makeShelfNumberLabel(text, Boolean(faceActive));
+        const labelZ = dual
+          ? faceShoppersideZ(d, true, faceId, faceDepth)
+          : Math.min(0.16, d * 0.35);
         sprite.position.set(w / 2, h + 0.06, labelZ);
-        sprite.userData.shelfFocus = Boolean(shelfFocusMode && isHighlighted);
+        sprite.userData.shelfFocus = Boolean(shelfFocusMode && faceActive);
+        sprite.userData.faceId = faceId;
         group.add(sprite);
         disposables.push(...labelDisp);
         shelfLabelSprites.push(sprite);
@@ -1035,7 +1179,11 @@ export default function Scene3D({
         if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
       };
     } else {
-      const focus = highlightFocus && shelfFocusMode ? shelfFocusCamera(highlightFocus, highlightFaceId) : null;
+      const focusFace = highlightFocus?.activeFace || (highlightFaceId === "B" ? "B" : "A");
+      const focus =
+        highlightFocus && (shelfFocusMode || highlightShelfId)
+          ? shelfFocusCamera(highlightFocus, focusFace, { peek: !shelfFocusMode })
+          : null;
       const overview = layoutOverviewCamera(layout);
       const lookX = focus?.lookX ?? highlightCenter?.x ?? cx;
       const lookZ = focus?.lookZ ?? highlightCenter?.z ?? cz;
@@ -1288,49 +1436,45 @@ export default function Scene3D({
     }));
     const totalInstances = expandedJobs.reduce((n, job) => n + job.instances.length, 0);
 
+    const imageOpts = { matCache, disposables };
+
     // Draw coloured product blocks immediately — do not wait on texture preload.
     for (const job of expandedJobs) {
       if (!job.instances.length) continue;
       addInstancedFacings(job.group, job.instances, {
-        texCache,
+        texCache: productTextureCache,
         matCache,
         disposables,
         showImages: false,
       });
     }
-    if (alive) setProductsLoading(totalInstances > 0);
+
+    const imageUrls = expandedJobs.flatMap((job) =>
+      job.instances.map((inst) => inst.imageUrl).filter(Boolean)
+    );
+    const needsImageFetch = imageUrls.some((url) => !productTextureCache.has(url));
+
+    if (!totalInstances || !imageUrls.length) {
+      if (alive) setProductsLoading(false);
+    } else if (!needsImageFetch) {
+      applyProductImagesToJobs(expandedJobs, imageOpts);
+      if (alive) setProductsLoading(false);
+    } else if (alive) {
+      setProductsLoading(true);
+    }
 
     const loadProductImagesAsync = async () => {
-      if (!totalInstances) {
-        if (alive) setProductsLoading(false);
-        return;
-      }
+      if (!totalInstances || !imageUrls.length) return;
+      if (!needsImageFetch) return;
 
-      const imageUrls = expandedJobs.flatMap((job) =>
-        job.instances.map((inst) => inst.imageUrl).filter(Boolean)
-      );
-      if (imageUrls.length) {
-        await preloadProductTextures(texLoader, texCache, imageUrls, disposables);
-      }
+      await preloadProductTextures(texLoader, imageUrls);
       if (!isAlive()) return;
 
-      // Rebuild product meshes with textures once images are ready.
-      for (let i = 0; i < expandedJobs.length; i += 1) {
-        const job = expandedJobs[i];
-        if (!job.instances.length) continue;
-        const anyLoaded = job.instances.some((inst) => inst.imageUrl && texCache.has(inst.imageUrl));
-        if (!anyLoaded) continue;
-        clearProductMeshes(job.group);
-        addInstancedFacings(job.group, job.instances, {
-          texCache,
-          matCache,
-          disposables,
-          showImages: true,
-        });
-        if (i % 3 === 2) {
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          if (!isAlive()) return;
-        }
+      applyProductImagesToJobs(expandedJobs, imageOpts);
+
+      for (let i = 0; i < expandedJobs.length; i += 3) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (!isAlive()) return;
       }
       if (alive) setProductsLoading(false);
     };
@@ -1354,7 +1498,6 @@ export default function Scene3D({
           /* ignore */
         }
       }
-      texCache.forEach((tex) => tex.dispose?.());
       renderer.dispose();
       el.innerHTML = "";
     };
@@ -1366,13 +1509,18 @@ export default function Scene3D({
     highlightShelfId,
     highlightPairId,
     highlightFaceId,
+    highlightAisleId,
     focusPhysicalShelfId,
     shelfFocusMode,
     contentRevision,
+    routePoints,
+    entryPoint,
+    highlightProductId,
+    shopperMode,
   ]);
 
   return (
-    <div className="scene3d-root">
+    <div className={`scene3d-root${shopperMode ? " scene3d-root--shopper" : ""}`}>
       {productsLoading ? (
         <div className="scene3d-loading" aria-live="polite">
           <div className="scene3d-loading-spinner" aria-hidden />
@@ -1425,9 +1573,11 @@ export default function Scene3D({
             </div>
           ) : null}
           <p className="scene3d-nav-hint muted">
-            {shelfFocusMode
-              ? "Single-shelf focus — other shelves stay visible but dimmed. Click 3D again for full store view."
-              : "Products sit on their shelf boards · scroll to zoom · 0 = fit store"}
+            {shopperMode
+              ? "Drag to look around · scroll to zoom · green path follows aisle corridors"
+              : shelfFocusMode
+                ? "Single-shelf focus — other shelves stay visible but dimmed. Click 3D again for full store view."
+                : "Products sit on their shelf boards · scroll to zoom · 0 = fit store"}
           </p>
         </div>
       ) : null}

@@ -40,6 +40,14 @@ Examples:
 | `smart-generate-open` | Open Smart Generate |
 | `smart-generate-run` | Run smart generate |
 | `smart-generate-min-aisle` | Min aisle input |
+| `arrangement-panel` | Shelf arrangement & volume panel |
+| `arrangement-accept` | Accept arrangement (unlock allocation) |
+| `arrangement-fill-on-accept` | Optional auto-fill planogram checkbox |
+| `arrangement-reopen` | Reopen summary after accept |
+| `arrangement-pending-banner` | Must-accept warning |
+| `arrangement-accepted-banner` | Accepted confirmation |
+| `arrangement-total-shelves` | KPI: total shelves |
+| `arrangement-layout-summary` | Layout summary list |
 | `editor-violations` | Violations / alerts region |
 | `catalog-product-list` | Product list root |
 | `catalog-product-create` | New product |

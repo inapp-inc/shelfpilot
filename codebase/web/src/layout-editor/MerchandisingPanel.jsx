@@ -7,7 +7,7 @@ import { catalogProductDimensionsInches } from "../catalog/productDimensions.js"
 import { formatInchesFromMeters, formatWeightFromKg } from "../units.js";
 import { colorForCategoryId } from "../categoryColors.js";
 import { weightWarningMessage } from "../shelfLoad.js";
-import { isDoubleSided, normalizeShelfUI, shelfDisplayLabel, shelfCanvasFaceLabel, shelfFaceDisplayLabel, resolveGondolaForEditor } from "./shelfFaces.js";
+import { isDoubleSided, normalizeShelfUI, shelfDisplayLabel, shelfCanvasFaceLabel, shelfFaceDisplayLabel, planogramEditorFaceId, resolveGondolaForEditor } from "./shelfFaces.js";
 import { isShelfLike } from "./planogramSegments.js";
 
 function activeFace(shelf, faceId) {
@@ -51,7 +51,7 @@ export default function MerchandisingPanel({
   const shelfRaw = kind === "shelf" ? entity : null;
   const gondolaCtx = shelfRaw ? resolveGondolaForEditor(layout, shelfRaw.id) : null;
   const shelf = gondolaCtx?.shelf ?? (shelfRaw ? normalizeShelfUI(shelfRaw) : null);
-  const dualFace = gondolaCtx?.mode === "gondola" || (shelf ? isDoubleSided(shelf) : false);
+  const dualFace = shelf ? isDoubleSided(shelf) : false;
   const face = shelf ? activeFace(shelf, faceId) : null;
   const faceCategory = face?.categoryId || null;
   const levels = shelf?.levels?.length
@@ -62,19 +62,15 @@ export default function MerchandisingPanel({
 
   function merchApiTarget(currentFaceId = faceId) {
     if (!shelfRaw) return { shelfId: "", faceId: "A" };
-    if (gondolaCtx?.mode === "gondola") {
-      return {
-        shelfId: gondolaCtx.physicalShelfId(currentFaceId),
-        faceId: gondolaCtx.apiFaceId(currentFaceId),
-      };
-    }
-    return { shelfId: shelfRaw.id, faceId: currentFaceId };
+    return {
+      shelfId: shelfRaw.id,
+      faceId: planogramEditorFaceId(shelfRaw, currentFaceId),
+    };
   }
 
   const activeAisleLabel =
-    shelf && kind === "shelf"
-      ? shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves) ||
-        shelfFaceDisplayLabel(shelfRaw, layout.aisles) ||
+    shelfRaw && kind === "shelf"
+      ? shelfFaceDisplayLabel(shelfRaw, layout.aisles) ||
         shelfDisplayLabel(shelfRaw, layout.aisles)
       : null;
 

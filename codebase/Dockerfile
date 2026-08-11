@@ -19,6 +19,7 @@ COPY --from=deps /app/api/package.json ./api/package.json
 # API source COPY below to always re-run so edits ship, while deps stay cached above.
 ARG CACHEBUST=dev
 RUN echo "cachebust=$CACHEBUST"
+COPY shared ./shared
 COPY api ./api
 # Prefer committed web thumbnails so Docker demos always have product images.
 COPY web/public/product-images ./seed/product-images

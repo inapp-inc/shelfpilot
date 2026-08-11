@@ -17,10 +17,12 @@ import { normalizeStorageType, productStorageType, resolveCategoryStorageType } 
 import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
 import DashboardPage from "./modules/DashboardPage.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
+import ShopperKioskPage from "./modules/ShopperKioskPage.jsx";
+import AdminShopperPanel from "./modules/AdminShopperPanel.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
 import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
 import { fixtureTemplatesForVertical } from "./fixtureCatalog.js";
-import { NAV_MODULES, STORE_TYPES } from "./storeTypes.js";
+import { NAV_MODULES, STORE_TYPES, mixForStoreType } from "./storeTypes.js";
 import { pathForModule } from "./routes.js";
 import { resolveAssetUrl } from "./assetUrl.js";
 import { useAppRoute } from "./useAppRoute.js";
@@ -42,7 +44,9 @@ import {
   canEditLayouts,
   canManageUsers,
   defaultModuleForRole,
+  isCustomerRole,
   navModulesForRole,
+  shopPathForUser,
 } from "./rolePermissions.js";
 
 function LogoMark({ size = "lg" }) {
@@ -66,6 +70,7 @@ export default function App() {
   const { route, navigate } = useAppRoute();
   const page = route.module;
   const editorLayoutId = page === "layouts" ? route.layoutId : null;
+  const shopLayoutId = page === "shop" ? route.layoutId : null;
   const [vertical, setVertical] = useState("pharmacy");
   const [layouts, setLayouts] = useState([]);
   const [layout, setLayout] = useState(null);
@@ -80,7 +85,13 @@ export default function App() {
     fixtureTemplates: [],
   });
   const [createConfig, setCreateConfig] = useState(null);
-  const [newUser, setNewUser] = useState({ email: "", name: "", role: "Designer", password: "" });
+  const [newUser, setNewUser] = useState({
+    email: "",
+    name: "",
+    role: "Designer",
+    password: "",
+    shopperLayoutId: "",
+  });
   const [catCategories, setCatCategories] = useState([]);
   const [catProducts, setCatProducts] = useState([]);
   const [selectedCatalogCategoryId, setSelectedCatalogCategoryId] = useState(null);
@@ -199,10 +210,16 @@ export default function App() {
 
   useEffect(() => {
     if (!session || !role) return;
+    // Public kiosk URLs are open to everyone — do not RBAC-redirect away from them.
+    if (page === "shop" && route.layoutId) return;
     if (!canAccessModule(role, page)) {
-      navigate(pathForModule(defaultModuleForRole(role)), { replace: true });
+      const target =
+        role === "Customer"
+          ? shopPathForUser(session.user) || pathForModule("dashboard")
+          : pathForModule(defaultModuleForRole(role));
+      navigate(target, { replace: true });
     }
-  }, [session, role, page, navigate]);
+  }, [session, role, page, route.layoutId, navigate]);
 
   useEffect(() => {
     if (page !== "admin" || !role) return;
@@ -224,21 +241,23 @@ export default function App() {
       .catch(() => {});
   }, [token, configVertical, statusFilter, page]);
 
+  const activeLayoutId = editorLayoutId || shopLayoutId;
+
   useEffect(() => {
-    if (!token || !editorLayoutId) {
+    if (!token || !activeLayoutId) {
       setLayout(null);
       return;
     }
-    api(`/layouts/${editorLayoutId}`, { token })
+    api(`/layouts/${activeLayoutId}`, { token })
       .then(setLayout)
       .catch((e) => toast(e.message));
-  }, [token, editorLayoutId]);
+  }, [token, activeLayoutId]);
 
   useEffect(() => {
-    if (!token || !editorLayoutId || !layout?.vertical) return;
+    if (!token || !activeLayoutId || !layout?.vertical) return;
     loadCatalog(layout.vertical).catch((e) => toast(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, editorLayoutId, layout?.vertical]);
+  }, [token, activeLayoutId, layout?.vertical]);
 
   async function onLogin(e) {
     e.preventDefault();
@@ -247,7 +266,11 @@ export default function App() {
     try {
       const data = await api("/auth/login", { method: "POST", body: loginForm });
       persist(data);
-      navigate(pathForModule(defaultModuleForRole(data.user.role)));
+      let target = pathForModule(defaultModuleForRole(data.user.role));
+      if (data.user.role === "Customer") {
+        target = shopPathForUser(data.user) || target;
+      }
+      navigate(target);
       toast(`Signed in as ${data.user.role}`, { type: "success" });
     } catch (err) {
       setLoginError(friendlyError(err, "Sign in failed. Check your email and password."));
@@ -257,44 +280,68 @@ export default function App() {
   }
 
   async function createLayout() {
-    const check = validateLayoutCreate(createDraft);
+    const fromFloorPlan = createDraft.footprintMode === "floorPlan" && createDraft.floorPlanAnalyzed;
+    const draftForValidation = fromFloorPlan
+      ? {
+          ...createDraft,
+          heightMeters: createDraft.heightMeters || 3.2,
+          shape: "rectangle",
+        }
+      : createDraft;
+    const check = validateLayoutCreate(draftForValidation);
     if (!check.ok) {
       toast(Object.values(check.errors)[0], { type: "error" });
       return false;
     }
     const storeType = STORE_TYPES.find((s) => s.id === createDraft.storeTypeId) || STORE_TYPES[0];
-    const width = Number(createDraft.widthMeters);
-    const depth = Number(createDraft.depthMeters);
-    const polygon =
-      createDraft.shape === "polygon"
-        ? [
-            { x: 0, y: 0 },
-            { x: width, y: 0 },
-            { x: width, y: depth },
-            { x: 0, y: depth },
-          ]
-        : [];
+    const width = Number(draftForValidation.widthMeters);
+    const depth = Number(draftForValidation.depthMeters);
+    const fullStorePolygon = [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: width, y: depth },
+      { x: 0, y: depth },
+    ];
+    const shape = fromFloorPlan ? "polygon" : createDraft.shape;
+    const polygon = fromFloorPlan || shape === "polygon" ? fullStorePolygon : [];
     setCreating(true);
     try {
+      const body = {
+        name: createDraft.name || "New Store",
+        vertical: storeType.vertical,
+        widthMeters: width,
+        depthMeters: depth,
+        heightMeters: Number(draftForValidation.heightMeters) || 3.2,
+        shape,
+        polygon,
+      };
+      if (fromFloorPlan) {
+        body.floorPlanImport = {
+          sourceFileName: createDraft.floorPlanSourceFileName || createDraft.floorPlanFileName,
+          sourceType: createDraft.floorPlanSourceType || "image",
+          dimensionSource: createDraft.floorPlanDimensionSource || "manual",
+          matchedText: createDraft.floorPlanMatchedText || null,
+          pageIndex: createDraft.floorPlanPageIndex ?? 0,
+        };
+        body.autoGenerateFixtures = true;
+        body.categoryMix = mixForStoreType(createDraft.storeTypeId);
+      }
       const created = await api("/layouts", {
         token,
         method: "POST",
-        body: {
-          name: createDraft.name || "New Store",
-          vertical: storeType.vertical,
-          widthMeters: width,
-          depthMeters: depth,
-          heightMeters: Number(createDraft.heightMeters),
-          shape: createDraft.shape,
-          polygon,
-        },
+        body,
       });
       setCreateOpen(false);
       setCreateDraft({ ...EMPTY_CREATE_DRAFT });
       setVertical(storeType.vertical);
       await refreshLayouts();
       navigate(pathForModule("layouts", created.id));
-      toast("Layout created", { type: "success" });
+      toast(
+        fromFloorPlan
+          ? `Layout built from ${createDraft.floorPlanFileName || "floor plan"} — ${created.shelves?.length || 0} shelves placed`
+          : "Layout created",
+        { type: "success" }
+      );
     } catch (err) {
       toast(friendlyError(err), { type: "error" });
       throw err;
@@ -391,9 +438,16 @@ export default function App() {
     }
     setUserFormErrors({});
     try {
-      const created = await api("/admin/users", { token, method: "POST", body: newUser });
+      const created = await api("/admin/users", {
+        token,
+        method: "POST",
+        body: {
+          ...newUser,
+          shopperLayoutId: newUser.role === "Customer" ? newUser.shopperLayoutId || null : null,
+        },
+      });
       setUsers((u) => [...u, created]);
-      setNewUser({ email: "", name: "", role: "Designer", password: "" });
+      setNewUser({ email: "", name: "", role: "Designer", password: "", shopperLayoutId: "" });
       toast("User created", { type: "success" });
     } catch (err) {
       toast(friendlyError(err), { type: "error" });
@@ -710,6 +764,14 @@ export default function App() {
     }
   }
 
+  if (page === "shop" && shopLayoutId) {
+    return (
+      <>
+        <ShopperKioskPage layoutId={shopLayoutId} />
+      </>
+    );
+  }
+
   if (!session) {
     return (
       <>
@@ -752,7 +814,7 @@ export default function App() {
                   value={loginForm.role}
                   onChange={(e) => setLoginForm({ ...loginForm, role: e.target.value })}
                 >
-                  {["Designer", "Approver", "Viewer", "Admin"].map((r) => (
+                  {["Designer", "Approver", "Viewer", "Admin", "Customer"].map((r) => (
                     <option key={r}>{r}</option>
                   ))}
                 </select>
@@ -785,15 +847,17 @@ export default function App() {
   const visibleAdminTabs = adminTabsForRole(role);
   const layoutEditDisabled = !canEditLayouts(role);
   const catalogEditDisabled = !canEditCatalog(role);
+  const customerMode = isCustomerRole(role);
 
   return (
     <>
-      <div className="app-shell fade">
-        <header className="app-header">
+      <div className={`app-shell fade${customerMode ? " app-shell--customer" : ""}`}>
+        <header className={`app-header${customerMode ? " app-header--customer" : ""}`}>
           <div className="header-brand">
             <LogoMark size="sm" />
-            <span>ShelfPilot</span>
+            <span>ShelfPilot{customerMode ? " · Shopper" : ""}</span>
           </div>
+          {!customerMode ? (
           <nav className="top-nav" aria-label="Main">
             {visibleNav.map((n) => (
               <a
@@ -811,6 +875,9 @@ export default function App() {
               </a>
             ))}
           </nav>
+          ) : (
+            <div className="customer-header-tagline muted">Find products in store</div>
+          )}
           <div className="header-actions">
             <div className="header-foundry-brand" aria-label="Built by The Foundry">
               <img
@@ -841,8 +908,9 @@ export default function App() {
         </header>
 
         <main className="main">
-          <div className={`content${editorLayoutId ? " content--editor" : ""}`}>
-            {page === "dashboard" && (
+          <div className={`content${editorLayoutId ? " content--editor" : ""}${customerMode ? " content--customer" : ""}`}>
+
+            {page === "dashboard" && !customerMode && (
               <DashboardPage
                 layouts={layouts}
                 token={token}
@@ -864,7 +932,7 @@ export default function App() {
               />
             )}
 
-            {page === "layouts" && !editorLayoutId && (
+            {page === "layouts" && !editorLayoutId && !customerMode && (
               <LayoutsPortfolio
                 layouts={layouts}
                 statusFilter={statusFilter}
@@ -877,7 +945,7 @@ export default function App() {
               />
             )}
 
-            {page === "layouts" && editorLayoutId && (
+            {page === "layouts" && editorLayoutId && !customerMode && (
               <LayoutEditor
                 layout={layout}
                 setLayout={setLayout}
@@ -897,7 +965,7 @@ export default function App() {
               />
             )}
 
-            {page === "catalog" && (
+            {page === "catalog" && !customerMode && (
               <>
                 <ImportDialog
                   open={importOpen}
@@ -959,7 +1027,7 @@ export default function App() {
               </>
             )}
 
-            {page === "admin" && visibleAdminTabs.length > 0 && (
+            {page === "admin" && visibleAdminTabs.length > 0 && !customerMode && (
               <section className="fade" data-testid="admin-page">
                 <h2 className="page-title" style={{ marginBottom: 16 }}>
                   {role === "Approver" ? "Audit Log" : "Admin & Config"}
@@ -987,6 +1055,7 @@ export default function App() {
                               <th>Name</th>
                               <th>Email</th>
                               <th>Role</th>
+                              <th>Shop layout</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -995,6 +1064,11 @@ export default function App() {
                                 <td>{u.name}</td>
                                 <td>{u.email}</td>
                                 <td>{u.role}</td>
+                                <td className="mono" style={{ fontSize: 12 }}>
+                                  {u.role === "Customer"
+                                    ? layouts.find((l) => l.id === u.shopperLayoutId)?.name || u.shopperLayoutId || "—"
+                                    : "—"}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -1032,13 +1106,42 @@ export default function App() {
                             <select
                               data-testid="admin-user-role"
                               value={newUser.role}
-                              onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                              onChange={(e) =>
+                                setNewUser({
+                                  ...newUser,
+                                  role: e.target.value,
+                                  shopperLayoutId: e.target.value === "Customer" ? newUser.shopperLayoutId : "",
+                                })
+                              }
                             >
-                              {["Designer", "Approver", "Viewer", "Admin"].map((r) => (
+                              {["Designer", "Approver", "Viewer", "Admin", "Customer"].map((r) => (
                                 <option key={r}>{r}</option>
                               ))}
                             </select>
                           </div>
+                          {newUser.role === "Customer" ? (
+                            <div className={`field${userFormErrors.shopperLayoutId ? " field-invalid" : ""}`}>
+                              <label>Shopper layout</label>
+                              <select
+                                data-testid="admin-user-shopper-layout"
+                                value={newUser.shopperLayoutId}
+                                onChange={(e) => {
+                                  setNewUser({ ...newUser, shopperLayoutId: e.target.value });
+                                  if (userFormErrors.shopperLayoutId) {
+                                    setUserFormErrors((prev) => ({ ...prev, shopperLayoutId: "" }));
+                                  }
+                                }}
+                              >
+                                <option value="">Select layout…</option>
+                                {layouts.map((l) => (
+                                  <option key={l.id} value={l.id}>
+                                    {l.name} ({l.status})
+                                  </option>
+                                ))}
+                              </select>
+                              <FieldError message={userFormErrors.shopperLayoutId} />
+                            </div>
+                          ) : null}
                           <div className={`field${userFormErrors.password ? " field-invalid" : ""}`}>
                             <label>Password</label>
                             <input
@@ -1067,30 +1170,39 @@ export default function App() {
                     </div>
                   )}
                   {adminTab === "stores" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="admin-stores">
-                      <div className="field" style={{ maxWidth: 280 }}>
-                        <label>Store type</label>
-                        <select
-                          data-testid="admin-stores-vertical"
-                          value={vertical}
-                          onChange={(e) => setVertical(e.target.value)}
-                          style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #e5e7eb", width: "100%" }}
-                        >
-                          {Object.entries(VERTICALS).map(([key, meta]) => (
-                            <option key={key} value={key}>
-                              {meta.label}
-                            </option>
-                          ))}
-                        </select>
+                    <div className="admin-stores-panel" data-testid="admin-stores">
+                      <div className="admin-stores-bar">
+                        <div className="admin-stores-bar-left">
+                          <label className="admin-stores-inline-label" htmlFor="admin-stores-vertical">
+                            Store type
+                          </label>
+                          <select
+                            id="admin-stores-vertical"
+                            data-testid="admin-stores-vertical"
+                            value={vertical}
+                            onChange={(e) => setVertical(e.target.value)}
+                          >
+                            {Object.entries(VERTICALS).map(([key, meta]) => (
+                              <option key={key} value={key}>
+                                {meta.label}
+                              </option>
+                            ))}
+                          </select>
+                          <span className="admin-stores-count muted">
+                            {layouts.filter((l) => l.vertical === vertical).length} layout
+                            {layouts.filter((l) => l.vertical === vertical).length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        {canManageUsers(role) ? (
+                          <button
+                            className="btn-primary admin-stores-save"
+                            data-testid="admin-stores-save"
+                            onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
+                          >
+                            Save
+                          </button>
+                        ) : null}
                       </div>
-                      <div style={{ fontWeight: 700 }}>Shelf types — {vMeta.label}</div>
-                      <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                        Add shelf types such as <strong>Ambient</strong>, <strong>Chilled</strong>, and{" "}
-                        <strong>Frozen</strong>, or create custom types with dimensions and levels. The layout palette,
-                        Smart Generate mix, and autogenerate all use these templates (
-                        {layouts.filter((l) => l.vertical === vertical).length} layout
-                        {layouts.filter((l) => l.vertical === vertical).length === 1 ? "" : "s"} for this store type).
-                      </p>
                       <FixtureTemplatesEditor
                         templates={
                           configForm.fixtureTemplates?.length
@@ -1108,17 +1220,11 @@ export default function App() {
                           {configSaveError}
                         </AlertBanner>
                       ) : null}
-                      {canManageUsers(role) ? (
-                        <button
-                          className="btn-primary"
-                          style={{ padding: "10px 14px", width: "fit-content" }}
-                          onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
-                        >
-                          Save shelf types
-                        </button>
-                      ) : (
-                        <div className="muted">Only Admin can save store master shelf types.</div>
-                      )}
+                      {!canManageUsers(role) ? (
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          Only Admin can save store master shelf types.
+                        </div>
+                      ) : null}
                     </div>
                   )}
                   {adminTab === "approval" && (
@@ -1188,6 +1294,9 @@ export default function App() {
                         <div className="muted">Only Admin can save configuration.</div>
                       )}
                     </div>
+                  )}
+                  {adminTab === "shopper" && (
+                    <AdminShopperPanel token={token} layouts={layouts} toast={toast} />
                   )}
                   {adminTab === "audit" && (
                     <ul style={{ margin: 0, paddingLeft: 18 }} data-testid="admin-audit-list">

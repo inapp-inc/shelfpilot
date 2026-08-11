@@ -56,6 +56,40 @@ export function oppositeShelfOrigin(x, y, rotationDeg, widthMeters, depthMeters)
   };
 }
 
+/**
+ * Keep front/back of each pair on one shared floor footprint (same W×D, re-derived origin).
+ * Call after any step that may move or resize faces independently (quantize, typing).
+ */
+export function syncPairedShelfFootprints(shelves) {
+  if (!shelves?.length) return shelves || [];
+  const fronts = new Map();
+  for (const s of shelves) {
+    if (!s.pairId) continue;
+    if (s.pairRole === "front" || (!s.pairRole && !fronts.has(s.pairId))) {
+      fronts.set(s.pairId, s);
+    }
+  }
+  return shelves.map((shelf) => {
+    if (!shelf.pairId || shelf.pairRole !== "back") return shelf;
+    const front = fronts.get(shelf.pairId);
+    if (!front) return shelf;
+    const w = Number(front.widthMeters ?? front.usableWidthMeters) || 1.2;
+    const d = Number(front.depthMeters) || 0.6;
+    const origin = oppositeShelfOrigin(front.x, front.y, front.rotationDeg, w, d);
+    return normalizeShelf({
+      ...shelf,
+      x: origin.x,
+      y: origin.y,
+      rotationDeg: origin.rotationDeg,
+      usableWidthMeters: Number(front.usableWidthMeters) || w,
+      widthMeters: w,
+      depthMeters: d,
+      heightMeters: Number(front.heightMeters) || shelf.heightMeters,
+      doubleSided: false,
+    });
+  });
+}
+
 /** Face digit for paired shelves: front → 1 (A), back → 2 (B). */
 export function pairFaceId(shelf) {
   return shelf?.pairRole === "back" ? "B" : "A";

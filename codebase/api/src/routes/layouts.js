@@ -4,7 +4,7 @@ import { repo, audit, getConfig, now } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
 import { computeAutoCalc, validateAisles } from "../services/layoutMath.js";
 import { fixtureToShelf, normalizeLayout, nextDisplayNumber, shelfToFixture } from "../services/layoutNormalize.js";
-import { clampFacings, clampDepthFacings, previewFacings } from "../services/planogramMath.js";
+import { clampFacings, clampDepthFacings, clampStackLayers, previewFacings } from "../services/planogramMath.js";
 import {
   countGondolaUnits,
   faceCategoryId,
@@ -29,7 +29,9 @@ import {
 import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../services/zones.js";
 import { normalizeObstacle, normalizeObstacleType } from "../services/obstacles.js";
 import { normalizeFloorPlan, patchFloorPlan } from "../services/floorPlan.js";
+import { floorPlanEnvelopeBinding, fullStorePolygon, inferFloorPlanSourceType } from "../services/floorPlanImport.js";
 import { deleteFloorPlanImage, saveFloorPlanImage } from "../services/floorPlanImages.js";
+import { autogenerateLayoutFixtures, clearArrangementAcceptance } from "../services/layoutAutogenerate.js";
 import { computeShelfLoad } from "../services/weightMath.js";
 import { packAislesAndShelves } from "../services/layoutPacker.js";
 import { bindShelvesToAisles, finalizeAisleShelfBinding } from "../services/aisleBinding.js";
@@ -37,6 +39,7 @@ import { finalizeAisleLabeling } from "../services/aisleLabeling.js";
 import { assignCategoryMix } from "../services/categoryMixPacker.js";
 import { applyFixtureTypesToShelves } from "../services/categoryFixtureDefaults.js";
 import { listCategoriesForLayout, productAllowedForShelf, resolveCategoryId } from "../services/categoryTree.js";
+import { computeArrangementSummary } from "../services/arrangementSummary.js";
 import { fillPlanogramsForLayout, loadProductsForLayoutVertical } from "../services/planogramAutoFill.js";
 import { computePlanogramCoverage } from "../services/planogramCoverage.js";
 import {
@@ -46,6 +49,8 @@ import {
   normalizeRotationDeg,
   normalizeShelfFaceSegments,
 } from "../services/shelfSegments.js";
+import { isTemporaryStorageShelf, isTemporaryStorageType, temporaryStorageLabel } from "../services/temporaryStorage.js";
+import { isSingleSidedPlacementType, warehouseFixtureLabel } from "../services/warehouseLayout.js";
 
 export const layoutsRouter = Router();
 
@@ -75,6 +80,14 @@ function planogramEnabled() {
   const raw = process.env.PLANOGRAM_EDITOR;
   if (raw == null || raw === "") return true;
   return raw !== "0" && String(raw).toLowerCase() !== "false";
+}
+
+/** Product allocation requires arrangement acceptance when fixtures exist. */
+function arrangementGate(layout, res) {
+  if (!(layout?.shelves || []).length) return true;
+  if (layout.arrangementAcceptedAt) return true;
+  res.status(409).json({ error: "arrangement_not_accepted" });
+  return false;
 }
 
 function autogenerateEnabled() {
@@ -133,8 +146,51 @@ layoutsRouter.get("/layouts", authRequired, (req, res) => {
   res.json({ items });
 });
 
+/** Decode base64 image payload and persist under layout id. Returns { fileName, url } or throws Error with .code. */
+function persistFloorPlanUpload(layoutId, dataBase64, fileName) {
+  const rawInput = String(dataBase64 || "");
+  if (!rawInput) {
+    const err = new Error("data_required");
+    err.code = "data_required";
+    throw err;
+  }
+  let buffer;
+  try {
+    const raw = rawInput.includes(",") ? rawInput.split(",").pop() : rawInput;
+    buffer = Buffer.from(raw, "base64");
+  } catch {
+    const err = new Error("invalid_image_data");
+    err.code = "invalid_image_data";
+    throw err;
+  }
+  if (!buffer?.length) {
+    const err = new Error("invalid_image_data");
+    err.code = "invalid_image_data";
+    throw err;
+  }
+  try {
+    return saveFloorPlanImage(buffer, layoutId, fileName || "floor-plan.png");
+  } catch {
+    const err = new Error("invalid_image_file");
+    err.code = "invalid_image_file";
+    throw err;
+  }
+}
+
 layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
-  const { name, vertical, widthMeters, depthMeters, heightMeters, shape, polygon } = req.body || {};
+  const {
+    name,
+    vertical,
+    widthMeters,
+    depthMeters,
+    heightMeters,
+    shape,
+    polygon,
+    floorPlan,
+    floorPlanImport,
+    autoGenerateFixtures,
+    categoryMix,
+  } = req.body || {};
   if (!name || !vertical || widthMeters == null || depthMeters == null) {
     return res.status(400).json({ error: "missing_fields" });
   }
@@ -177,11 +233,111 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
     aisleMappings: [],
     shelfMappings: [],
     validation: { aisleViolations: [] },
+    floorPlan: null,
     updatedAt: now(),
   };
+
+  // Build layout from analyzed floor-plan upload (dimensions only — no image underlay).
+  const importMeta = floorPlanImport && typeof floorPlanImport === "object" ? floorPlanImport : null;
+  let generatedFromImport = null;
+  if (importMeta) {
+    layout.shape = "polygon";
+    layout.polygon = fullStorePolygon(layout.widthMeters, layout.depthMeters);
+    layout.floorPlan = null;
+    layout.importSource = {
+      fileName: importMeta.sourceFileName || importMeta.fileName || "floor-plan",
+      sourceType: inferFloorPlanSourceType(importMeta.sourceFileName, importMeta.sourceType),
+      dimensionSource: importMeta.dimensionSource || "manual",
+      matchedText: importMeta.matchedText || null,
+      pageIndex: importMeta.pageIndex ?? 0,
+    };
+    if (autoGenerateFixtures !== false && autogenerateEnabled()) {
+      try {
+        generatedFromImport = autogenerateLayoutFixtures(
+          layout,
+          { categoryMix: Array.isArray(categoryMix) ? categoryMix : [], orientation: "auto" },
+          { getConfig, listCategories: () => repo.listCategories() }
+        );
+        if (planogramEnabled()) {
+          const { categories: fillCats, products: fillProducts } = loadProductsForLayoutVertical(
+            layout.vertical,
+            (v) => repo.listCategories(v),
+            () => repo.listProducts()
+          );
+          const pogCount = fillPlanogramsForLayout(layout, fillProducts, fillCats);
+          if (generatedFromImport && pogCount > 0) {
+            generatedFromImport.planogramPlacements = pogCount;
+          }
+        }
+      } catch (err) {
+        if (err.code === "category_mix_invalid") {
+          return res.status(400).json({ error: "category_mix_invalid", detail: "Percentages must sum to 100" });
+        }
+        throw err;
+      }
+    }
+  }
+
+  // Legacy: optional image underlay (deprecated — prefer floorPlanImport analyze-and-build).
+  const fpPayload = !importMeta && floorPlan && typeof floorPlan === "object" ? floorPlan : null;
+  const fpData = fpPayload?.dataBase64 || fpPayload?.data;
+  if (fpData) {
+    let saved;
+    try {
+      const rasterName =
+        fpPayload.fileName ||
+        (inferFloorPlanSourceType(fpPayload.sourceFileName, fpPayload.sourceType) === "pdf"
+          ? "floor-plan-page1.png"
+          : "floor-plan.png");
+      saved = persistFloorPlanUpload(layout.id, fpData, rasterName);
+    } catch (err) {
+      return res.status(400).json({ error: err.code || err.message || "invalid_image_file" });
+    }
+    const binding = floorPlanEnvelopeBinding(layout, fpPayload);
+    layout.widthMeters = binding.widthMeters;
+    layout.depthMeters = binding.depthMeters;
+    layout.storeEnvelope = {
+      x: 0,
+      y: 0,
+      widthMeters: binding.widthMeters,
+      depthMeters: binding.depthMeters,
+    };
+    layout.shape = "polygon";
+    layout.polygon = fullStorePolygon(binding.widthMeters, binding.depthMeters);
+    layout.floorPlan = normalizeFloorPlan({
+      url: saved.url,
+      fileName: saved.fileName,
+      sourceType: inferFloorPlanSourceType(fpPayload.sourceFileName || fpPayload.fileName, fpPayload.sourceType),
+      sourceFileName: fpPayload.sourceFileName || fpPayload.fileName || saved.fileName,
+      pageIndex: fpPayload.pageIndex ?? 0,
+      x: binding.x,
+      y: binding.y,
+      widthMeters: binding.widthMeters,
+      depthMeters: binding.depthMeters,
+      opacity: fpPayload.opacity ?? 0.75,
+      visible: true,
+    });
+  }
+
   saveNormalized(layout, { skipRevisionBump: true });
-  audit(req.user.email, "layout.create", layout.id);
-  res.status(201).json(layout);
+  const auditAction = importMeta
+    ? "layout.create.from_floorplan_import"
+    : layout.floorPlan
+      ? "layout.create.with_floorplan"
+      : "layout.create";
+  audit(req.user.email, auditAction, layout.id);
+  const response = { ...layout };
+  if (generatedFromImport) {
+    response.generated = {
+      aisles: layout.aisles.length,
+      shelves: layout.shelves.length,
+      gondolaUnits: generatedFromImport.gondolaUnits,
+      walkAisles: layout.aisles.length,
+      categoryMapped: generatedFromImport.categoryMapped,
+      skippedOutsideCount: generatedFromImport.skippedOutsideCount,
+    };
+  }
+  res.status(201).json(response);
 });
 
 layoutsRouter.get("/layouts/:layoutId", authRequired, (req, res) => {
@@ -668,23 +824,15 @@ layoutsRouter.post(
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
 
-    const dataBase64 = String(req.body?.dataBase64 || req.body?.data || "");
-    if (!dataBase64) return res.status(400).json({ error: "data_required" });
-
-    let buffer;
-    try {
-      const raw = dataBase64.includes(",") ? dataBase64.split(",").pop() : dataBase64;
-      buffer = Buffer.from(raw, "base64");
-    } catch {
-      return res.status(400).json({ error: "invalid_image_data" });
-    }
-    if (!buffer?.length) return res.status(400).json({ error: "invalid_image_data" });
-
     let saved;
     try {
-      saved = saveFloorPlanImage(buffer, layout.id, req.body?.fileName || "floor-plan.png");
-    } catch {
-      return res.status(400).json({ error: "invalid_image_file" });
+      saved = persistFloorPlanUpload(
+        layout.id,
+        req.body?.dataBase64 || req.body?.data,
+        req.body?.fileName || "floor-plan.png"
+      );
+    } catch (err) {
+      return res.status(400).json({ error: err.code || err.message || "invalid_image_file" });
     }
 
     // Default the underlay to the store envelope so it lands on-screen ready to calibrate.
@@ -818,10 +966,11 @@ layoutsRouter.post("/layouts/:layoutId/fixtures", authRequired, requireRoles("De
   if (!layout) return res.status(404).json({ error: "not_found" });
   const templates = getConfig(layout.vertical).fixtureTemplates || [];
   const tmpl = templates.find((t) => t.type === (req.body?.type || "shelf"));
+  const type = req.body?.type || "shelf";
   const fixture = {
     id: req.body?.id || `fix-${randomUUID().slice(0, 6)}`,
-    type: req.body?.type || "shelf",
-    label: req.body?.label || "Fixture",
+    type,
+    label: req.body?.label || temporaryStorageLabel(type) || "Fixture",
     widthMeters: Number(req.body?.widthMeters ?? tmpl?.defaultWidthMeters ?? 1.2),
     depthMeters: Number(req.body?.depthMeters ?? tmpl?.defaultDepthMeters ?? 0.6),
     heightMeters: Number(req.body?.heightMeters || 2),
@@ -830,6 +979,8 @@ layoutsRouter.post("/layouts/:layoutId/fixtures", authRequired, requireRoles("De
     rotationDeg: Number(req.body?.rotationDeg || 0),
     categoryId: req.body?.categoryId,
     color: req.body?.color,
+    temporaryStorage: isTemporaryStorageType(type) || req.body?.temporaryStorage === true,
+    defaultLevels: tmpl?.defaultLevels,
   };
   layout.fixtures = layout.fixtures || [];
   layout.shelves = layout.shelves || [];
@@ -899,6 +1050,44 @@ layoutsRouter.post("/layouts/:layoutId/shelves", authRequired, requireRoles("Des
   const x = Number(req.body?.x || 0);
   const y = Number(req.body?.y || 0);
   const rotationDeg = Number(req.body?.rotationDeg || 0);
+
+  if (isTemporaryStorageType(type) || isSingleSidedPlacementType(type, layout.vertical)) {
+    const shelf = fixtureToShelf({
+      id: req.body?.id || `shf-${randomUUID().slice(0, 6)}`,
+      type,
+      label: req.body?.label || warehouseFixtureLabel(type) || temporaryStorageLabel(type) || "Fixture",
+      usableWidthMeters: usable,
+      widthMeters: Number(req.body?.widthMeters ?? usable),
+      depthMeters,
+      heightMeters,
+      x,
+      y,
+      rotationDeg,
+      aisleId: null,
+      categoryId: req.body?.categoryId,
+      color: req.body?.color,
+      defaultLevels: tmpl?.defaultLevels ?? 1,
+      levels: req.body?.levels,
+      planogram: [],
+      temporaryStorage: isTemporaryStorageType(type),
+      doubleSided: false,
+    });
+    layout.shelves = layout.shelves || [];
+    try {
+      assertInsideOrThrow(shelf, "shelf", layout);
+      assertNoOverlapOrThrow(shelf, "shelf", layout);
+    } catch (err) {
+      return containmentError(res, err);
+    }
+    shelf.displayNumber = nextDisplayNumber(layout.shelves);
+    layout.shelves.push(shelf);
+    normalizeShelf(shelf);
+    clearArrangementAcceptance(layout);
+    saveNormalized(layout);
+    audit(req.user.email, "layout.shelf.add", `${layout.id}:${shelf.id}`);
+    return res.status(201).json(layout);
+  }
+
   const pairId = `pair-${randomUUID().slice(0, 8)}`;
   const front = fixtureToShelf({
     id: req.body?.id || `shf-${randomUUID().slice(0, 6)}`,
@@ -955,6 +1144,7 @@ layoutsRouter.post("/layouts/:layoutId/shelves", authRequired, requireRoles("Des
   layout.shelves.push(front, back);
   normalizeShelf(front);
   normalizeShelf(back);
+  clearArrangementAcceptance(layout);
   saveNormalized(layout);
   audit(req.user.email, "layout.shelf.add", `${layout.id}:${front.id}+${back.id}`);
   res.status(201).json(layout);
@@ -1042,6 +1232,9 @@ layoutsRouter.patch(
       } catch (err) {
         return containmentError(res, err);
       }
+      clearArrangementAcceptance(layout);
+    } else if (Array.isArray(patch.levels) || patch.heightMeters != null) {
+      clearArrangementAcceptance(layout);
     }
     saveNormalized(layout);
     audit(req.user.email, "layout.shelf.patch", `${layout.id}:${shelf.id}`);
@@ -1065,9 +1258,11 @@ layoutsRouter.delete(
       }
     }
     layout.shelves = (layout.shelves || []).filter((s) => !removeIds.has(s.id));
+    layout.fixtures = (layout.fixtures || []).filter((f) => !removeIds.has(f.id));
     layout.shelfMappings = (layout.shelfMappings || []).filter(
       (m) => !removeIds.has(m.shelfId) && !removeIds.has(m.fixtureId)
     );
+    clearArrangementAcceptance(layout);
     saveNormalized(layout);
     audit(req.user.email, "layout.shelf.delete", `${layout.id}:${[...removeIds].join("+")}`);
     res.json(layout);
@@ -1114,6 +1309,18 @@ layoutsRouter.post("/layouts/:layoutId/mappings", authRequired, requireRoles("De
   res.status(201).json(layout);
 });
 
+function samePlanogramCell(placement, { levelIndex, segmentId, faceId }) {
+  const fid = faceId === "B" ? "B" : "A";
+  const pFace = placement?.faceId === "B" ? "B" : "A";
+  const seg = segmentId || null;
+  const pSeg = placement?.segmentId || null;
+  return (
+    Number(placement?.levelIndex) === Number(levelIndex) &&
+    pFace === fid &&
+    pSeg === seg
+  );
+}
+
 layoutsRouter.post(
   "/layouts/:layoutId/shelves/:shelfId/planogram",
   authRequired,
@@ -1122,13 +1329,15 @@ layoutsRouter.post(
     if (!planogramEnabled()) return res.status(403).json({ error: "planogram_disabled" });
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
+    if (!arrangementGate(layout, res)) return;
     const shelf = (layout.shelves || []).find((s) => s.id === req.params.shelfId);
     if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
     normalizeShelf(shelf);
     const faceId = req.body?.faceId === "B" ? "B" : "A";
     const segmentId = req.body?.segmentId || null;
+    const isTemp = isTemporaryStorageShelf(shelf);
     const activeCategoryId = faceCategoryId(shelf, faceId);
-    if (!activeCategoryId) return res.status(400).json({ error: "shelf_category_required" });
+    if (!activeCategoryId && !isTemp) return res.status(400).json({ error: "shelf_category_required" });
     const productId = req.body?.productId;
     if (!productId) return res.status(400).json({ error: "missing_fields" });
     const levelIndex = Number(req.body?.levelIndex) || 0;
@@ -1138,8 +1347,11 @@ layoutsRouter.post(
     const product = repo.listProducts().find((p) => p.id === productId);
     if (!product) return res.status(404).json({ error: "product_not_found" });
     const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
-    const shelfForGate = { ...shelf, categoryId: activeCategoryId };
-    if (!productAllowedForShelf(product, activeCategoryId, categories)) {
+    const shelfForGate = {
+      ...shelf,
+      categoryId: activeCategoryId || (isTemp ? product.categoryId : null),
+    };
+    if (!isTemp && !productAllowedForShelf(product, activeCategoryId, categories)) {
       return res.status(400).json({ error: "product_category_mismatch" });
     }
     const preview = previewFacings({
@@ -1149,8 +1361,52 @@ layoutsRouter.post(
       segmentId,
       faceId,
     });
+    if (!preview.fitsLevelHeight) {
+      return res.status(400).json({ error: "product_too_tall_for_level" });
+    }
+    const pog = facePlanogram(shelf, faceId);
+    const cell = { levelIndex, segmentId, faceId };
+    const existing = pog.find((p) => samePlanogramCell(p, cell));
+    if (existing) {
+      if (existing.productId !== productId) {
+        return res.status(409).json({ error: "cell_occupied" });
+      }
+      const nextStack = clampStackLayers((existing.stackLayers || 1) + 1, preview.maxStackLayers);
+      if (nextStack <= (existing.stackLayers || 1)) {
+        return res.status(400).json({ error: "stack_limit_reached", maxStackLayers: preview.maxStackLayers });
+      }
+      existing.stackLayers = nextStack;
+      existing.maxStackLayers = preview.maxStackLayers;
+      existing.maxFacings = preview.maxFacings;
+      existing.maxDepthFacings = preview.maxDepthFacings;
+      if (req.body?.facings != null) {
+        existing.facings = clampFacings(req.body.facings, preview.maxFacings);
+      }
+      if (req.body?.depthFacings != null) {
+        existing.depthFacings = clampDepthFacings(req.body.depthFacings, preview.maxDepthFacings);
+      }
+      syncLegacyFromFaces(shelf);
+      saveNormalized(layout);
+      const load = computeShelfLoad(shelf, repo.listProducts());
+      const level = load.levels.find((l) => l.levelIndex === existing.levelIndex);
+      const weightWarning =
+        level?.overloaded
+          ? {
+              code: "level_overloaded",
+              levelIndex: level.levelIndex,
+              loadKg: level.loadKg,
+              limitKg: level.limitKg,
+            }
+          : null;
+      audit(req.user.email, "layout.planogram.stack", `${layout.id}:${shelf.id}:${productId}`);
+      return res.status(201).json(
+        weightWarning ? { ...layout, weightWarning, stacked: true, stackLayers: existing.stackLayers } : { ...layout, stacked: true, stackLayers: existing.stackLayers }
+      );
+    }
+
     const facings = clampFacings(req.body?.facings, preview.maxFacings);
     const depthFacings = clampDepthFacings(req.body?.depthFacings, preview.maxDepthFacings);
+    const stackLayers = clampStackLayers(req.body?.stackLayers ?? 1, preview.maxStackLayers);
     const placement = {
       id: req.body?.id || `pog-${randomUUID().slice(0, 6)}`,
       productId,
@@ -1159,11 +1415,12 @@ layoutsRouter.post(
       maxFacings: preview.maxFacings,
       depthFacings,
       maxDepthFacings: preview.maxDepthFacings,
+      stackLayers,
+      maxStackLayers: preview.maxStackLayers,
       positionX: Number(req.body?.positionX || 0),
       faceId,
       segmentId: segmentId || undefined,
     };
-    const pog = facePlanogram(shelf, faceId);
     pog.push(placement);
     syncLegacyFromFaces(shelf);
     saveNormalized(layout);
@@ -1194,6 +1451,7 @@ layoutsRouter.delete(
     if (!planogramEnabled()) return res.status(403).json({ error: "planogram_disabled" });
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
+    if (!arrangementGate(layout, res)) return;
     const shelf = (layout.shelves || []).find((s) => s.id === req.params.shelfId);
     if (!shelf) return res.status(404).json({ error: "shelf_not_found" });
     normalizeShelf(shelf);
@@ -1252,110 +1510,30 @@ layoutsRouter.post(
     if (hasContent && !replaceExisting) {
       return res.status(400).json({ error: "layout_not_empty" });
     }
-    const config = getConfig(layout.vertical);
-    const templates = config.fixtureTemplates || [];
-    const preferredType =
-      body.shelfTemplate?.type ||
-      (layout.vertical === "hypermarket" ? "gondola" : "shelf");
-    const shelfTmpl = templates.find((t) => t.type === preferredType) || templates.find((t) => t.type === "shelf") || {};
-    const configMinAisle = Math.max(0.9, Number(config.minAisleWidthMeters) || 1.2);
-    const requestedAisle =
-      body.minAisleWidthMeters != null && body.minAisleWidthMeters !== ""
-        ? Number(body.minAisleWidthMeters)
-        : configMinAisle;
-    // Never pack narrower than the store-type rule — otherwise Smart Generate
-    // immediately produces aisle-width violations on the layout.
-    const minAisle = Math.max(
-      configMinAisle,
-      Number.isFinite(requestedAisle) ? requestedAisle : configMinAisle
-    );
-    const packed = packAislesAndShelves(layout, {
-      orientation: body.orientation || "auto",
-      minAisleWidthMeters: minAisle,
-      crossAisles: body.crossAisles === true,
-      compactMode: body.compactMode !== false,
-      shelfTemplate: {
-        type: body.shelfTemplate?.type ?? shelfTmpl.type ?? preferredType,
-        usableWidthMeters: body.shelfTemplate?.usableWidthMeters ?? shelfTmpl.defaultWidthMeters ?? 1.2,
-        depthMeters: body.shelfTemplate?.depthMeters ?? shelfTmpl.defaultDepthMeters ?? 0.6,
-        heightMeters: body.shelfTemplate?.heightMeters ?? 2,
-        defaultLevels: body.shelfTemplate?.defaultLevels ?? shelfTmpl.defaultLevels,
-      },
-    });
-    layout.aisles = packed.aisles;
-    // Hard guarantee: every generated aisle meets the validated minimum width.
-    for (const aisle of layout.aisles || []) {
-      if (Number(aisle.widthMeters) < minAisle) aisle.widthMeters = minAisle;
-    }
-    layout.aisleMappings = [];
 
-    const categoryMix = Array.isArray(body.categoryMix) ? body.categoryMix : [];
-    const categories = listCategoriesForLayout(layout.vertical, (v) =>
-      repo.listCategories().filter((c) => c.vertical === v)
-    );
-    if (categoryMix.length > 0) {
-      const totalPct = categoryMix.reduce((s, m) => s + Number(m.percent || 0), 0);
-      if (Math.abs(totalPct - 100) > 0.01) {
+    let generated;
+    try {
+      generated = autogenerateLayoutFixtures(layout, body, {
+        getConfig,
+        listCategories: () => repo.listCategories(),
+      });
+    } catch (err) {
+      if (err.code === "category_mix_invalid") {
         return res.status(400).json({ error: "category_mix_invalid", detail: "Percentages must sum to 100" });
       }
-      const resolvedMix = categoryMix.map((row) => ({
-        ...row,
-        categoryId: resolveCategoryId(row.categoryId, categories) || row.categoryId,
-      }));
-      const assigned = assignCategoryMix(packed.shelves, resolvedMix, categories);
-      layout.shelves = applyFixtureTypesToShelves(
-        assigned.shelves,
-        resolvedMix,
-        categories,
-        config
-      );
-      layout.shelfMappings = assigned.shelfMappings;
-    } else {
-      layout.shelves = packed.shelves;
-      layout.shelfMappings = [];
+      throw err;
     }
 
-    let droppedOutside = 0;
-    layout.aisles = (layout.aisles || []).filter((a) => {
-      if (entityInsideLayout(a, "aisle", layout)) return true;
-      droppedOutside += 1;
-      return false;
-    });
-    layout.shelves = (layout.shelves || []).filter((s) => {
-      if (entityInsideLayout(s, "shelf", layout)) return true;
-      droppedOutside += 1;
-      return false;
-    });
-
-    let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
-    layout.shelves = bound.shelves;
-    layout.aisles = bound.aisles;
-    ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleLabeling(
-      layout.shelves,
-      layout.aisles,
-      layout
-    ));
-
-    layout.fixtures = [];
-    layout.mappings = [];
+    const categoryMix = Array.isArray(body.categoryMix) ? body.categoryMix : [];
 
     let planogramPlacements = 0;
-    const fillPlanogram = body.fillPlanogram !== false;
-    if (categoryMix.length > 0 && fillPlanogram) {
+    if (body.fillPlanogram !== false && planogramEnabled()) {
       const { categories: fillCats, products: fillProducts } = loadProductsForLayoutVertical(
         layout.vertical,
         (v) => repo.listCategories(v),
         () => repo.listProducts()
       );
       planogramPlacements = fillPlanogramsForLayout(layout, fillProducts, fillCats);
-      bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
-      layout.shelves = bound.shelves;
-      layout.aisles = bound.aisles;
-      ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleLabeling(
-        layout.shelves,
-        layout.aisles,
-        layout
-      ));
     }
 
     saveNormalized(layout);
@@ -1364,19 +1542,21 @@ layoutsRouter.post(
       (v) => repo.listCategories(v),
       () => repo.listProducts()
     );
+    const arrangement = computeArrangementSummary(layout, repo.listProducts());
     audit(req.user.email, "layout.autogenerate", `${layout.id}:${layout.shelves.length}`);
     res.json({
       ...layout,
+      arrangement,
       generated: {
         aisles: layout.aisles.length,
         shelves: layout.shelves.length,
-        gondolaUnits: countGondolaUnits(layout.shelves),
+        gondolaUnits: generated.gondolaUnits,
         walkAisles: layout.aisles.length,
-        categoryMapped: categoryMix.length > 0,
-        planogramFilled: fillPlanogram && categoryMix.length > 0 && planogramPlacements > 0,
+        categoryMapped: generated.categoryMapped,
+        planogramFilled: planogramPlacements > 0,
         planogramPlacements,
         productsMapped: planogramPlacements,
-        skippedOutsideCount: (packed.skippedOutsideCount ?? 0) + droppedOutside,
+        skippedOutsideCount: generated.skippedOutsideCount,
       },
       coverage: {
         totalProducts: coverage.totalProducts,
@@ -1386,6 +1566,58 @@ layoutsRouter.post(
         missingProducts: coverage.missingProducts,
       },
       replaced: replaceExisting && hasContent,
+    });
+  }
+);
+
+layoutsRouter.get("/layouts/:layoutId/arrangement-summary", authRequired, (req, res) => {
+  const layout = repo.getLayout(req.params.layoutId);
+  if (!layout) return res.status(404).json({ error: "not_found" });
+  normalizeLayout(layout);
+  res.json(computeArrangementSummary(layout, repo.listProducts()));
+});
+
+layoutsRouter.post(
+  "/layouts/:layoutId/arrangement/accept",
+  authRequired,
+  requireRoles("Designer", "Admin"),
+  (req, res) => {
+    const layout = repo.getLayout(req.params.layoutId);
+    if (!layout) return res.status(404).json({ error: "not_found" });
+    if (!(layout.shelves || []).length) {
+      return res.status(400).json({ error: "no_shelves", detail: "Arrange shelves before accepting." });
+    }
+    layout.arrangementAcceptedAt = now();
+    layout.arrangementAcceptedBy = req.user.email;
+    let planogramPlacements = 0;
+    if (req.body?.fillPlanogram === true) {
+      const { categories: fillCats, products: fillProducts } = loadProductsForLayoutVertical(
+        layout.vertical,
+        (v) => repo.listCategories(v),
+        () => repo.listProducts()
+      );
+      planogramPlacements = fillPlanogramsForLayout(layout, fillProducts, fillCats);
+      const boundAfter = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
+      layout.shelves = boundAfter.shelves;
+      layout.aisles = boundAfter.aisles;
+      ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleLabeling(
+        layout.shelves,
+        layout.aisles,
+        layout
+      ));
+    }
+    saveNormalized(layout);
+    audit(req.user.email, "layout.arrangement.accept", layout.id);
+    const coverage = computePlanogramCoverage(
+      layout,
+      (v) => repo.listCategories(v),
+      () => repo.listProducts()
+    );
+    res.json({
+      ...layout,
+      arrangement: computeArrangementSummary(layout, repo.listProducts()),
+      coverage,
+      planogramPlacements,
     });
   }
 );

@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resetDbForTests } from "../src/store/sqlite.js";
 import app from "../src/index.js";
+import { acceptArrangement } from "./helpers.js";
 
 async function withServer(fn) {
   resetDbForTests();
@@ -368,6 +369,8 @@ test("legacy fixtures synthesize shelves on GET; shelf planogram facings clamp",
     assert.equal(preview.status, 200);
     const prevBody = await preview.json();
     assert.ok(prevBody.maxFacings >= 1);
+
+    await acceptArrangement(port, headers, layout.id);
 
     const pog = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/shelves/${shelfId}/planogram`, {
       method: "POST",

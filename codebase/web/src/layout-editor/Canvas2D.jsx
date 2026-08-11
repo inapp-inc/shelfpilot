@@ -3,6 +3,7 @@ import { FIXTURE_TYPES, ZONE_TYPES } from "../referenceCatalog.js";
 import ShelfBadge from "./ShelfBadge.jsx";
 import ShelfHoverTooltip from "./ShelfHoverTooltip.jsx";
 import { isDoubleSided, isPairedShelf, mergePairedShelfForCanvas, normalizeShelfUI, shelfCanvasFaceLabel } from "./shelfFaces.js";
+import { isTemporaryStorageShelf } from "../temporaryStorage.js";
 import { emojiForCategoryId } from "../storeTypes.js";
 import { categoryChipStyle, colorForShelfFace, withAlpha } from "../categoryColors.js";
 import { OBSTACLE_TYPES } from "../obstacleTypes.js";
@@ -265,6 +266,7 @@ export default function Canvas2D({
   onSelectShelf,
   paletteTool,
   editDisabled,
+  ctrlHeld = false,
   dragPos,
   setDragging,
   onDropTool,
@@ -286,6 +288,7 @@ export default function Canvas2D({
   fixtureTypeKeys = null,
   onDropMissingProduct,
   onMissingProductDropMiss,
+  onPatchFloorPlan,
 }) {
   const floorRef = useRef(null);
   const editPreviewRef = useRef(null);
@@ -294,6 +297,7 @@ export default function Canvas2D({
   const [hoverAnchor, setHoverAnchor] = useState(null);
   const [zoneDraw, setZoneDraw] = useState(null);
   const zoneDrawRef = useRef(null);
+  const [floorPlanDrag, setFloorPlanDrag] = useState(null);
   const CLOSE_VERTEX_M = 0.45;
   const drawing = paletteTool === "draw";
   const editingArea = paletteTool === "edit-area";
@@ -315,7 +319,25 @@ export default function Canvas2D({
   const outsideIds = new Set(
     (layout.validation?.containmentViolations || []).map((v) => `${v.kind}:${v.id}`)
   );
-  const canDragFixtures = !editDisabled && !drawing && !editingArea;
+  const layoutEditActive = Boolean(selection?.layoutEdit);
+  const layoutPickActive = layoutEditActive && paletteTool === "select" && !editDisabled && !drawing && !editingArea;
+
+  function isLayoutPickEvent(e) {
+    return (
+      (ctrlHeld || Boolean(e?.ctrlKey || e?.metaKey)) &&
+      !editDisabled &&
+      !drawing &&
+      !editingArea
+    );
+  }
+
+  function shelfMatchesLayoutSelection(shelfId) {
+    return (
+      selection?.layoutEdit &&
+      (selection.kind === "shelf" || selection.kind === "fixture") &&
+      selection.id === shelfId
+    );
+  }
   const savedPoly = bounds.polygon;
   const envelope = bounds.storeEnvelope;
   const activeFixturePoly = useMemo(() => {
@@ -332,7 +354,6 @@ export default function Canvas2D({
 
   const visibleShelves = useMemo(() => {
     const list = shelves.map((s) => normalizeShelfUI(s));
-    const filtered = poly ? list.filter((s) => shelfFitsPolygon(s, poly)) : list;
 
     const byPair = new Map();
     for (const s of list) {
@@ -342,7 +363,7 @@ export default function Canvas2D({
     }
 
     const merged = [];
-    for (const s of filtered) {
+    for (const s of list) {
       if (s.pairId && s.pairRole === "back") {
         continue;
       }
@@ -357,6 +378,12 @@ export default function Canvas2D({
     }
     return merged;
   }, [shelves, poly, selection?.id]);
+
+  const selectedAisleId = useMemo(() => {
+    if (!selection || (selection.kind !== "shelf" && selection.kind !== "fixture")) return null;
+    const phys = shelves.find((s) => s.id === selection.id);
+    return phys?.aisleId || null;
+  }, [selection, shelves]);
 
   const visibleAisles = layout.aisles || [];
 
@@ -747,9 +774,24 @@ export default function Canvas2D({
     const hit = pickShelfFaceLocal(e, f, frontId, backId, live, rp, rotState);
     if (!hit) return;
 
-    if (onSelectShelf) onSelectShelf(hit.shelfId, hit.faceId);
-    else setSelection({ kind: "shelf", id: hit.shelfId, faceId: hit.faceId });
-    if (!canDragFixtures) return;
+    const layoutPick = isLayoutPickEvent(e);
+    const alreadySelected = shelfMatchesLayoutSelection(hit.shelfId);
+    if (layoutPick) e.preventDefault();
+
+    if (layoutPick) {
+      if (onSelectShelf) {
+        onSelectShelf(hit.shelfId, hit.faceId, { openPlanogram: false, layoutSelect: true });
+      } else {
+        setSelection({ kind: "shelf", id: hit.shelfId, faceId: hit.faceId, layoutEdit: true });
+      }
+    } else if (alreadySelected) {
+      // Sticky layout selection — drag/resize without holding Ctrl.
+    } else {
+      if (onSelectShelf) {
+        onSelectShelf(hit.shelfId, hit.faceId, { openPlanogram: true, layoutSelect: false });
+      }
+      return;
+    }
     const origX = f.pairOrigins?.front?.x ?? f.canvasOriginX ?? f.x;
     const origY = f.pairOrigins?.front?.y ?? f.canvasOriginY ?? f.y;
     setDragging({
@@ -823,6 +865,9 @@ export default function Canvas2D({
   const showStoreEnvelopeOutline = Boolean(envelope && (drawing || editingArea));
   const showStoreFloor = !webglBackground && !drawing;
   const showFixtureFloor = showStoreFloor && !drawing;
+  const hasFloorPlanUnderlay = Boolean(layout.floorPlan?.url && layout.floorPlan.visible !== false);
+  const fixtureLayerZ = hasFloorPlanUnderlay ? 10 : 5;
+  const aisleLayerZ = hasFloorPlanUnderlay ? 8 : 3;
   const floorPxW = bounds.width * scale;
   const floorPxH = bounds.height * scale;
   const fixtureLeft = (liveFixtureZone.x - bounds.minX) * scale;
@@ -833,13 +878,15 @@ export default function Canvas2D({
   return (
     <div
       ref={floorRef}
-      className={`floor-plan${showStoreFloor ? " floor-plan-store" : ""}${webglBackground ? " floor-plan-webgl-overlay" : ""}`}
+      className={`floor-plan${showStoreFloor ? " floor-plan-store" : ""}${hasFloorPlanUnderlay ? " floor-plan--has-underlay" : ""}${webglBackground ? " floor-plan-webgl-overlay" : ""}`}
       style={{
         ...(webglBackground
           ? { position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 1, pointerEvents: "auto" }
           : { width: floorPxW, height: floorPxH }),
         ...(showStoreFloor
-          ? {}
+          ? hasFloorPlanUnderlay
+            ? { background: "rgba(148, 163, 184, 0.12)", backgroundImage: "none" }
+            : {}
           : {
               background: "transparent",
               backgroundImage: "none",
@@ -887,7 +934,8 @@ export default function Canvas2D({
           setZoneDraw(draft);
           return;
         }
-        if (paletteTool === "select" || editDisabled) setSelection(null);
+        // Clear sticky layout selection when clicking empty floor.
+        if (selection?.layoutEdit) setSelection(null);
       }}
       onMouseMove={(e) => {
         if (!drawing || e.target !== e.currentTarget) return;
@@ -922,16 +970,20 @@ export default function Canvas2D({
         onPlaceClick(paletteTool, x, y);
       }}
     >
-      {layout.floorPlan?.url && layout.floorPlan.visible !== false ? (() => {
+      {hasFloorPlanUnderlay ? (() => {
         const fp = layout.floorPlan;
-        const st = toStageCoords(fp.x || 0, fp.y || 0, bounds);
+        const liveX = floorPlanDrag ? floorPlanDrag.x : Number(fp.x) || 0;
+        const liveY = floorPlanDrag ? floorPlanDrag.y : Number(fp.y) || 0;
+        const st = toStageCoords(liveX, liveY, bounds);
+        const selected = selection?.kind === "floorPlan";
+        const canEditPlan = !editDisabled && paletteTool === "select" && !drawing && !editingArea;
         return (
           <img
-            className="floor-plan-underlay"
+            className={`floor-plan-underlay${selected ? " is-selected" : ""}`}
             src={resolveAssetUrl(fp.url)}
-            alt=""
-            aria-hidden
+            alt="Floor plan underlay"
             draggable={false}
+            data-testid="floorplan-underlay"
             style={{
               position: "absolute",
               left: st.x * scale,
@@ -940,17 +992,55 @@ export default function Canvas2D({
               height: Math.max(1, (fp.depthMeters || 8) * scale),
               transform: fp.rotationDeg ? `rotate(${fp.rotationDeg}deg)` : undefined,
               transformOrigin: "top left",
-              opacity: fp.opacity ?? 0.5,
+              opacity: fp.opacity ?? 0.72,
               zIndex: 0,
-              pointerEvents: "none",
+              pointerEvents: canEditPlan ? "auto" : "none",
+              cursor: canEditPlan ? "move" : "default",
               userSelect: "none",
+              outline: selected ? "2px solid #A30A2A" : "none",
+              outlineOffset: 2,
+            }}
+            onMouseDown={(e) => {
+              if (!canEditPlan) return;
+              e.stopPropagation();
+              e.preventDefault();
+              setSelection?.({ kind: "floorPlan" });
+              const start = layoutPointFromEvent(e);
+              const originX = Number(fp.x) || 0;
+              const originY = Number(fp.y) || 0;
+              setFloorPlanDrag({ x: originX, y: originY });
+              const onMove = (ev) => {
+                const pt = layoutPointFromClient(ev.clientX, ev.clientY);
+                if (!pt) return;
+                setFloorPlanDrag({
+                  x: Math.round((originX + (pt.x - start.x)) * 10) / 10,
+                  y: Math.round((originY + (pt.y - start.y)) * 10) / 10,
+                });
+              };
+              const onUp = (ev) => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+                const pt = layoutPointFromClient(ev.clientX, ev.clientY);
+                const next = pt
+                  ? {
+                      x: Math.round((originX + (pt.x - start.x)) * 10) / 10,
+                      y: Math.round((originY + (pt.y - start.y)) * 10) / 10,
+                    }
+                  : { x: originX, y: originY };
+                setFloorPlanDrag(null);
+                if (next.x !== originX || next.y !== originY) {
+                  onPatchFloorPlan?.(next);
+                }
+              };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
             }}
           />
         );
       })() : null}
       {showFixtureFloor ? (
         <div
-          className="fixture-zone-floor"
+          className={`fixture-zone-floor${hasFloorPlanUnderlay ? " fixture-zone-floor--with-underlay" : ""}`}
           style={{
             position: "absolute",
             left: fixtureLeft,
@@ -958,7 +1048,8 @@ export default function Canvas2D({
             width: fixturePxW,
             height: fixturePxH,
             backgroundSize: `${scale}px ${scale}px`,
-            zIndex: editingArea ? 1 : 0,
+            /* Underlay sits at z-index 1; keep the cream fill below it, grid outline above when underlay is on. */
+            zIndex: hasFloorPlanUnderlay ? 2 : editingArea ? 1 : 0,
             pointerEvents: "none",
           }}
           aria-hidden
@@ -1269,13 +1360,14 @@ export default function Canvas2D({
               borderRadius: o.type === "column" ? 3 : 2,
               boxShadow: selected ? `0 0 0 3px ${withAlpha(color, 0.4)}` : "none",
               zIndex: selected ? 9 : 7,
-              cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
+              cursor: layoutEditActive && selected ? "grab" : layoutPickActive ? "grab" : editDisabled || drawing ? "default" : "pointer",
               pointerEvents: drawing || editDisabled ? "none" : "auto",
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
               if (drawing) return;
-              setSelection({ kind: "obstacle", id: o.id });
+              if (!isLayoutPickEvent(e)) return;
+              setSelection({ kind: "obstacle", id: o.id, layoutEdit: true });
               if (editDisabled || paletteTool !== "select") return;
               const dir = hitTestResizeEdge(e, e.currentTarget);
               if (dir && showHandles) {
@@ -1292,7 +1384,7 @@ export default function Canvas2D({
                 );
                 return;
               }
-              if (!canDragFixtures) return;
+              if (!layoutEditActive && !layoutPickActive) return;
               setDragging({
                 kind: "obstacle",
                 id: o.id,
@@ -1336,6 +1428,10 @@ export default function Canvas2D({
           (a.violations || []).length > 0 ||
           (layout.validation?.containmentViolations || []).some((v) => v.kind === "aisle" && v.id === a.id);
         const selected = selection?.kind === "aisle" && selection.id === a.id;
+        const aisleBoundToShelf =
+          Boolean(selectedAisleId && selectedAisleId === a.id) &&
+          (selection?.kind === "shelf" || selection?.kind === "fixture");
+        const aisleEmphasis = selected || aisleBoundToShelf;
         const ax = a.x != null ? a.x : 0.3;
         const ay = a.y != null ? a.y : 0.3 + idx * 1.2;
         const st = toStageCoords(ax, ay, bounds);
@@ -1353,30 +1449,44 @@ export default function Canvas2D({
         return (
           <div
             key={a.id}
-            className={`aisle aisle-interactive ${bad ? "bad" : ""} ${vertical ? "aisle-vertical" : ""}`}
+            className={`aisle aisle-interactive ${bad ? "bad" : ""} ${vertical ? "aisle-vertical" : ""}${aisleEmphasis ? " aisle-bound-highlight" : ""}${aisleBoundToShelf ? " aisle-bound-by-shelf" : ""}`}
             title={`${a.name || "Aisle"} · ${Number(a.widthMeters || 0).toFixed(1)} m wide`}
             style={{
               left: stA.x * scale,
               top: stA.y * scale,
               width: Math.max(20, wMeters * scale),
               height: Math.max(16, hMeters * scale),
-              background: a.color
-                ? `${a.color}2b`
-                : bad
-                  ? "rgba(163,10,42,0.12)"
-                  : vertical
-                    ? "rgba(100,116,139,0.42)"
-                    : "rgba(148,163,184,0.38)",
-              boxShadow: selected ? "0 0 0 3px rgba(31,41,51,0.28)" : vertical ? "inset 0 0 0 1px rgba(71,85,105,0.35)" : "none",
-              cursor: canDragFixtures ? "grab" : editDisabled || drawing ? "default" : "pointer",
+              background: aisleBoundToShelf
+                ? undefined
+                : aisleEmphasis
+                  ? "rgba(100,116,139,0.5)"
+                  : a.color
+                    ? `${a.color}2b`
+                    : bad
+                      ? "rgba(163,10,42,0.12)"
+                      : vertical
+                        ? "rgba(100,116,139,0.42)"
+                        : "rgba(148,163,184,0.38)",
+              boxShadow: aisleBoundToShelf
+                ? undefined
+                : aisleEmphasis
+                  ? "0 0 0 3px rgba(31,41,51,0.28)"
+                  : selected
+                    ? "0 0 0 3px rgba(31,41,51,0.28)"
+                    : vertical
+                      ? "inset 0 0 0 1px rgba(71,85,105,0.35)"
+                      : "none",
+              cursor: layoutEditActive && selected ? "grab" : layoutPickActive ? "grab" : editDisabled || drawing ? "default" : "pointer",
               pointerEvents: drawing || editDisabled ? "none" : "auto",
-              zIndex: selected ? 4 : vertical ? 2 : 1,
+              zIndex: aisleEmphasis ? aisleLayerZ + 3 : selected ? aisleLayerZ + 2 : aisleLayerZ,
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
               if (drawing) return;
-              setSelection({ kind: "aisle", id: a.id });
-              if (!canDragFixtures) return;
+              const layoutPick = isLayoutPickEvent(e);
+              const alreadySelected = selection?.layoutEdit && selection.kind === "aisle" && selection.id === a.id;
+              if (!layoutPick && !alreadySelected) return;
+              if (layoutPick) setSelection({ kind: "aisle", id: a.id, layoutEdit: true });
               setDragging({
                 kind: "aisle",
                 id: a.id,
@@ -1425,11 +1535,27 @@ export default function Canvas2D({
         const pairIds = backId ? [frontId, backId] : [f.id];
         const isShelfSelection =
           selection?.kind === "shelf" || selection?.kind === "fixture";
-        const selectionMatchesUnit =
+        const selFace = selection?.faceId === "B" ? "B" : "A";
+        const dual = isDoubleSided(f) || f.pairDisplay;
+        const paired = isPairedShelf(f) && !f.pairDisplay;
+        // FR-AISLE-01: select one aisle-facing physical shelf/face — never co-select gondola mate.
+        const faceASelected = Boolean(
           isShelfSelection &&
-          (selection.id === f.id || selection.id === frontId || selection.id === backId);
-        const selected = selectionMatchesUnit;
-        const showUnitSelection = selected;
+            (f.pairDisplay
+              ? selection.id === frontId
+              : selection.id === f.id && (!dual || selFace === "A"))
+        );
+        const faceBSelected = Boolean(
+          isShelfSelection &&
+            (f.pairDisplay
+              ? selection.id === backId
+              : selection.id === f.id && dual && selFace === "B")
+        );
+        const unitHasSelection = faceASelected || faceBSelected;
+        const faceADimmed = f.pairDisplay && unitHasSelection && !faceASelected;
+        const faceBDimmed = f.pairDisplay && unitHasSelection && !faceBSelected;
+        const selected = unitHasSelection;
+        const showUnitSelection = unitHasSelection;
         const dragId = dragPos && pairIds.includes(dragPos.id) ? frontId : dragPos?.id;
         const live = dragPos && dragPos.id === frontId ? dragPos : f;
         const rp = resizePreview && (resizePreview.id === f.id || resizePreview.id === frontId) ? resizePreview : null;
@@ -1441,8 +1567,6 @@ export default function Canvas2D({
           zone === "chilled" ? "shelf-chilled" : zone === "frozen" ? "shelf-frozen" : "";
         const faceA = f.faces?.find((face) => face.id === "A");
         const faceB = f.faces?.find((face) => face.id === "B");
-        const dual = isDoubleSided(f) || f.pairDisplay;
-        const paired = isPairedShelf(f) && !f.pairDisplay;
         const splitAlongWidth = gondolaSplitAlongWidth(rot);
         const faceLayout = gondolaFaceLayout(splitAlongWidth);
         // Shelves are tinted by the category they merchandise; the temperature-zone
@@ -1455,9 +1579,12 @@ export default function Canvas2D({
             : zone === "frozen"
               ? "rgba(56,189,248,0.22)"
               : "rgba(163,10,42,0.12)";
+        const isTemp = isTemporaryStorageShelf(f);
         const fillColor = f.pairDisplay
           ? "transparent"
-          : paired
+          : isTemp
+            ? "rgba(245,158,11,0.22)"
+            : paired
             ? colorA
               ? withAlpha(colorA, 0.34)
               : unmappedFill
@@ -1477,7 +1604,8 @@ export default function Canvas2D({
         const usable = logicalW;
         const outside =
           outsideIds.has(`shelf:${f.id}`) ||
-          (backId && outsideIds.has(`shelf:${backId}`));
+          (backId && outsideIds.has(`shelf:${backId}`)) ||
+          (poly && !shelfFitsPolygon(f, poly));
         const pixelW = aabb.w * scale;
         const pixelH = aabb.d * scale;
         const showGondolaFaceLabels = f.pairDisplay && shelfLabelFitsGondolaFace(pixelW, pixelH, splitAlongWidth);
@@ -1489,21 +1617,33 @@ export default function Canvas2D({
           missingProductDropTarget?.shelfId === frontId ||
           missingProductDropTarget?.shelfId === backId ||
           missingProductDropTarget?.shelfId === f.id;
+        const selectedAisleLabel = faceASelected
+          ? shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)
+          : faceBSelected
+            ? shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)
+            : !f.pairDisplay && showUnitSelection
+              ? shelfCanvasFaceLabel(f, selFace, layout.aisles, layout.shelves)
+              : null;
+        const selectionRingStyle = faceASelected
+          ? faceLayout.front
+          : faceBSelected
+            ? faceLayout.back
+            : null;
 
         return (
           <div
             key={f.id}
-            className={`fx-slot fx-slot-interactive ${f.pairDisplay ? "fx-slot-gondola" : ""}${showUnitSelection ? " fx-slot-selected" : ""}${isDropTarget ? " fx-slot-drop-target" : ""}`}
+            className={`fx-slot fx-slot-interactive ${f.pairDisplay ? "fx-slot-gondola" : ""}${isTemp ? " fx-slot-temporary" : ""}${showUnitSelection && !f.pairDisplay ? " fx-slot-selected" : ""}${faceASelected ? " fx-slot-face-a-selected" : ""}${faceBSelected ? " fx-slot-face-b-selected" : ""}${isDropTarget ? " fx-slot-drop-target" : ""}${(layoutEditActive || layoutPickActive) && showUnitSelection ? " fx-slot-layout-edit" : ""}`}
             style={{
               position: "absolute",
               left: st.x * scale,
               top: st.y * scale,
               width: aabb.w * scale,
               height: aabb.d * scale,
-              zIndex: selected ? 6 : paired && f.pairRole === "back" ? 4 : 5,
+              zIndex: selected ? fixtureLayerZ + 1 : paired && f.pairRole === "back" ? fixtureLayerZ - 1 : fixtureLayerZ,
               pointerEvents: drawing || editDisabled ? "none" : "auto",
               overflow: "visible",
-              cursor: canDragFixtures ? "pointer" : "default",
+              cursor: layoutEditActive && selected ? "grab" : layoutPickActive ? "grab" : "pointer",
             }}
             onMouseDown={(e) => handleShelfSlotMouseDown(e, f, frontId, backId)}
             onMouseMove={(e) => handleShelfSlotMouseMove(e, f, frontId, backId)}
@@ -1513,7 +1653,7 @@ export default function Canvas2D({
             onClick={(e) => e.stopPropagation()}
           >
             <div
-              className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}${showUnitSelection ? " fx-selected" : ""}`}
+              className={`fx ${zoneClass} ${outside ? "fx-violation" : ""} ${f.pairDisplay ? "fx-gondola" : ""} ${isTemp ? "fx-temporary" : ""} ${paired ? `fx-pair fx-pair-${f.pairRole || "front"}` : ""}${!f.pairDisplay && showUnitSelection ? " fx-selected" : ""}`}
               style={{
                 position: "absolute",
                 left: 0,
@@ -1523,18 +1663,20 @@ export default function Canvas2D({
                 background: fillColor,
                 borderColor: outside
                   ? "#dc2626"
-                  : showUnitSelection
-                    ? "#A30A2A"
-                    : f.pairDisplay
-                      ? "#334155"
-                      : colorA || colorB
-                        ? colorA || colorB
-                        : zone === "chilled"
-                          ? "#0ea5e9"
-                          : zone === "frozen"
-                            ? "#38bdf8"
-                            : "#1f2933",
-                borderStyle: paired && f.pairRole === "back" ? "dashed" : "solid",
+                  : isTemp
+                    ? "#d97706"
+                    : !f.pairDisplay && showUnitSelection
+                      ? "#A30A2A"
+                      : f.pairDisplay
+                        ? "#334155"
+                        : colorA || colorB
+                          ? colorA || colorB
+                          : zone === "chilled"
+                            ? "#0ea5e9"
+                            : zone === "frozen"
+                              ? "#38bdf8"
+                              : "#1f2933",
+                borderStyle: isTemp ? "dashed" : paired && f.pairRole === "back" ? "dashed" : "solid",
                 boxShadow: f.pairDisplay ? "0 2px 8px rgba(15,23,42,0.14)" : "none",
                 display: "flex",
                 alignItems: "center",
@@ -1547,12 +1689,16 @@ export default function Canvas2D({
             {f.pairDisplay && backId ? (
               <>
                 <div
-                  className="gondola-face-pane gondola-face-a"
+                  className={`gondola-face-pane gondola-face-a${faceASelected ? " selected" : ""}${faceADimmed ? " dimmed" : ""}`}
+                  data-testid={faceASelected ? "shelf-face-selected" : undefined}
                   title={`${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)} · front aisle${faceA?.categoryId ? ` · ${categoryLabel(categories, faceA.categoryId)}` : ""}`}
                   style={{
                     ...faceLayout.front,
                     ...(colorA
-                      ? { background: withAlpha(colorA, 0.34), borderColor: colorA }
+                      ? {
+                          background: withAlpha(colorA, faceASelected ? 0.56 : faceADimmed ? 0.12 : 0.3),
+                          borderColor: colorA,
+                        }
                       : null),
                   }}
                 >
@@ -1572,12 +1718,16 @@ export default function Canvas2D({
                   ) : null}
                 </div>
                 <div
-                  className="gondola-face-pane gondola-face-b"
+                  className={`gondola-face-pane gondola-face-b${faceBSelected ? " selected" : ""}${faceBDimmed ? " dimmed" : ""}`}
+                  data-testid={faceBSelected ? "shelf-face-selected" : undefined}
                   title={`${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)} · back aisle${faceB?.categoryId ? ` · ${categoryLabel(categories, faceB.categoryId)}` : ""}`}
                   style={{
                     ...faceLayout.back,
                     ...(colorB
-                      ? { background: withAlpha(colorB, 0.34), borderColor: colorB }
+                      ? {
+                          background: withAlpha(colorB, faceBSelected ? 0.56 : faceBDimmed ? 0.12 : 0.3),
+                          borderColor: colorB,
+                        }
                       : null),
                   }}
                 >
@@ -1626,14 +1776,14 @@ export default function Canvas2D({
             {showFaceEdgeLabels ? (
               <>
                 <span
-                  className="face-edge-label face-a-edge mono"
+                  className={`face-edge-label face-a-edge mono${faceASelected ? " selected" : ""}`}
                   style={splitAlongWidth ? { left: 4, top: "50%", transform: "translateY(-50%)" } : { top: 4, left: "50%", transform: "translateX(-50%)" }}
                   title={`Face A (${shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)})`}
                 >
                   {shelfCanvasFaceLabel(f, "A", layout.aisles, layout.shelves)}
                 </span>
                 <span
-                  className="face-edge-label face-b-edge mono"
+                  className={`face-edge-label face-b-edge mono${faceBSelected ? " selected" : ""}`}
                   style={splitAlongWidth ? { right: 4, top: "50%", transform: "translateY(-50%)" } : { bottom: 4, left: "50%", transform: "translateX(-50%)" }}
                   title={`Face B (${shelfCanvasFaceLabel(f, "B", layout.aisles, layout.shelves)})`}
                 >
@@ -1708,6 +1858,52 @@ export default function Canvas2D({
               </span>
             ) : null}
             </div>
+            {selectedAisleLabel && selectionRingStyle ? (
+              <div
+                key={`ring-${selection?.id}-${selectedAisleLabel}`}
+                className={`shelf-selection-ring${faceBSelected ? " shelf-selection-ring--b" : ""}`}
+                style={selectionRingStyle}
+                aria-hidden
+              />
+            ) : null}
+            {!f.pairDisplay && showUnitSelection ? (
+              <div
+                key={`ring-${selection?.id}-full`}
+                className="shelf-selection-ring shelf-selection-ring--full"
+                aria-hidden
+              />
+            ) : null}
+            {selectedAisleLabel ? (
+              <div
+                key={`callout-${selection?.id}-${selectedAisleLabel}`}
+                className={`shelf-selection-callout${faceBSelected ? " shelf-selection-callout--b" : ""}`}
+                style={selectionRingStyle || undefined}
+                aria-hidden
+              >
+                <span className="shelf-selection-callout-label mono">{selectedAisleLabel}</span>
+              </div>
+            ) : null}
+            {showUnitSelection && showHandles && (layoutEditActive || layoutPickActive) ? (
+              <ResizeHandles
+                boost={Math.max(1, scale / 48)}
+                onStart={(dir, ev) => {
+                  const resizeId = f.pairDisplay && backId ? frontId : f.id;
+                  const origX = f.pairOrigins?.front?.x ?? f.canvasOriginX ?? f.x;
+                  const origY = f.pairOrigins?.front?.y ?? f.canvasOriginY ?? f.y;
+                  startResize(
+                    {
+                      kind: "shelf",
+                      id: resizeId,
+                      rotationDeg: rot,
+                      orig: { x: origX, y: origY, w: logicalW, h: logicalD },
+                      min: { w: 0.4, h: 0.25 },
+                    },
+                    dir,
+                    ev
+                  );
+                }}
+              />
+            ) : null}
           </div>
         );
       })}

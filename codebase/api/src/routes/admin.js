@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { repo, audit, getConfig } from "../store/sqlite.js";
+import { getShopperExperience, putShopperExperience, resolveShopperLayout } from "../services/shopperExperience.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
 
 export const adminRouter = Router();
@@ -29,13 +30,21 @@ adminRouter.get("/admin/users", authRequired, requireRoles("Admin"), (req, res) 
 });
 
 adminRouter.post("/admin/users", authRequired, requireRoles("Admin"), (req, res) => {
-  const { email, name, role, password } = req.body || {};
-  const allowed = ["Designer", "Approver", "Viewer", "Admin"];
+  const { email, name, role, password, shopperLayoutId } = req.body || {};
+  const allowed = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
   if (!email || !name || !role || !password) {
     return res.status(400).json({ error: "missing_fields" });
   }
   if (!allowed.includes(role)) {
     return res.status(400).json({ error: "invalid_role" });
+  }
+  if (role === "Customer") {
+    if (!shopperLayoutId) {
+      return res.status(400).json({ error: "shopper_layout_required" });
+    }
+    if (!repo.getLayout(shopperLayoutId)) {
+      return res.status(400).json({ error: "invalid_layout" });
+    }
   }
   if (repo.findUserByEmail(email)) {
     return res.status(400).json({ error: "email_exists" });
@@ -46,6 +55,7 @@ adminRouter.post("/admin/users", authRequired, requireRoles("Admin"), (req, res)
     name,
     role,
     password,
+    shopperLayoutId: role === "Customer" ? shopperLayoutId : null,
   });
   audit(req.user.email, "user.create", user.id);
   res.status(201).json(user);
@@ -53,9 +63,22 @@ adminRouter.post("/admin/users", authRequired, requireRoles("Admin"), (req, res)
 
 adminRouter.patch("/admin/users/:userId", authRequired, requireRoles("Admin"), (req, res) => {
   if (req.body?.role) {
-    const allowed = ["Designer", "Approver", "Viewer", "Admin"];
+    const allowed = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
     if (!allowed.includes(req.body.role)) {
       return res.status(400).json({ error: "invalid_role" });
+    }
+  }
+  const existing = repo.findUserById(req.params.userId);
+  if (!existing) return res.status(404).json({ error: "not_found" });
+  const nextRole = req.body?.role ?? existing.role;
+  const nextLayoutId =
+    req.body?.shopperLayoutId !== undefined ? req.body.shopperLayoutId : existing.shopper_layout_id;
+  if (nextRole === "Customer") {
+    if (!nextLayoutId) {
+      return res.status(400).json({ error: "shopper_layout_required" });
+    }
+    if (!repo.getLayout(nextLayoutId)) {
+      return res.status(400).json({ error: "invalid_layout" });
     }
   }
   const user = repo.updateUser(req.params.userId, req.body || {});
@@ -66,4 +89,25 @@ adminRouter.patch("/admin/users/:userId", authRequired, requireRoles("Admin"), (
 
 adminRouter.get("/admin/audit", authRequired, requireRoles("Admin", "Approver"), (req, res) => {
   res.json({ items: repo.listAudit(100) });
+});
+
+adminRouter.get("/admin/shopper-experience", authRequired, requireRoles("Admin"), (req, res) => {
+  const exp = getShopperExperience();
+  const { layout } = resolveShopperLayout();
+  res.json({
+    ...exp,
+    entryPoints: layout?.entryPoints?.map((e) => ({ id: e.id, label: e.label || "Entrance" })) || [],
+    layoutName: layout?.name || null,
+  });
+});
+
+adminRouter.put("/admin/shopper-experience", authRequired, requireRoles("Admin"), (req, res) => {
+  const next = putShopperExperience(req.body || {});
+  audit(req.user.email, "shopper.put", next.layoutId || "none");
+  const { layout } = resolveShopperLayout();
+  res.json({
+    ...next,
+    entryPoints: layout?.entryPoints?.map((e) => ({ id: e.id, label: e.label || "Entrance" })) || [],
+    layoutName: layout?.name || null,
+  });
 });

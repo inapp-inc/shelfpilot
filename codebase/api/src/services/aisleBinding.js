@@ -67,12 +67,12 @@ function bindFromPoint(point, normal, aisles, layout, directionSign, shelf = nul
       const y0 = shelfFp ? shelfFp.y : point.y - 0.45;
       const y1 = shelfFp ? shelfFp.y + shelfFp.d : point.y + 0.45;
       const overlap = Math.min(fp.y + fp.d, y1) - Math.max(fp.y, y0);
-      if (overlap < 0.25) continue;
+      if (overlap < 0.12) continue;
     } else {
       const x0 = shelfFp ? shelfFp.x : point.x - 0.45;
       const x1 = shelfFp ? shelfFp.x + shelfFp.w : point.x + 0.45;
       const overlap = Math.min(fp.x + fp.w, x1) - Math.max(fp.x, x0);
-      if (overlap < 0.25) continue;
+      if (overlap < 0.12) continue;
     }
 
     const perp = Math.abs(dx * -ny + dy * nx);
@@ -91,6 +91,13 @@ function bindFromPoint(point, normal, aisles, layout, directionSign, shelf = nul
 export function bindShelvesToAisles(shelves, aisles, layout) {
   if (!shelves?.length || !aisles?.length) return shelves;
 
+  const validIds = new Set((aisles || []).map((a) => a?.id).filter(Boolean));
+  const keep = (shelf, nextId) => {
+    if (nextId) return nextId;
+    if (shelf?.aisleId && validIds.has(shelf.aisleId)) return shelf.aisleId;
+    return null;
+  };
+
   const byPair = new Map();
   for (const s of shelves) {
     if (!s.pairId) continue;
@@ -106,17 +113,23 @@ export function bindShelvesToAisles(shelves, aisles, layout) {
       if (!pair.front) continue;
       const center = shelfCenter(pair.front);
       const normal = shelfFrontNormal(pair.front);
-      pair.front.aisleId = bindFromPoint(center, normal, aisles, layout, 1, pair.front);
+      pair.front.aisleId = keep(
+        pair.front,
+        bindFromPoint(center, normal, aisles, layout, 1, pair.front)
+      );
       if (pair.back) {
         const backCenter = shelfCenter(pair.back);
-        pair.back.aisleId = bindFromPoint(backCenter, normal, aisles, layout, -1, pair.back);
+        pair.back.aisleId = keep(
+          pair.back,
+          bindFromPoint(backCenter, normal, aisles, layout, -1, pair.back)
+        );
       }
       continue;
     }
     if (!s.pairId) {
       const center = shelfCenter(s);
       const normal = shelfFrontNormal(s);
-      s.aisleId = bindFromPoint(center, normal, aisles, layout, 1, s);
+      s.aisleId = keep(s, bindFromPoint(center, normal, aisles, layout, 1, s));
     }
   }
   return shelves;

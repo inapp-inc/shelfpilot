@@ -10,6 +10,8 @@ export function useAppRoute() {
   useEffect(() => {
     if (isAppRootPath(pathname)) navigateTo(pathForModule("dashboard"), { replace: true });
     if (stripBase(pathname) === "/analytics") navigateTo(pathForModule("dashboard"), { replace: true });
+    // Bare /shop is not a valid route — kiosk lives at /shop/{layoutId} only.
+    if (stripBase(pathname) === "/shop") navigateTo(pathForModule("dashboard"), { replace: true });
   }, [pathname]);
 
   return {

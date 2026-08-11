@@ -7,6 +7,24 @@ function countInTree(products, categoryId, categories) {
   return (products || []).filter((p) => allowed.has(p.categoryId)).length;
 }
 
+function renderCategoryOptions(nodes, { products, categories, showCounts, depth = 0 }, out = []) {
+  for (const node of nodes) {
+    const count = showCounts ? countInTree(products, node.id, categories) : null;
+    const prefix = depth > 0 ? `${"\u00A0".repeat(depth * 2)}↳ ` : "";
+    out.push(
+      <option key={node.id} value={node.id}>
+        {prefix}
+        {node.name}
+        {count != null ? ` (${count})` : ""}
+      </option>
+    );
+    if (node.children?.length) {
+      renderCategoryOptions(node.children, { products, categories, showCounts, depth: depth + 1 }, out);
+    }
+  }
+  return out;
+}
+
 /** Hierarchical category select with optional product counts. */
 export default function CategoryTreePicker({
   categories,
@@ -29,34 +47,7 @@ export default function CategoryTreePicker({
       style={{ padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb", width: "100%", ...style }}
     >
       {allowEmpty ? <option value="">{emptyLabel}</option> : null}
-      {tree.map((parent) => {
-        const parentCount = showCounts ? countInTree(products, parent.id, categories) : null;
-        const children = parent.children || [];
-        if (children.length === 0) {
-          return (
-            <option key={parent.id} value={parent.id}>
-              {parent.name}
-              {parentCount != null ? ` (${parentCount})` : ""}
-            </option>
-          );
-        }
-        return (
-          <optgroup key={parent.id} label={`${parent.name}${parentCount != null ? ` · ${parentCount} SKUs` : ""}`}>
-            <option value={parent.id}>
-              {parent.name} (all subcategories)
-            </option>
-            {children.map((ch) => {
-              const n = showCounts ? countInTree(products, ch.id, categories) : null;
-              return (
-                <option key={ch.id} value={ch.id}>
-                  {ch.name}
-                  {n != null ? ` (${n})` : ""}
-                </option>
-              );
-            })}
-          </optgroup>
-        );
-      })}
+      {renderCategoryOptions(tree, { products, categories, showCounts })}
     </select>
   );
 }

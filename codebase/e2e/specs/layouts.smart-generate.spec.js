@@ -11,16 +11,22 @@ test.describe("Smart Generate @smoke", () => {
   });
 
   test("@smoke Smart Generate shows store aisle min and run keeps compliance", async ({ page }) => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     await loginAs(page, "Designer");
     const portfolio = new LayoutsPortfolioPage(page);
     await portfolio.goto();
     await portfolio.openDemoLayout();
 
     const editor = new LayoutEditorPage(page);
+    await expect(page.getByTestId("editor-capacity-strip")).toBeVisible();
+    await expect(page.getByTestId("editor-capacity-space")).not.toHaveText("—");
+    await expect(page.getByTestId("editor-capacity-shelves")).not.toHaveText("—");
     await editor.openSmartGenerate();
+    await expect(page.getByTestId("smart-generate-capacity")).toBeVisible();
     await editor.expectStoreMinAisleAtLeast(1.5);
     await editor.runSmartGenerate();
     await editor.expectNoAisleWidthViolations();
+    await editor.expectArrangementPending();
+    await editor.acceptArrangement({ fillPlanogram: false });
   });
 });

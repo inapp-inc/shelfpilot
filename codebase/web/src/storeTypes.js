@@ -10,12 +10,14 @@ export const STORE_TYPES = [
   { id: "beauty", label: "Beauty", emoji: "💄", vertical: "beauty" },
   { id: "apparel", label: "Apparel", emoji: "👔", vertical: "apparel" },
   { id: "convenience", label: "Convenience", emoji: "🏪", vertical: "convenience" },
+  { id: "warehouse", label: "Warehouse", emoji: "🏭", vertical: "warehouse" },
 ];
 
 export const NAV_MODULES = [
   { id: "dashboard", emoji: "📊", label: "Dashboard", path: "/dashboard", color: "#C4183A" },
   { id: "layouts", emoji: "🗺️", label: "Layouts", path: "/layouts", color: "#0ea5e9" },
   { id: "catalog", emoji: "📦", label: "Products", path: "/products", color: "#16a34a" },
+  { id: "shop", emoji: "🔍", label: "Find products", path: "/shop", color: "#C4183A" },
   { id: "admin", emoji: "⚙️", label: "Admin", path: "/admin", color: "#a855f7" },
 ];
 
@@ -60,6 +62,13 @@ export const DEFAULT_CATEGORY_MIX = {
     { categoryId: "cv-snacks", label: "Snacks / Promo", emoji: "🏷️", percent: 20, temperatureZone: "ambient" },
     { categoryId: "cv-personal", label: "Personal care", emoji: "🧴", percent: 15, temperatureZone: "ambient" },
   ],
+  warehouse: [
+    { categoryId: "wh-bulk", label: "Bulk storage", emoji: "📦", percent: 30, temperatureZone: "ambient", fixtureType: "bulk_storage" },
+    { categoryId: "wh-pick", label: "Pick face", emoji: "🧱", percent: 35, temperatureZone: "ambient", fixtureType: "selective_rack" },
+    { categoryId: "wh-cold", label: "Cold storage", emoji: "🧊", percent: 15, temperatureZone: "chilled", fixtureType: "pallet_rack" },
+    { categoryId: "wh-staging", label: "Staging / dispatch", emoji: "🚚", percent: 12, temperatureZone: "ambient", fixtureType: "staging_lane" },
+    { categoryId: "wh-returns", label: "Returns", emoji: "↩️", percent: 8, temperatureZone: "ambient", fixtureType: "staging_lane" },
+  ],
 };
 
 export function storeTypeForVertical(vertical) {
@@ -85,6 +94,10 @@ const BEAUTY_PATTERNS = /skin|makeup|fragrance|hair/i;
 const ELECTRONICS_PATTERNS = /electronic|electronics|tech|appliance|computer|phone|tv|audio/i;
 const APPAREL_PATTERNS = /apparel|womens|mens|footwear|accessories|clothing|wear/i;
 
+const BULK_PATTERNS = /bulk|wh-bulk|pallet/i;
+const PICK_PATTERNS = /pick|wh-pick|selective/i;
+const STAGING_PATTERNS = /stag|dispatch|wh-staging|returns|wh-returns/i;
+
 /** Infer emoji from category name/id; storageType is category storage (not shelf fixture zone). */
 export function emojiForCategory(categoryId, categoryName, storageType, templateRows = []) {
   const hay = `${categoryId || ""} ${categoryName || ""}`.toLowerCase();
@@ -104,6 +117,9 @@ export function emojiForCategory(categoryId, categoryName, storageType, template
   if (/personal|care|toiletries/.test(hay)) return "🧴";
   if (BEAUTY_PATTERNS.test(hay)) return "✨";
   if (APPAREL_PATTERNS.test(hay)) return "👔";
+  if (BULK_PATTERNS.test(hay)) return "📦";
+  if (PICK_PATTERNS.test(hay)) return "🧱";
+  if (STAGING_PATTERNS.test(hay)) return "🚚";
   const zone = storageType || "ambient";
   if (zone === "frozen") return "❄️";
   if (zone === "chilled") return "🧊";
@@ -176,6 +192,9 @@ export function defaultFixtureTypeForCategory(categoryId, categoryName, allowedT
   if (CHILLED_PATTERNS.test(hay)) return pick("chilled", "ambient", "gondola", "shelf");
   if (PRODUCE_PATTERNS.test(hay)) return pick("storage", "ambient", "shelf", "gondola");
   if (GROCERY_PATTERNS.test(hay)) return pick("ambient", "gondola", "shelf", "storage");
+  if (BULK_PATTERNS.test(hay)) return pick("bulk_storage", "pallet_rack", "storage");
+  if (PICK_PATTERNS.test(hay)) return pick("selective_rack", "pallet_rack", "rack");
+  if (STAGING_PATTERNS.test(hay)) return pick("staging_lane", "bulk_storage", "storage");
   return pick("ambient", "gondola", "shelf", "rack", "storage");
 }
 
@@ -233,9 +252,13 @@ export function mixFromCategories(categories, vertical = "retail", allowedTypes)
 /** Catalog-first mix with template fallback. */
 export function buildCategoryMix(categories, vertical = "retail", fixtureTypes) {
   const allowedTypes = (fixtureTypes || []).map((t) => t.type).filter(Boolean);
+  const fallbackType = allowedTypes[0] || "shelf";
   return withFixtureTypeDefaults(
     mixFromCategories(categories, vertical, allowedTypes) || mixForVertical(vertical),
     categories,
     allowedTypes
-  );
+  ).map((row) => ({
+    ...row,
+    fixtureType: row.fixtureType || fallbackType,
+  }));
 }

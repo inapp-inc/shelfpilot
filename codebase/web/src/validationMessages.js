@@ -19,6 +19,13 @@ const ERROR_MESSAGES = {
   segment_out_of_range: "Position split is outside the shelf width.",
   segment_overlap: "Position segments overlap — adjust split positions.",
   invalid_image_file: "Unsupported image file.",
+  invalid_image_data: "Could not read the floor plan image.",
+  data_required: "Choose a floor plan image to upload.",
+  arrangement_not_accepted: "Accept the shelf arrangement & volume summary before allocating products.",
+  no_shelves: "Arrange shelves before accepting the layout summary.",
+  fixture_area_required: "Draw and apply a fixture area on the floor plan before running Smart Generate.",
+  fixture_templates_required: "Add shelf fixtures in Admin → Store Master before generating.",
+  floor_plan_not_found: "No floor plan is attached to this layout.",
   product_category_mismatch: "Product category or storage type does not match this shelf face.",
   shelf_category_required: "Assign a category to this shelf face before placing products.",
   planogram_disabled: "Planogram editing is disabled for this store type.",
@@ -52,12 +59,25 @@ function positiveNumber(v, label, { min = 0.1, max = 9999 } = {}) {
 export function validateLayoutCreate(draft) {
   const errors = {};
   if (!trim(draft?.name)) errors.name = "Store name is required.";
-  const w = positiveNumber(draft?.widthMeters, "Length", { min: 1, max: 500 });
-  if (w) errors.widthMeters = w;
-  const d = positiveNumber(draft?.depthMeters, "Width", { min: 1, max: 500 });
-  if (d) errors.depthMeters = d;
-  const h = positiveNumber(draft?.heightMeters, "Height", { min: 1, max: 20 });
-  if (h) errors.heightMeters = h;
+  const mode = draft?.footprintMode === "floorPlan" ? "floorPlan" : "dimensions";
+  if (mode === "floorPlan") {
+    if (!draft?.floorPlanAnalyzed) {
+      errors.floorPlan = "Upload a floor plan (PNG, JPG, WEBP, SVG, or PDF page 1).";
+    }
+    const w = positiveNumber(draft?.widthMeters, "Length", { min: 1, max: 500 });
+    if (w) errors.widthMeters = w;
+    const d = positiveNumber(draft?.depthMeters, "Width", { min: 1, max: 500 });
+    if (d) errors.depthMeters = d;
+    const h = positiveNumber(draft?.heightMeters, "Height", { min: 1, max: 20 });
+    if (h) errors.heightMeters = h;
+  } else {
+    const w = positiveNumber(draft?.widthMeters, "Length", { min: 1, max: 500 });
+    if (w) errors.widthMeters = w;
+    const d = positiveNumber(draft?.depthMeters, "Width", { min: 1, max: 500 });
+    if (d) errors.depthMeters = d;
+    const h = positiveNumber(draft?.heightMeters, "Height", { min: 1, max: 20 });
+    if (h) errors.heightMeters = h;
+  }
   return { ok: Object.keys(errors).length === 0, errors };
 }
 
@@ -103,6 +123,9 @@ export function validateUser(user) {
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = "Enter a valid email address.";
   if (!trim(user?.password)) errors.password = "Password is required.";
   else if (user.password.length < 6) errors.password = "Password must be at least 6 characters.";
+  if (user?.role === "Customer" && !trim(user?.shopperLayoutId)) {
+    errors.shopperLayoutId = "Select a layout for this customer.";
+  }
   return { ok: Object.keys(errors).length === 0, errors };
 }
 

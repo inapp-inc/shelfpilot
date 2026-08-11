@@ -1,7 +1,26 @@
 /**
  * Dimension-based planogram facing calculation.
  * Defaults when product attributes missing: width 0.2m, height 0.25m.
+ * FR-BUF-01: lateral 1 cm buffer per product (0.5 cm per side) via shared/productBuffer.mjs.
  */
+
+import {
+  computeMaxDepthFacings,
+  computeMaxFacings,
+  PRODUCT_LATERAL_BUFFER_BAY_RESERVE_M,
+  PRODUCT_LATERAL_BUFFER_TOTAL_M,
+  productSlotDepthMeters,
+  productSlotWidthMeters,
+} from "../../../shared/productBuffer.mjs";
+
+export {
+  computeMaxDepthFacings,
+  computeMaxFacings,
+  PRODUCT_LATERAL_BUFFER_BAY_RESERVE_M,
+  PRODUCT_LATERAL_BUFFER_TOTAL_M,
+  productSlotDepthMeters,
+  productSlotWidthMeters,
+};
 
 export const DEFAULT_PRODUCT_WIDTH_M = 0.2;
 export const DEFAULT_PRODUCT_HEIGHT_M = 0.25;
@@ -29,19 +48,8 @@ export function productDimensions(product) {
   return { widthMeters: width, heightMeters: height, depthMeters: depth, assumedDimensions: assumed };
 }
 
-export function computeMaxFacings(usableWidthMeters, productWidthMeters) {
-  const usable = Number(usableWidthMeters) || 0;
-  const pw = Number(productWidthMeters) || DEFAULT_PRODUCT_WIDTH_M;
-  if (usable <= 0 || pw <= 0) return 0;
-  // Avoid IEEE float truncation (e.g. 1.2/0.2 === 5.999…)
-  return Math.max(0, Math.floor(usable / pw + 1e-9));
-}
-
 export function computeSuggestedDepthFacings(shelfDepthMeters, productDepthMeters) {
-  const depth = Number(shelfDepthMeters) || 0;
-  const pd = Number(productDepthMeters) || DEFAULT_PRODUCT_WIDTH_M;
-  if (depth <= 0 || pd <= 0) return 0;
-  return Math.max(0, Math.floor(depth / pd + 1e-9));
+  return computeMaxDepthFacings(shelfDepthMeters, productDepthMeters);
 }
 
 export function computeSuggestedLevels(shelfHeightMeters, productHeightMeters) {
@@ -49,6 +57,28 @@ export function computeSuggestedLevels(shelfHeightMeters, productHeightMeters) {
   const ph = Number(productHeightMeters) || DEFAULT_PRODUCT_HEIGHT_M;
   if (sh <= 0 || ph <= 0) return 0;
   return Math.max(0, Math.floor(sh / ph + 1e-9));
+}
+
+/** How many units can stack vertically on one level (same position). */
+export function computeMaxStackLayers(levelClearHeightMeters, productHeightMeters) {
+  const clear = Number(levelClearHeightMeters) || 0;
+  const ph = Number(productHeightMeters) || DEFAULT_PRODUCT_HEIGHT_M;
+  if (clear <= 0 || ph <= 0) return 1;
+  const usable = clear - STACK_LAYER_GAP_M;
+  if (usable <= 0) return 1;
+  return Math.max(1, Math.floor(usable / (ph + STACK_LAYER_GAP_M) + 1e-9));
+}
+
+/** Inventory units for one placement (wide × deep × stacked high). */
+export function placementUnitCount(placement) {
+  const wide = Math.max(0, Number(placement?.facings) || 0);
+  const deep = Math.max(1, Number(placement?.depthFacings) || 1);
+  const high = Math.max(1, Number(placement?.stackLayers) || 1);
+  return wide * deep * high;
+}
+
+export function clampStackLayers(requested, maxStackLayers) {
+  return clampFacings(requested, maxStackLayers);
 }
 
 export function clampFacings(requested, maxFacings) {
@@ -64,7 +94,7 @@ export function clampDepthFacings(requested, maxDepthFacings) {
 }
 
 import { levelSegmentsList } from "./shelfSegments.js";
-import { faceDepthMeters, levelClearHeightMeters } from "./shelfGeometry.js";
+import { faceDepthMeters, levelClearHeightMeters, STACK_LAYER_GAP_M } from "./shelfGeometry.js";
 import { levelLoadLimitKg, productWeightKg } from "./weightMath.js";
 
 export function previewFacings({ shelf, product, levelIndex = 0, segmentId = null, faceId = "A" }) {
@@ -90,12 +120,13 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
       product?.attributes?.depthMeters ?? product?.attributes?.depth ?? depthFromCm ?? dims.depthMeters ?? dims.widthMeters
     ) || dims.depthMeters || dims.widthMeters;
   const usableDepth = faceDepthMeters(shelf);
+  const clearHeight = levelClearHeightMeters(shelf, levelIndex);
   const maxDepthFacings = computeSuggestedDepthFacings(usableDepth, depthDim);
   const maxFacings = computeMaxFacings(usable, dims.widthMeters);
   const suggestedLevels = computeSuggestedLevels(shelf?.heightMeters, dims.heightMeters);
+  const maxStackLayers = computeMaxStackLayers(clearHeight, dims.heightMeters);
 
   // Level height gate: a product taller than the clear height cannot go on this level.
-  const clearHeight = levelClearHeightMeters(shelf, levelIndex);
   const fitsLevelHeight = clearHeight <= 0 || dims.heightMeters <= clearHeight + 1e-9;
 
   const unitWeightKg = productWeightKg(product);
@@ -120,6 +151,7 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
     levelIndex: Number(levelIndex) || 0,
     maxFacings,
     maxDepthFacings,
+    maxStackLayers,
     suggestedLevels,
     productWidthMeters: dims.widthMeters,
     productHeightMeters: dims.heightMeters,
@@ -128,6 +160,10 @@ export function previewFacings({ shelf, product, levelIndex = 0, segmentId = nul
     usableDepthMeters: Number(usableDepth.toFixed(3)),
     usableWidthMeters: usable,
     levelClearHeightMeters: clearHeight,
+    productBufferMeters: PRODUCT_LATERAL_BUFFER_TOTAL_M,
+    bayBufferReserveMeters: PRODUCT_LATERAL_BUFFER_BAY_RESERVE_M,
+    slotWidthMeters: productSlotWidthMeters(dims.widthMeters),
+    slotDepthMeters: productSlotDepthMeters(depthDim),
     fitsLevelHeight,
     productWeightKg: Number(unitWeightKg.toFixed(3)),
     levelLoadLimitKg: Number(levelLoadLimit.toFixed(2)),

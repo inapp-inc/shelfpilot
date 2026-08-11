@@ -12,24 +12,38 @@ export default function SmartGeneratePanel({
   onOrientationChange,
   categoryMix,
   onCategoryMixChange,
-  fillPlanogram,
-  onFillPlanogramChange,
   onGenerate,
   generating,
   disabled,
   lastGenStats,
   categories,
   fixtureTypes,
+  hasDrawnArea = false,
+  capacity = null,
+  onDrawArea,
+  warehouseMode = false,
 }) {
   if (!open) return null;
 
-  const total = categoryMix.reduce((s, r) => s + Number(r.percent || 0), 0);
-  const canRun = total === 100 && !generating && !disabled;
+  const mix = Array.isArray(categoryMix) ? categoryMix : [];
+  const total = mix.reduce((s, r) => s + Number(r.percent || 0), 0);
+  const defaultFixture = fixtureTypes?.[0]?.type || "";
+  const missingFixture = mix.some((r) => !String(r.fixtureType || defaultFixture || "").trim());
+  const noFixtures = !fixtureTypes?.length;
+  const noArea = !hasDrawnArea;
+  const canRun =
+    total === 100 &&
+    !generating &&
+    !disabled &&
+    mix.length > 0 &&
+    !missingFixture &&
+    !noFixtures &&
+    !noArea;
 
   return (
     <div className="panel smart-generate-panel" data-testid="smart-generate-panel">
       <div className="smart-gen-header">
-        <strong>✨ Smart generate</strong>
+        <strong>Smart generate</strong>
         <button
           type="button"
           className="btn-secondary"
@@ -40,6 +54,41 @@ export default function SmartGeneratePanel({
           Close
         </button>
       </div>
+
+      <div className="smart-gen-capacity" data-testid="smart-generate-capacity">
+        <div className="smart-gen-capacity-item">
+          <span className="muted">Total space</span>
+          <strong className="mono" data-testid="smart-generate-capacity-space">
+            {capacity?.ready ? capacity.areaLabel : "—"}
+          </strong>
+        </div>
+        <div className="smart-gen-capacity-item">
+          <span className="muted">Shelves fit</span>
+          <strong className="mono" data-testid="smart-generate-capacity-shelves">
+            {capacity?.ready && capacity.maxShelves != null ? `~${capacity.maxShelves}` : "—"}
+          </strong>
+        </div>
+      </div>
+
+      {noFixtures ? (
+        <AlertBanner variant="error" data-testid="smart-generate-fixture-error">
+          Add shelf fixtures in Admin → Store Master before generating.
+        </AlertBanner>
+      ) : null}
+      {noArea ? (
+        <AlertBanner variant="error" data-testid="smart-generate-area-error">
+          Draw and apply a fixture area on the floor plan first, then generate.
+          {onDrawArea ? (
+            <>
+              {" "}
+              <button type="button" className="linkish" onClick={onDrawArea}>
+                Draw area
+              </button>
+            </>
+          ) : null}
+        </AlertBanner>
+      ) : null}
+
       <div className="smart-gen-fields">
         <div className="field" style={{ margin: 0 }}>
           <label>Aisle space (min width, m)</label>
@@ -50,7 +99,7 @@ export default function SmartGeneratePanel({
             data-testid="smart-generate-min-aisle"
             min={storeMinAisleWidth != null ? Number(storeMinAisleWidth) : 0.5}
             value={minAisleWidth}
-            disabled={disabled}
+            disabled={disabled || noFixtures || noArea}
             onChange={(e) => onMinAisleWidthChange(e.target.value)}
           />
           {storeMinAisleWidth != null ? (
@@ -63,7 +112,7 @@ export default function SmartGeneratePanel({
           <label>Orientation</label>
           <select
             value={orientation}
-            disabled={disabled}
+            disabled={disabled || noFixtures || noArea}
             onChange={(e) => onOrientationChange(e.target.value)}
             style={{ padding: "8px 9px", borderRadius: 8, border: "1px solid #e5e7eb", width: "100%" }}
           >
@@ -75,30 +124,35 @@ export default function SmartGeneratePanel({
         </div>
       </div>
       <p className="muted smart-gen-hint" style={{ fontSize: 12, margin: 0 }}>
-        Each gondola is a <strong>front + back</strong> shelf pair between two walk aisles. Shelves are labelled by aisle number (e.g. <strong>4A</strong>, <strong>4B</strong>).
+        {warehouseMode ? (
+          <>
+            Single-sided <strong>rack bays</strong> with forklift aisles (min {storeMinAisleWidth ?? 3}m). Draw a large
+            fixture area — wide aisles need more floor space per bay.
+          </>
+        ) : (
+          <>
+            Each gondola is a <strong>front + back</strong> shelf pair between two walk aisles.
+          </>
+        )}
       </p>
       <div className="smart-gen-scroll">
         <CategoryMixSliders
-          mix={categoryMix}
+          mix={mix}
           onChange={onCategoryMixChange}
-          disabled={disabled}
+          disabled={disabled || noFixtures || noArea}
           fixtureTypes={fixtureTypes}
         />
       </div>
-      {total !== 100 ? (
+      {!noFixtures && !noArea && missingFixture ? (
+        <AlertBanner variant="warning" data-testid="smart-generate-fixture-missing">
+          Choose a shelf fixture for every category in the mix.
+        </AlertBanner>
+      ) : null}
+      {!noFixtures && !noArea && total !== 100 ? (
         <AlertBanner variant="warning">
           Category mix must total 100% before generating (currently {total}%).
         </AlertBanner>
       ) : null}
-      <label className="smart-gen-fill-row" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-        <input
-          type="checkbox"
-          checked={fillPlanogram !== false}
-          disabled={disabled}
-          onChange={(e) => onFillPlanogramChange?.(e.target.checked)}
-        />
-        Auto-fill planogram with catalog products (matched to each shelf category)
-      </label>
       {lastGenStats?.generated ? (
         <div className="smart-gen-results" style={{ fontSize: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
           <div>
@@ -133,7 +187,7 @@ export default function SmartGeneratePanel({
       ) : null}
       <div className="smart-gen-actions">
         <span className="muted" style={{ fontSize: 12, flex: 1 }}>
-          Assigns categories to gondola faces and places matching products on shelf levels
+          Requires Store Master fixtures + drawn fixture area. Products are placed using catalog dimensions (wide × deep × stack).
         </span>
         <button
           type="button"

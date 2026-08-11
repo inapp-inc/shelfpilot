@@ -18,7 +18,8 @@ npm run test:e2e:smoke
 |------|----------|
 | `auth.login.spec.js` | Login / sign out |
 | `layouts.create.spec.js` | Create L/W/H, demo open |
-| `layouts.smart-generate.spec.js` | Aisle min compliance |
+| `layouts.smart-generate.spec.js` | Aisle min compliance + arrangement accept |
+| `layouts.arrangement.spec.js` | Arrangement & volume summary gate |
 | `layouts.demo-smoke.spec.js` | 3D toggle |
 | `analytics.dashboard.spec.js` | Dashboard KPIs |
 | `rbac.viewer.spec.js` | Viewer read-only |

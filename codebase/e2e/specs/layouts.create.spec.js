@@ -25,7 +25,14 @@ test.describe("Layouts create & demo @smoke", () => {
     await portfolio.goto();
     await portfolio.openCreateModal();
     const modal = new LayoutCreateModal(page);
+    await expect(page.getByTestId("layout-create-mode-dimensions")).toBeVisible();
+    await expect(page.getByTestId("layout-create-mode-floorplan")).toBeVisible();
+    await page.getByTestId("layout-create-mode-dimensions").click();
     await modal.expectLabelsLengthWidthHeight();
+    await page.getByTestId("layout-create-mode-floorplan").click();
+    await expect(page.getByTestId("layout-create-floorplan-pick")).toBeVisible();
+    await expect(page.getByText(/PNG, JPG, WEBP, SVG or PDF/i)).toBeVisible();
+    await expect(page.getByTestId("layout-create-length")).toHaveCount(0);
   });
 
   test("@smoke create layout with Length×Width×Height opens editor", async ({ page }) => {

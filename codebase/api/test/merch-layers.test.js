@@ -7,6 +7,7 @@ import { resetDbForTests } from "../src/store/sqlite.js";
 import app from "../src/index.js";
 import { packAislesAndShelves, levelsForType } from "../src/services/layoutPacker.js";
 import { collectContainmentViolations, entityInsideLayout } from "../src/services/polygonContainment.js";
+import { acceptArrangement } from "./helpers.js";
 
 async function withServer(fn) {
   resetDbForTests();
@@ -149,6 +150,8 @@ test("product create and patch; multilevel planogram placements", async () => {
       headers,
       body: JSON.stringify({ categoryId: "otc", color: "#0ea5e9" }),
     });
+
+    await acceptArrangement(port, headers, layout.id);
 
     const p0 = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/shelves/${shelf.id}/planogram`, {
       method: "POST",

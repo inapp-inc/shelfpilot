@@ -1,16 +1,22 @@
 /** Client-side RBAC — mirrors API requireRoles; hide nav/pages the role cannot use. */
 import { NAV_MODULES } from "./storeTypes.js";
+import { pathForModule } from "./routes.js";
 
-const ALL = ["Designer", "Approver", "Viewer", "Admin"];
+const ALL = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
 
 /** Top-level modules visible in header nav. */
 const MODULE_ROLES = {
-  dashboard: ALL,
-  layouts: ALL,
-  catalog: ALL,
-  analytics: ALL,
+  dashboard: ALL.filter((r) => r !== "Customer"),
+  layouts: ALL.filter((r) => r !== "Customer"),
+  catalog: ALL.filter((r) => r !== "Customer"),
+  analytics: ALL.filter((r) => r !== "Customer"),
   admin: ["Admin", "Approver"],
+  shop: ["Customer"],
 };
+
+export function isCustomerRole(role) {
+  return role === "Customer";
+}
 
 export function canAccessModule(role, moduleId) {
   if (!role) return false;
@@ -22,7 +28,13 @@ export function navModulesForRole(role) {
   return NAV_MODULES.filter((n) => canAccessModule(role, n.id));
 }
 
+export function shopPathForUser(user) {
+  if (user?.shopperLayoutId) return pathForModule("shop", user.shopperLayoutId);
+  return null;
+}
+
 export function defaultModuleForRole(role) {
+  if (role === "Customer") return "shop";
   return navModulesForRole(role)[0]?.id || "dashboard";
 }
 
@@ -52,7 +64,7 @@ export function canViewAuditLog(role) {
 
 /** Admin section tabs — Approver sees audit only. */
 export function adminTabsForRole(role) {
-  if (role === "Admin") return ["users", "stores", "approval", "configuration", "audit"];
+  if (role === "Admin") return ["users", "stores", "approval", "configuration", "shopper", "audit"];
   if (role === "Approver") return ["audit"];
   return [];
 }
@@ -62,6 +74,7 @@ export function adminTabLabel(tab) {
   if (tab === "stores") return "Store Master";
   if (tab === "approval") return "Approval Workflow";
   if (tab === "configuration") return "Configuration";
+  if (tab === "shopper") return "Shopper kiosk";
   if (tab === "audit") return "Audit Log";
   return tab;
 }
@@ -82,9 +95,9 @@ export function canViewAnalyticsWidget(role, widgetId) {
 
 export function canCustomizeDashboard(role) {
   if (!role) return true;
-  return role !== "Viewer";
+  return role !== "Viewer" && role !== "Customer";
 }
 
 export function canUseDashboardDrillDown(role) {
-  return Boolean(role);
+  return Boolean(role) && role !== "Customer";
 }

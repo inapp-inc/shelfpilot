@@ -12,6 +12,7 @@ export const MODULE_PATHS = {
   catalog: "/products",
   analytics: "/analytics",
   admin: "/admin",
+  shop: "/shop",
 };
 
 /** Remove the deploy base prefix and normalize to a root-relative path. */
@@ -29,6 +30,12 @@ export function isAppRootPath(pathname) {
   return raw === "/" || raw === "";
 }
 
+/** True when pathname is the public kiosk route (/shop/{layoutId}). */
+export function isShopKioskPath(pathname) {
+  const raw = stripBase(pathname);
+  return /^\/shop\/[^/]+$/.test(raw);
+}
+
 /** @returns {{ module: string, layoutId: string | null }} */
 export function parseAppPath(pathname) {
   const raw = stripBase(pathname);
@@ -39,14 +46,21 @@ export function parseAppPath(pathname) {
   if (raw === "/products" || raw === "/catalog") return { module: "catalog", layoutId: null };
   if (raw === "/analytics") return { module: "dashboard", layoutId: null };
   if (raw === "/admin") return { module: "admin", layoutId: null };
+  const shopMatch = raw.match(/^\/shop\/([^/]+)$/);
+  if (shopMatch) return { module: "shop", layoutId: decodeURIComponent(shopMatch[1]) };
   return { module: "dashboard", layoutId: null };
 }
 
 export function pathForModule(moduleId, layoutId = null) {
-  const rel =
-    moduleId === "layouts" && layoutId
-      ? `/layouts/${encodeURIComponent(layoutId)}`
-      : MODULE_PATHS[moduleId] || MODULE_PATHS.dashboard;
+  let rel;
+  if (moduleId === "layouts" && layoutId) {
+    rel = `/layouts/${encodeURIComponent(layoutId)}`;
+  } else if (moduleId === "shop") {
+    if (!layoutId) return `${BASE}${MODULE_PATHS.dashboard}`;
+    rel = `/shop/${encodeURIComponent(layoutId)}`;
+  } else {
+    rel = MODULE_PATHS[moduleId] || MODULE_PATHS.dashboard;
+  }
   return `${BASE}${rel}`;
 }
 

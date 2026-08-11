@@ -45,6 +45,31 @@ export function metersToFeet(meters) {
   return n * FEET_PER_METER;
 }
 
+export function feetToMeters(feet) {
+  const n = Number(feet);
+  if (!Number.isFinite(n)) return 0;
+  return n / FEET_PER_METER;
+}
+
+/** Round-trip safe feet string for form inputs (Store Master shelf dims). */
+export function feetInputFromMeters(meters, fallback = "") {
+  if (meters == null || meters === "" || !Number.isFinite(Number(meters))) return fallback;
+  const ft = metersToFeet(Number(meters));
+  return String(ft >= 10 ? Number(ft.toFixed(2)) : Number(ft.toFixed(3)));
+}
+
+/**
+ * Envelope volume of a shelf fixture from width × depth × height (meters → m³).
+ * Used for Store Master live volume and layout summaries.
+ */
+export function shelfEnvelopeVolumeM3(widthMeters, depthMeters, heightMeters) {
+  const w = Number(widthMeters);
+  const d = Number(depthMeters);
+  const h = Number(heightMeters);
+  if (![w, d, h].every((n) => Number.isFinite(n) && n > 0)) return null;
+  return w * d * h;
+}
+
 /** Square feet per square meter — US retail display standard. */
 export const SQFT_PER_SQM = 10.76391041671;
 
@@ -76,14 +101,33 @@ export function cubicMetersToCubicFeet(cum) {
   return n * CUFT_PER_CUM;
 }
 
-/** Format volume stored as m³ for UI (cubic feet). */
-export function formatVolumeFromCubicMeters(cum, { suffix = true, dash = "—", decimals = 0 } = {}) {
+/** Cubic inches per cubic foot. */
+export const CUIN_PER_CUFT = 1728;
+
+export function cubicMetersToCubicInches(cum) {
+  return cubicMetersToCubicFeet(cum) * CUIN_PER_CUFT;
+}
+
+/** Format volume stored as m³ for UI (cubic feet and optional cubic inches). */
+export function formatVolumeFromCubicMeters(cum, { suffix = true, dash = "—", decimals = 0, unit = "cuft" } = {}) {
   if (cum == null || cum === "" || !Number.isFinite(Number(cum))) return dash;
+  if (unit === "cuin") {
+    const cuin = cubicMetersToCubicInches(Number(cum));
+    const places = decimals > 0 ? decimals : cuin < 100 ? 0 : 0;
+    const val = places > 0 ? cuin.toFixed(places) : Math.round(cuin).toLocaleString();
+    return suffix ? `${val} cu in` : val;
+  }
   const cuft = cubicMetersToCubicFeet(Number(cum));
   // Small volumes lose all meaning when rounded to a whole cubic foot.
   const places = decimals > 0 ? decimals : cuft < 10 ? 2 : 0;
   const val = places > 0 ? cuft.toFixed(places) : Math.round(cuft).toLocaleString();
   return suffix ? `${val} cu ft` : val;
+}
+
+/** Dual-unit volume label: "1,234 cu ft (2,131,000 cu in)". */
+export function formatVolumeBothFromCubicMeters(cum, { dash = "—" } = {}) {
+  if (cum == null || cum === "" || !Number.isFinite(Number(cum))) return dash;
+  return `${formatVolumeFromCubicMeters(cum)} (${formatVolumeFromCubicMeters(cum, { unit: "cuin" })})`;
 }
 
 /** Pounds per kilogram — UI displays pounds; the engine stores kilograms. */

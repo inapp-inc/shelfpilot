@@ -1,10 +1,11 @@
 /**
  * Auto-fill shelf planograms from catalog products matching each face category.
+ * Facings, depth, and vertical stack are derived from product vs shelf dimensions.
  */
 import { randomUUID } from "node:crypto";
 import { normalizeShelf, faceCategoryId, facePlanogram, syncLegacyFromFaces } from "./shelfFaces.js";
 import { listCategoriesForLayout, productAllowedForShelf, resolveCategoryId } from "./categoryTree.js";
-import { clampDepthFacings, previewFacings } from "./planogramMath.js";
+import { clampDepthFacings, clampStackLayers, previewFacings } from "./planogramMath.js";
 import { levelSegmentsList } from "./shelfSegments.js";
 import { levelLoadLimitKg, productWeightKg, unitsWithinLoad } from "./weightMath.js";
 
@@ -33,27 +34,35 @@ function facesToFill(shelf) {
 }
 
 /**
- * Trim facings so a level stays under its safe working load.
- * Depth is shed before width: pulling back the deep stack keeps the shopper-facing
- * presentation intact, which is what a merchandiser would do by hand.
+ * Trim wide × deep × stack units so a level stays under its safe working load.
+ * Vertical stack is shed first, then depth, then width — keeps the front presentation.
  */
-function fitToLoadLimit(facings, depthFacings, unitWeightKg, limitKg) {
+export function fitToLoadLimit(facings, depthFacings, stackLayers, unitWeightKg, limitKg) {
+  let f = Math.max(1, Number(facings) || 1);
+  let d = Math.max(1, Number(depthFacings) || 1);
+  let s = Math.max(1, Number(stackLayers) || 1);
+
   if (!Number.isFinite(unitWeightKg) || unitWeightKg <= 0) {
-    return { facings, depthFacings, capped: false };
+    return { facings: f, depthFacings: d, stackLayers: s, capped: false };
   }
   const maxUnits = unitsWithinLoad(limitKg, 0, unitWeightKg);
-  if (!Number.isFinite(maxUnits) || facings * depthFacings <= maxUnits) {
-    return { facings, depthFacings, capped: false };
+  if (!Number.isFinite(maxUnits) || f * d * s <= maxUnits) {
+    return { facings: f, depthFacings: d, stackLayers: s, capped: false };
   }
   if (maxUnits < 1) {
-    return { facings: 1, depthFacings: 1, capped: true };
+    return { facings: 1, depthFacings: 1, stackLayers: 1, capped: true };
   }
-  const fittedDepth = Math.max(1, Math.min(depthFacings, Math.floor(maxUnits / facings)));
-  if (fittedDepth * facings <= maxUnits) {
-    return { facings, depthFacings: fittedDepth, capped: true };
+
+  s = Math.max(1, Math.min(s, Math.floor(maxUnits / (f * d))));
+  if (f * d * s <= maxUnits) {
+    return { facings: f, depthFacings: d, stackLayers: s, capped: true };
   }
-  const fittedFacings = Math.max(1, Math.min(facings, Math.floor(maxUnits)));
-  return { facings: fittedFacings, depthFacings: 1, capped: true };
+  d = Math.max(1, Math.min(d, Math.floor(maxUnits / (f * s))));
+  if (f * d * s <= maxUnits) {
+    return { facings: f, depthFacings: d, stackLayers: s, capped: true };
+  }
+  f = Math.max(1, Math.min(f, Math.floor(maxUnits / (d * s))));
+  return { facings: f, depthFacings: d, stackLayers: s, capped: true };
 }
 
 /**
@@ -94,15 +103,17 @@ export function fillPlanogramsForLayout(layout, products, categories) {
             levelIndex,
             faceId,
           });
-          if (!preview.maxFacings) continue;
+          if (!preview.maxFacings || !preview.fitsLevelHeight) continue;
 
           const segments = levelSegmentsList(shelf, faceId, levelIndex);
           const segmentId = segments[0]?.id;
 
           const maxDepthFacings = Math.max(1, preview.maxDepthFacings || 1);
+          const maxStackLayers = Math.max(1, preview.maxStackLayers || 1);
           const fitted = fitToLoadLimit(
             preview.maxFacings,
             clampDepthFacings(null, maxDepthFacings),
+            clampStackLayers(null, maxStackLayers),
             productWeightKg(product),
             levelLoadLimit
           );
@@ -116,6 +127,8 @@ export function fillPlanogramsForLayout(layout, products, categories) {
             maxFacings: preview.maxFacings,
             depthFacings: fitted.depthFacings,
             maxDepthFacings,
+            stackLayers: fitted.stackLayers,
+            maxStackLayers,
             positionX: 0,
             faceId,
             segmentId: segmentId || undefined,
@@ -128,8 +141,6 @@ export function fillPlanogramsForLayout(layout, products, categories) {
         }
 
         if (!placedOnLevel) {
-          // No unused matching SKU left for this category — leave the level empty
-          // so other shelves/categories can still receive remaining catalog products.
           break;
         }
       }

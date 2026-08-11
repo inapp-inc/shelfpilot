@@ -8,6 +8,14 @@ import { computePlanogramCoverage } from "./planogramCoverage.js";
 import { obstacleAreaSqm } from "./obstacles.js";
 import { computeCategoryVolumeAllocation, computeStorageVolume } from "./volumeMath.js";
 import { computeWeightLoadReport } from "./weightMath.js";
+import {
+  computeCategoryMerchAllocation,
+  computeFacingsReport,
+  computeMerchandisingFill,
+  computeVerticalMerchUtilization,
+  shelfFootprintOverlapsZone,
+} from "./merchAllocation.js";
+import { isTemporaryStorageShelf, temporaryStorageLabel } from "./temporaryStorage.js";
 
 /** Square feet per square meter — US retail display / doc benchmarking. */
 export const SQFT_PER_SQM = 10.76391041671;
@@ -156,6 +164,10 @@ export function layoutShelves(layout) {
   return layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
 }
 
+function permanentShelves(layout) {
+  return layoutShelves(layout).filter((s) => !isTemporaryStorageShelf(s));
+}
+
 export function isShelfMapped(shelf) {
   if (shelf?.faces?.length) {
     return shelf.faces.some((f) => Boolean(f.categoryId));
@@ -233,16 +245,19 @@ export function computeSpaceUtilization(layout) {
   };
 }
 
-/** §1.2 Fixture density, measured in physical units per usable floor area. */
+/** §1.2 Fixture density, measured in physical units per usable floor area (permanent fixtures only). */
 export function computeFixtureDensity(layout) {
   const space = computeSpaceUtilization(layout);
   const usable = space.usableStoreAreaSqm;
-  const shelves = layoutShelves(layout);
+  const shelves = permanentShelves(layout);
   const units = physicalUnitCount(shelves);
   const density = usable > 0 ? Number((units / usable).toFixed(3)) : 0;
   const per100SqFt = fixturesPer100SqFt(units, usable);
+  const tempStats = computeTemporaryStorageStats(layout);
   return {
     fixtureCount: units,
+    temporaryStorageCount: tempStats.count,
+    temporaryStorageAreaSqm: tempStats.areaSqm,
     shelfFaceCount: shelves.length,
     fixturesPerSqm: density,
     /** @deprecated SI unit — UI should prefer fixturesPer100SqFt */
@@ -270,15 +285,10 @@ export function computeFixtureDensityByZone(layout) {
   const rows = zones.map((zone) => {
     const inZone = shelves.filter((s) => {
       if (!layout?.zones?.length) return true;
-      const sx = Number(s.x) || 0;
-      const sy = Number(s.y) || 0;
       const z = layout.zones.find((zz) => zz.id === zone.zoneId);
       if (!z) return false;
-      const zx = Number(z.x) || 0;
-      const zy = Number(z.y) || 0;
-      const zw = Number(z.widthMeters) || 0;
-      const zd = Number(z.depthMeters) || 0;
-      return sx >= zx && sx <= zx + zw && sy >= zy && sy <= zy + zd;
+      if (s?.pairRole === "back") return false;
+      return shelfFootprintOverlapsZone(s, z);
     });
     const area = zone.areaSqm || space.usableStoreAreaSqm;
     const count = physicalUnitCount(inZone);
@@ -297,7 +307,7 @@ export function computeFixtureDensityByZone(layout) {
   return {
     rows,
     storeAverage: computeFixtureDensity(layout).fixturesPer100SqFt,
-    formula: "physicalUnits in zone ÷ (zoneAreaSqFt / 100)",
+    formula: "physicalUnits in zone ÷ (zoneAreaSqFt / 100); unit included when shelf footprint overlaps zone",
   };
 }
 
@@ -331,28 +341,31 @@ export function computeUnmappedShelves(layout) {
   };
 }
 
-/** §1.4 Vertical space utilization by level index.
- * A level counts as utilized only when it has at least one planogram product —
- * category mapping alone does not fill empty decks.
- */
-export function computeVerticalSpaceUtilization(layout) {
+/** §1.4 Vertical space utilization by level index (linear fill vs usable shelf width). */
+export function computeVerticalSpaceUtilization(layout, products = []) {
+  if (Array.isArray(products) && products.length) {
+    return computeVerticalMerchUtilization(layout, products);
+  }
+
   const shelves = layoutShelves(layout);
   const byLevel = new Map();
 
   for (const shelf of shelves) {
+    if (shelf?.pairRole === "back") continue;
     const levels = shelf.levels?.length ? shelf.levels : [{ levelIndex: 0 }];
-    const footprint = shelfFloorAreaShareSqm(shelf);
-    const levelArea = footprint / Math.max(levels.length, 1);
-    const faces = shelf.faces?.length ? shelf.faces : [{ planogram: shelf.planogram || [] }];
+    const usableW = shelfLinearMeters(shelf);
+    const levelLinear = usableW;
 
     for (const lv of levels) {
       const idx = Number(lv.levelIndex) || 0;
-      const hasProducts = faces.some((face) =>
-        (face.planogram || []).some((p) => Number(p.levelIndex) === idx)
-      );
-      const prev = byLevel.get(idx) || { levelIndex: idx, totalAreaSqm: 0, utilizedAreaSqm: 0, fixtureCount: 0 };
-      prev.totalAreaSqm += levelArea;
-      if (hasProducts) prev.utilizedAreaSqm += levelArea;
+      const prev = byLevel.get(idx) || {
+        levelIndex: idx,
+        totalAreaSqm: 0,
+        utilizedAreaSqm: 0,
+        fixtureCount: 0,
+      };
+      prev.totalAreaSqm += levelLinear;
+      prev.utilizedAreaSqm += 0;
       prev.fixtureCount += 1;
       byLevel.set(idx, prev);
     }
@@ -364,24 +377,21 @@ export function computeVerticalSpaceUtilization(layout) {
       ...row,
       totalAreaSqm: Number(row.totalAreaSqm.toFixed(2)),
       utilizedAreaSqm: Number(row.utilizedAreaSqm.toFixed(2)),
-      utilizationPercent:
-        row.totalAreaSqm > 0
-          ? Number(((row.utilizedAreaSqm / row.totalAreaSqm) * 100).toFixed(1))
-          : 0,
+      utilizationPercent: 0,
       levelLabel:
         row.levelIndex === 0 ? "Bottom" : row.levelIndex === 1 ? "Eye-level" : `Level ${row.levelIndex}`,
     }));
 
   return {
     levels,
-    formula: "per level: (shelf floor-share ÷ level count with products on that level) ÷ total level area × 100",
+    formula: "per level: linear fill from planogram when products supplied; otherwise capacity only",
   };
 }
 
-/** §2.1 Auto-calculated vs actual capacity. */
+/** §2.1 Auto-calculated vs actual capacity (permanent fixtures only). */
 export function computeCapacityVariance(layout) {
   const theoretical = Number(layout?.autoCalc?.maxFixtures) || 0;
-  const actual = physicalUnitCount(layoutShelves(layout));
+  const actual = physicalUnitCount(permanentShelves(layout));
   const variancePercent =
     theoretical > 0 ? Number((((actual - theoretical) / theoretical) * 100).toFixed(1)) : null;
   return {
@@ -396,9 +406,9 @@ export function computeCapacityVariance(layout) {
   };
 }
 
-/** §2.2 Fixture mix by type — physical units (gondola pair = 1). */
+/** §2.2 Fixture mix by type — physical units (gondola pair = 1); excludes temporary storage. */
 export function computeFixtureMix(layout) {
-  const shelves = layoutShelves(layout);
+  const shelves = permanentShelves(layout);
   const byType = new Map();
   let totalArea = 0;
   let totalUnits = 0;
@@ -429,8 +439,49 @@ export function computeFixtureMix(layout) {
   }));
 }
 
-/** §3.1 Category space allocation (area + linear). */
-export function computeCategorySpaceAllocation(layout, categories) {
+/** FR-TEMP-01: temporary storage count and floor area, separate from permanent fixtures. */
+export function computeTemporaryStorageStats(layout) {
+  const shelves = layoutShelves(layout).filter(isTemporaryStorageShelf);
+  const byType = new Map();
+  let totalArea = 0;
+
+  for (const shelf of shelves) {
+    const type = shelf.type || "temp_table";
+    const footprint = shelfFloorAreaShareSqm(shelf);
+    totalArea += footprint;
+    const prev = byType.get(type) || { type, label: temporaryStorageLabel(type), count: 0, areaSqm: 0 };
+    prev.count += 1;
+    prev.areaSqm += footprint;
+    byType.set(type, prev);
+  }
+
+  const rows = [...byType.values()].map((row) => ({
+    type: row.type,
+    label: row.label,
+    count: row.count,
+    areaSqm: Number(row.areaSqm.toFixed(2)),
+  }));
+
+  return {
+    count: shelves.length,
+    areaSqm: Number(totalArea.toFixed(2)),
+    byType: rows,
+    formula: "temporary storage units are excluded from permanent fixture density and mix",
+  };
+}
+
+/** §3.1 Category space allocation — planogram + shelf dimensions when products available. */
+export function computeCategorySpaceAllocation(layout, categories, products = []) {
+  if (Array.isArray(products) && products.length) {
+    return computeCategoryMerchAllocation(
+      layout,
+      categories,
+      products,
+      (id) => resolveCategoryId(id, categories),
+      (id, cats) => categoryDisplayName(id, cats)
+    );
+  }
+
   const shelves = layoutShelves(layout);
   const byCat = new Map();
   let totalMappedArea = 0;
@@ -476,7 +527,7 @@ export function computeCategorySpaceAllocation(layout, categories) {
     }))
     .sort((a, b) => b.areaSqm - a.areaSqm);
 
-  return { rows, totalMappedAreaSqm: Number(totalMappedArea.toFixed(2)), totalLinearMeters: Number(totalLinearM.toFixed(2)), formula: "each mapped shelf floor-share split evenly across its category IDs; share% = categoryArea ÷ totalMappedArea × 100" };
+  return { rows, totalMappedAreaSqm: Number(totalMappedArea.toFixed(2)), totalLinearMeters: Number(totalLinearM.toFixed(2)), formula: "category-mapped shelf floor-share (usableWidth×depth); pass products for planogram-based allocation" };
 }
 
 function shelfCenter(shelf) {
@@ -654,17 +705,18 @@ export function computeStoreBenchmarking(layouts, categories) {
   const rows = layouts.map((layout) => {
     const space = computeSpaceUtilization(layout);
     const density = computeFixtureDensity(layout);
-    const per1000 = fixturesPer1000SqFt(density.fixtureCount, space.totalStoreAreaSqm);
+    const per1000 = fixturesPer1000SqFt(density.fixtureCount, space.usableStoreAreaSqm);
     return {
       layoutId: layout.id,
       name: layout.name || layout.id,
       vertical: layout.vertical,
       fixtureCount: density.fixtureCount,
-      areaSqm: space.totalStoreAreaSqm,
+      areaSqm: space.usableStoreAreaSqm,
+      totalAreaSqm: space.totalStoreAreaSqm,
       fixturesPer1000SqFt: per1000,
       /** @deprecated SI — prefer fixturesPer1000SqFt */
-      fixturesPer1000Sqm: space.totalStoreAreaSqm > 0
-        ? Number((density.fixtureCount / (space.totalStoreAreaSqm / 1000)).toFixed(1))
+      fixturesPer1000Sqm: space.usableStoreAreaSqm > 0
+        ? Number((density.fixtureCount / (space.usableStoreAreaSqm / 1000)).toFixed(1))
         : 0,
     };
   });
@@ -679,7 +731,7 @@ export function computeStoreBenchmarking(layouts, categories) {
     })),
     peerAverageFixturesPer1000SqFt: peerAverage,
     peerAverageFixturesPer1000Sqm: peerAverage,
-    formula: "fixtureCount ÷ (totalStoreAreaSqm × 10.7639 / 1000); capacityIndex = store ÷ peer average",
+    formula: "fixtureCount ÷ (usableStoreAreaSqm × 10.7639 / 1000); capacityIndex = store ÷ peer average",
   };
 }
 
@@ -851,6 +903,8 @@ export function computeExecutiveKpis(parts) {
     storageVolumeFillPercent: parts.storageVolume?.fillPercent ?? 0,
     availableVolumeM3: parts.storageVolume?.availableVolumeM3 ?? 0,
     overloadedShelfCount: parts.weightLoad?.overloadedShelfCount ?? 0,
+    linearFillPercent: parts.merchFill?.linearFillPercent ?? null,
+    shelfAreaFillPercent: parts.merchFill?.areaFillPercent ?? null,
   };
 }
 
@@ -870,10 +924,12 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
   const fixtureDensity = computeFixtureDensity(layout);
   const fixtureDensityByZone = computeFixtureDensityByZone(layout);
   const unmapped = computeUnmappedShelves(layout);
-  const verticalSpace = computeVerticalSpaceUtilization(layout);
+  const verticalSpace = computeVerticalSpaceUtilization(layout, productList);
   const capacity = computeCapacityVariance(layout);
   const fixtureMix = computeFixtureMix(layout);
-  const categorySpace = computeCategorySpaceAllocation(layout, categoryList);
+  const temporaryStorage = computeTemporaryStorageStats(layout);
+  const categorySpace = computeCategorySpaceAllocation(layout, categoryList, productList);
+  const merchFill = computeMerchandisingFill(layout, productList);
   const storageVolume = computeStorageVolume(layout, productList);
   const categoryVolume = computeCategoryVolumeAllocation(layout, categoryList, productList, (id) =>
     resolveCategoryId(id, categoryList)
@@ -897,11 +953,10 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     capacity,
     storageVolume,
     weightLoad,
+    merchFill,
   });
 
-  const footprintSqm = Number(
-    (Number(layout.widthMeters || 0) * Number(layout.depthMeters || 0)).toFixed(2)
-  );
+  const footprintSqm = Number(totalStoreArea(layout).toFixed(2));
   // Align legacy free-space with §1.1 vacancy (unused ÷ usable).
   const freeSpacePercent = space.vacancyPercent ?? 0;
 
@@ -917,34 +972,14 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     color: r.color,
   }));
 
-  // Facings by category (legacy)
-  const facingsByCatMap = new Map();
-  let facingsTotal = 0;
-  for (const shelf of layoutShelves(layout)) {
-    const faces = shelf.faces?.length
-      ? shelf.faces
-      : [{ categoryId: shelf.categoryId, planogram: shelf.planogram || [] }];
-    for (const face of faces) {
-      for (const p of face.planogram || []) {
-        const n = Number(p.facings || 0);
-        if (!n) continue;
-        facingsTotal += n;
-        const rawCatId = p.categoryId || face.categoryId || shelf.categoryId || "unmapped";
-        const resolved = rawCatId === "unmapped" ? "unmapped" : resolveCategoryId(rawCatId, categoryList);
-        const key = resolved || rawCatId;
-        const cat = categoryList.find((c) => c.id === resolved);
-        const prev = facingsByCatMap.get(key) || {
-          categoryId: key,
-          categoryName:
-            rawCatId === "unmapped" ? "Unmapped" : categoryDisplayName(rawCatId, categoryList),
-          facings: 0,
-          color: cat?.color || face.color || shelf.color || "#A30A2A",
-        };
-        prev.facings += n;
-        facingsByCatMap.set(key, prev);
-      }
-    }
-  }
+  const facingsReport = computeFacingsReport(
+    layout,
+    categoryList,
+    productList,
+    (id) => resolveCategoryId(id, categoryList),
+    (id, cats) => categoryDisplayName(id, cats)
+  );
+  const facingsTotal = facingsReport.facingsTotal;
 
   return {
     layoutId: layout.id,
@@ -958,8 +993,10 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     aisleCount: aisleCompliance.aisleCount,
     capacity: capacity.theoreticalMaxFixtures,
     facingsTotal,
-    facingsByCategory: [...facingsByCatMap.values()].sort((a, b) => b.facings - a.facings),
+    facingsByCategory: facingsReport.facingsByCategory,
+    facingsReport,
     allocationByCategory,
+    merchandisingFill: merchFill,
     // M9 report sections
     spaceUtilization: space,
     fixtureDensity,
@@ -968,6 +1005,7 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
     verticalSpaceUtilization: verticalSpace,
     capacityVariance: capacity,
     fixtureMix,
+    temporaryStorage,
     categorySpaceAllocation: categorySpace,
     storageVolume,
     categoryVolumeAllocation: categoryVolume,

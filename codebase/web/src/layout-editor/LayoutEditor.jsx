@@ -3,9 +3,10 @@ import { api } from "../api.js";
 import AlertBanner from "../components/AlertBanner.jsx";
 import FieldError from "../components/FieldError.jsx";
 import { friendlyError } from "../validationMessages.js";
-import { shelfUnitLabel, countGondolaUnits, resolveShelfByLabel, listShelfLabels, shelfFaceDisplayLabel, shelfCanvasFaceLabel, resolveGondolaForEditor } from "./shelfFaces.js";
+import { shelfUnitLabel, countGondolaUnits, resolveShelfByLabel, listShelfLabels, shelfFaceDisplayLabel, shelfCanvasFaceLabel } from "./shelfFaces.js";
 import { FIXTURE_TYPES, VERTICALS, ZONE_TYPES } from "../referenceCatalog.js";
-import { fixtureForType, fixturePaletteEntries } from "../fixtureCatalog.js";
+import { fixtureForType, permanentFixturePaletteEntries, temporaryFixturePaletteEntries } from "../fixtureCatalog.js";
+import { isTemporaryStorageType } from "../temporaryStorage.js";
 import Scene3D from "../Scene3D.jsx";
 import { formatMeters, layoutBounds, shelf3dLocalBox } from "../scene3dDimensions.js";
 import { formatDimensionTripleInches } from "../units.js";
@@ -13,11 +14,13 @@ import Palette from "./Palette.jsx";
 import Canvas2D from "./Canvas2D.jsx";
 import FloorPlan2D from "./FloorPlan2D.jsx";
 import SmartGeneratePanel from "./SmartGeneratePanel.jsx";
-import FloorPlanPanel from "./FloorPlanPanel.jsx";
+import LayoutArrangementPanel from "./LayoutArrangementPanel.jsx";
 import EditorPanelShell from "./EditorPanelShell.jsx";
 import PlanogramEditorModal from "./PlanogramEditorModal.jsx";
+import AisleShelfViewModal from "./AisleShelfViewModal.jsx";
 import MissingProductsDialog from "./MissingProductsDialog.jsx";
 import EditorCanvasBar from "./EditorCanvasBar.jsx";
+import { estimateFixtureCapacity } from "./fixtureCapacity.js";
 import {
   shelfLabelFitsGondolaFace,
   shelfLabelFitsShelfBadge,
@@ -56,14 +59,11 @@ const EDITOR_PANELS_STORAGE_KEY = "shelfpilot.editorPanels";
 function readEditorPanelPrefs() {
   try {
     const raw = localStorage.getItem(EDITOR_PANELS_STORAGE_KEY);
-    if (!raw) return { palette: true, floorPlan: true };
+    if (!raw) return { palette: false };
     const parsed = JSON.parse(raw);
-    return {
-      palette: Boolean(parsed.palette),
-      floorPlan: parsed.floorPlan !== false,
-    };
+    return { palette: parsed.palette === true };
   } catch {
-    return { palette: true, floorPlan: true };
+    return { palette: false };
   }
 }
 
@@ -119,8 +119,8 @@ export default function LayoutEditor({
   const [genOrientation, setGenOrientation] = useState("mixed");
   const [genMinAisle, setGenMinAisle] = useState("");
   const [categoryMix, setCategoryMix] = useState(() => mixForVertical(vertical));
-  const [genFillPlanogram, setGenFillPlanogram] = useState(true);
   const [lastGenStats, setLastGenStats] = useState(null);
+  const [arrangementOpen, setArrangementOpen] = useState(false);
   const [storeW, setStoreW] = useState("");
   const [storeD, setStoreD] = useState("");
   const [fixtureW, setFixtureW] = useState("");
@@ -139,7 +139,9 @@ export default function LayoutEditor({
   const [rejectSubmitting, setRejectSubmitting] = useState(false);
   const [dismissedAlerts, setDismissedAlerts] = useState(() => new Set());
   const [planogramEditor, setPlanogramEditor] = useState(null);
+  const [aisleShelfViewShelfId, setAisleShelfViewShelfId] = useState(null);
   const [planogram3dReturn, setPlanogram3dReturn] = useState(null);
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [missingProductsOpen, setMissingProductsOpen] = useState(false);
   const stageRef = useRef(null);
   const editorRootRef = useRef(null);
@@ -149,26 +151,38 @@ export default function LayoutEditor({
   const pendingZoomScrollRef = useRef(null);
   const [editorFullscreen, setEditorFullscreen] = useState(false);
   const [paletteCollapsed, setPaletteCollapsed] = useState(() => readEditorPanelPrefs().palette);
-  const [floorPanelCollapsed, setFloorPanelCollapsed] = useState(() => readEditorPanelPrefs().floorPlan);
   zoomRef.current = zoom;
 
   const editDisabled = !["Designer", "Admin"].includes(role);
   const layoutHasShelves = Boolean((layout?.shelves || layout?.fixtures || []).length);
+  const arrangementAccepted = Boolean(layout?.arrangementAcceptedAt);
   const missingProductCount = planogramCoverage?.missingCount ?? 0;
   const layoutVertical = layout?.vertical || vertical;
   const vMeta = VERTICALS[layoutVertical] || VERTICALS.retail;
   const activeStoreType = storeTypeForVertical(layoutVertical);
   const minAisle = config?.minAisleWidthMeters ?? vMeta.minAisle;
-  const fixtureTypes = useMemo(
-    () => fixturePaletteEntries(config, layoutVertical),
+  const permanentFixtureTypes = useMemo(
+    () => permanentFixturePaletteEntries(config, layoutVertical),
     [config, layoutVertical]
   );
+  const temporaryFixtureTypes = useMemo(() => temporaryFixturePaletteEntries(), []);
+  const fixtureTypes = useMemo(
+    () => [...permanentFixtureTypes, ...temporaryFixtureTypes],
+    [permanentFixtureTypes, temporaryFixtureTypes]
+  );
   const fixtureTypeKeys = useMemo(() => new Set(fixtureTypes.map((t) => t.type)), [fixtureTypes]);
+  const hasDrawnFixtureArea = Boolean(layoutFixturePolygon(layout));
 
   const catSig = useMemo(() => (categories || []).map((c) => c.id).join("|"), [categories]);
   const fixtureSig = useMemo(
     () => fixtureTypes.map((t) => `${t.type}:${t.defaultWidthMeters}:${t.defaultDepthMeters}:${t.defaultLevels}`).join("|"),
     [fixtureTypes]
+  );
+  const fixtureCapacity = useMemo(
+    () => estimateFixtureCapacity(layout, permanentFixtureTypes),
+    // fixtureSig covers template dim changes without unstable layout object identity
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layout, fixtureSig, hasDrawnFixtureArea]
   );
 
   const violationSig = useMemo(
@@ -185,9 +199,11 @@ export default function LayoutEditor({
   }, [violationSig]);
 
   useEffect(() => {
-    if (view3d) onRefreshCatalog?.();
+    // Planogram → View in 3D already has catalog data; refreshing remounts Scene3D and drops textures.
+    if (!view3d || planogram3dReturn) return;
+    onRefreshCatalog?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view3d, layout?.id]);
+  }, [view3d, layout?.id, planogram3dReturn]);
 
   const dismissAlert = useCallback((key) => {
     setDismissedAlerts((prev) => new Set([...prev, key]));
@@ -420,9 +436,9 @@ export default function LayoutEditor({
   useEffect(() => {
     localStorage.setItem(
       EDITOR_PANELS_STORAGE_KEY,
-      JSON.stringify({ palette: paletteCollapsed, floorPlan: floorPanelCollapsed })
+      JSON.stringify({ palette: paletteCollapsed })
     );
-  }, [paletteCollapsed, floorPanelCollapsed]);
+  }, [paletteCollapsed]);
 
   const toggleEditorFullscreen = useCallback(async () => {
     const el = editorRootRef.current;
@@ -622,6 +638,13 @@ export default function LayoutEditor({
       const panWithCtrl = (e.ctrlKey || e.metaKey) && e.button === 0;
       const panWithMiddle = e.button === 1;
       if (!panWithCtrl && !panWithMiddle) return;
+      // Ctrl+click on a shelf enters layout edit (move/resize), not canvas pan.
+      if (
+        panWithCtrl &&
+        e.target.closest?.(".fx-slot-interactive, .fx-slot, .resize-handle, .rotate-handle")
+      ) {
+        return;
+      }
       startPan(e);
     };
 
@@ -1141,6 +1164,11 @@ export default function LayoutEditor({
 
   function openPlanogramForShelf(shelfId, faceId = "A") {
     if (view3d) return;
+    if (layoutHasShelves && !layout?.arrangementAcceptedAt) {
+      notifyError("arrangement_not_accepted");
+      setArrangementOpen(true);
+      return;
+    }
     setPlanogramEditor({ shelfId, faceId: faceId || "A" });
   }
 
@@ -1162,11 +1190,7 @@ export default function LayoutEditor({
       shelfId: planogram3dReturn.shelfId,
       faceId: planogram3dReturn.faceId || "A",
     });
-    setSelection({
-      kind: "shelf",
-      id: planogram3dReturn.shelfId,
-      faceId: planogram3dReturn.faceId || "A",
-    });
+    setSelection(null);
     setPlanogram3dReturn(null);
   }
 
@@ -1176,8 +1200,23 @@ export default function LayoutEditor({
     setPlanogram3dReturn(null);
   }
 
-  function selectShelf(shelfId, faceId = "A", { openPlanogram = true } = {}) {
-    setSelection({ kind: "shelf", id: shelfId, faceId: faceId || "A" });
+  function openAisleShelfView(shelfId) {
+    if (!shelfId) return;
+    setAisleShelfViewShelfId(shelfId);
+  }
+
+  function selectShelfFromAisleView(shelfId) {
+    selectShelf(shelfId, "A", { openPlanogram: false, layoutSelect: true });
+    setAisleShelfViewShelfId(shelfId);
+    if (!view3d) frameShelfIds([shelfId]);
+  }
+
+  function selectShelf(shelfId, faceId = "A", { openPlanogram = true, layoutSelect = false } = {}) {
+    if (layoutSelect) {
+      setSelection({ kind: "shelf", id: shelfId, faceId: faceId || "A", layoutEdit: true });
+      if (view3d) setFocus3dRequest((n) => n + 1);
+      return;
+    }
     if (openPlanogram) openPlanogramForShelf(shelfId, faceId);
   }
 
@@ -1192,11 +1231,8 @@ export default function LayoutEditor({
     selectShelf(resolved.shelfId, faceId);
     setFocus3dRequest((n) => n + 1);
     if (view3d) return;
-    const ids =
-      resolved.mergedGondola && resolved.backId
-        ? [resolved.frontId, resolved.backId]
-        : [resolved.shelfId];
-    frameShelfIds(ids);
+    // Frame the aisle-facing shelf only (not the opposite-aisle gondola mate).
+    frameShelfIds([resolved.shelfId]);
   }
 
   const shelfLabelOptions = useMemo(() => listShelfLabels(layout), [layout?.shelves, layout?.aisles, layout?.contentRevision]);
@@ -1205,17 +1241,23 @@ export default function LayoutEditor({
     if (!selection || (selection.kind !== "shelf" && selection.kind !== "fixture")) return null;
     const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
     const s = shelves.find((x) => x.id === selection.id);
-    if (!s) return { shelfId: selection.id, pairId: null };
-    if (s.pairId) {
-      const mate = shelves.find((x) => x.pairId === s.pairId && x.id !== s.id);
+    // FR-AISLE-02: highlight the selected physical shelf + aisle only — never the gondola pair mate.
+    if (!s) {
       return {
         shelfId: selection.id,
-        pairId: s.pairId,
-        frontId: s.pairRole === "back" ? mate?.id : s.id,
-        backId: s.pairRole === "back" ? s.id : mate?.id,
+        pairId: null,
+        faceId: selection.faceId === "B" ? "B" : "A",
+        aisleId: null,
       };
     }
-    return { shelfId: selection.id, pairId: null };
+    const faceId =
+      selection.faceId === "B" || s.pairRole === "back" ? "B" : "A";
+    return {
+      shelfId: selection.id,
+      pairId: null,
+      faceId,
+      aisleId: s.aisleId || null,
+    };
   }, [selection, layout?.shelves, layout?.fixtures]);
 
   const scene3dDimensionLabels = useMemo(() => {
@@ -1366,42 +1408,82 @@ export default function LayoutEditor({
     }
   }
 
+  function smartGenerateGateErrors(mix = categoryMix) {
+    const errors = [];
+    if (!fixtureTypes.length) {
+      errors.push("No shelf fixtures are configured for this store type. Add fixture templates in Admin → Store Master, then try again.");
+    }
+    if (!layoutFixturePolygon(layout)) {
+      errors.push("Draw and apply a fixture area on the floor plan before running Smart Generate.");
+    }
+    const rows = Array.isArray(mix) ? mix : [];
+    if (!rows.length) {
+      errors.push("Add at least one category to the mix before running Smart Generate.");
+    }
+    const total = rows.reduce((s, r) => s + Number(r.percent || 0), 0);
+    if (rows.length && total !== 100) {
+      errors.push(`Category mix must total 100% before generating (currently ${total}%).`);
+    }
+    const missingFixture = rows.filter((r) => !String(r.fixtureType || "").trim());
+    if (fixtureTypes.length && missingFixture.length) {
+      errors.push("Choose a shelf fixture for every category in the mix.");
+    }
+    return errors;
+  }
+
+  function ensureMixFixtureDefaults(mix) {
+    const fallback = fixtureTypes[0]?.type || "shelf";
+    return (mix || []).map((row) => ({
+      ...row,
+      fixtureType: row.fixtureType || fallback,
+    }));
+  }
+
+  function openSmartGenerate() {
+    const normalized = ensureMixFixtureDefaults(categoryMix);
+    if (normalized !== categoryMix) setCategoryMix(normalized);
+    const errors = smartGenerateGateErrors(normalized);
+    if (errors.length) {
+      notifyError(errors[0]);
+      if (!fixtureTypes.length) return;
+      if (!layoutFixturePolygon(layout)) {
+        setPaletteTool("draw");
+        setPaletteCollapsed(false);
+        return;
+      }
+    }
+    setGenOpen(true);
+    setPaletteCollapsed(false);
+  }
+
   async function runGenerate() {
+    const normalizedMix = ensureMixFixtureDefaults(categoryMix);
+    if (normalizedMix !== categoryMix) setCategoryMix(normalizedMix);
+    const gate = smartGenerateGateErrors(normalizedMix);
+    if (gate.length) {
+      notifyError(gate[0]);
+      if (!layoutFixturePolygon(layout)) {
+        setPaletteTool("draw");
+        setGenOpen(false);
+      }
+      return;
+    }
+
     let activeLayout = layout;
-    const hasPolygon = (activeLayout.polygon?.length ?? 0) >= 3;
-    if (!hasPolygon) {
-      if (previewFixturePolygon) {
-        try {
-          activeLayout = await patchLayout({ shape: "polygon", polygon: previewFixturePolygon });
-          setLayout(activeLayout);
-        } catch (e) {
-          toast(e.message === "invalid_polygon" ? "Invalid fixture zone shape." : e.message);
-          setPaletteTool("draw");
-          return;
-        }
-      } else {
-        const w = Number(activeLayout.widthMeters);
-        const d = Number(activeLayout.depthMeters);
-        if (Number.isFinite(w) && Number.isFinite(d) && w > 0 && d > 0) {
-          const rectPoly = [
-            { x: 0, y: 0 },
-            { x: w, y: 0 },
-            { x: w, y: d },
-            { x: 0, y: d },
-          ];
-          try {
-            activeLayout = await patchLayout({ shape: "polygon", polygon: rectPoly });
-            setLayout(activeLayout);
-          } catch (e) {
-            toast(e.message === "invalid_polygon" ? "Invalid floor area." : e.message);
-            setPaletteTool("draw");
-            return;
-          }
-        } else {
-          toast("Draw and apply a floor area first (3+ vertices), then Generate.");
-          setPaletteTool("draw");
-          return;
-        }
+    if (!layoutFixturePolygon(activeLayout)) {
+      notifyError("Draw and apply a fixture area on the floor plan before running Smart Generate.");
+      setPaletteTool("draw");
+      setGenOpen(false);
+      return;
+    }
+    if (previewFixturePolygon && !(activeLayout.polygon?.length >= 3)) {
+      try {
+        activeLayout = await patchLayout({ shape: "polygon", polygon: previewFixturePolygon });
+        setLayout(activeLayout);
+      } catch (e) {
+        toast(e.message === "invalid_polygon" ? "Invalid fixture zone shape." : e.message);
+        setPaletteTool("draw");
+        return;
       }
     }
     const hasContent = (activeLayout.aisles || []).length > 0 || (activeLayout.shelves || []).length > 0;
@@ -1410,11 +1492,11 @@ export default function LayoutEditor({
     }
     try {
       setGenerating(true);
-      const mixPayload = categoryMix.map(({ categoryId, percent, temperatureZone, fixtureType }) => ({
+      const mixPayload = normalizedMix.map(({ categoryId, percent, temperatureZone, fixtureType }) => ({
         categoryId,
         percent,
         temperatureZone,
-        fixtureType,
+        fixtureType: fixtureType || fixtureTypes[0]?.type || "shelf",
       }));
       const updated = await api(`/layouts/${activeLayout.id}/autogenerate`, {
         token,
@@ -1422,9 +1504,9 @@ export default function LayoutEditor({
         body: {
           orientation: genOrientation,
           replaceExisting: true,
+          fillPlanogram: true,
           minAisleWidthMeters: Math.max(Number(genMinAisle) || Number(minAisle) || 0, Number(minAisle) || 0),
           categoryMix: mixPayload,
-          fillPlanogram: genFillPlanogram,
         },
       });
       setLayout(updated);
@@ -1435,24 +1517,29 @@ export default function LayoutEditor({
         shelfMappings: updated.shelfMappings,
       });
       setGenOpen(false);
+      setArrangementOpen(true);
       onRefreshCatalog?.();
       const g = updated.generated || {};
       const cov = updated.coverage;
       const gondolas = g.gondolaUnits ?? countGondolaUnits(updated.shelves || []);
       const walkAisles = g.walkAisles ?? g.aisles ?? updated.aisles?.length ?? 0;
+      if (!gondolas && !walkAisles) {
+        notifyError(
+          "Smart Generate produced an empty layout. Check that category mix fixtures match Store Master templates and the floor area is large enough."
+        );
+        return;
+      }
       toast(
         `Generated ${gondolas} gondola${gondolas === 1 ? "" : "s"} (front+back) · ${walkAisles} walk aisle${walkAisles === 1 ? "" : "s"}` +
           (g.productsMapped || g.planogramPlacements
             ? ` · ${g.productsMapped ?? g.planogramPlacements} product placements`
-            : genFillPlanogram && mixPayload.length
-              ? " · no catalog products matched categories"
-              : "") +
+            : "") +
           (cov ? ` · ${cov.placedCount}/${cov.totalProducts} catalog SKUs on shelves` : "") +
           (g.skippedOutsideCount ? ` (${g.skippedOutsideCount} skipped outside area)` : "")
       );
       setTimeout(() => focusLayoutContent(updated, 0.5), 120);
     } catch (e) {
-      toast(e.message);
+      notifyError(e, "Smart Generate failed");
     } finally {
       setGenerating(false);
     }
@@ -1534,15 +1621,6 @@ export default function LayoutEditor({
     setSelection(null);
   }
 
-  async function patchObstacle(obstacleId, body) {
-    const updated = await api(`/layouts/${layout.id}/obstacles/${obstacleId}`, {
-      token,
-      method: "PATCH",
-      body,
-    });
-    setLayout(updated);
-  }
-
   async function deleteObstacle(obstacleId) {
     const updated = await api(`/layouts/${layout.id}/obstacles/${obstacleId}`, {
       token,
@@ -1550,16 +1628,6 @@ export default function LayoutEditor({
     });
     setLayout(updated);
     setSelection(null);
-  }
-
-  async function uploadFloorPlan({ dataBase64, fileName }) {
-    const updated = await api(`/layouts/${layout.id}/floor-plan`, {
-      token,
-      method: "POST",
-      body: { dataBase64, fileName },
-    });
-    setLayout(updated);
-    toast("Floor plan added — set its real width to calibrate the scale");
   }
 
   async function patchFloorPlan(body) {
@@ -1612,12 +1680,7 @@ export default function LayoutEditor({
     if (kind === "shelf" || kind === "fixture") {
       const s = (layout.shelves || layout.fixtures || []).find((x) => x.id === id);
       if (!s) return null;
-      const gondola = resolveGondolaForEditor(layout, id);
-      const faceId = selection.faceId || "A";
-      const aisleLabel =
-        gondola?.mode === "gondola"
-          ? shelfCanvasFaceLabel(gondola.shelf, faceId, layout.aisles, layout.shelves)
-          : shelfFaceDisplayLabel(s, layout.aisles);
+      const aisleLabel = shelfFaceDisplayLabel(s, layout.aisles);
       const unit = aisleLabel || (s.displayNumber != null ? shelfUnitLabel(s.displayNumber) : "");
       const uw = Number(s.usableWidthMeters ?? s.widthMeters) || 0;
       const dep = Number(s.depthMeters) || 0;
@@ -1655,6 +1718,17 @@ export default function LayoutEditor({
     if (kind === "entryPoint") {
       const e = (layout.entryPoints || []).find((x) => x.id === id);
       return e ? { kind, id, label: e.name || "Entry point", run: () => deleteEntry(id) } : null;
+    }
+    if (kind === "floorPlan") {
+      const fp = layout.floorPlan;
+      if (!fp?.url) return null;
+      return {
+        kind: "floorPlan",
+        id: "floor-plan",
+        label: fp.fileName || "Floor plan",
+        detail: `${Number(fp.widthMeters || 0).toFixed(1)}×${Number(fp.depthMeters || 0).toFixed(1)} m`,
+        run: () => removeFloorPlan(),
+      };
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1701,6 +1775,28 @@ export default function LayoutEditor({
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view3d, editDisabled, selectionInfo]);
+
+  useEffect(() => {
+    if (view3d || editDisabled) {
+      setCtrlHeld(false);
+      return undefined;
+    }
+    const onKeyDown = (e) => {
+      if (e.key === "Control" || e.key === "Meta") setCtrlHeld(true);
+    };
+    const onKeyUp = (e) => {
+      if (e.key === "Control" || e.key === "Meta") setCtrlHeld(false);
+    };
+    const onBlur = () => setCtrlHeld(false);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [view3d, editDisabled]);
 
   async function mapAisle(aisleId, categoryId, color) {
     const updated = await api(`/layouts/${layout.id}/mappings`, {
@@ -1940,17 +2036,17 @@ export default function LayoutEditor({
           onToggleCollapse={() => setPaletteCollapsed((v) => !v)}
         >
           <Palette
-            compact
             paletteTool={paletteTool}
             setPaletteTool={setPaletteTool}
             editDisabled={editDisabled}
             minAisle={minAisle}
-            fixtureTypes={fixtureTypes}
+            fixtureTypes={permanentFixtureTypes}
+            temporaryFixtureTypes={temporaryFixtureTypes}
             draftCount={draftPolygon.length}
             hasAppliedPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
             onApplyArea={() => applyArea()}
             onClearDraft={() => setDraftPolygon([])}
-            onOpenGenerate={() => setGenOpen(true)}
+            onOpenGenerate={openSmartGenerate}
           />
         </EditorPanelShell>
         ) : null}
@@ -1971,7 +2067,7 @@ export default function LayoutEditor({
             onEnvelopePatch={scheduleEnvelopePatch}
             onFixturePatch={scheduleFixtureZonePatch}
             envelope={envelope}
-            hasPolygon={layout.shape === "polygon" && (layout.polygon?.length ?? 0) >= 3}
+            hasPolygon={hasDrawnFixtureArea}
             zoom={zoom}
             onZoomDelta={adjustZoom}
             onZoomReset={() => adjustZoom(0, { reset: true })}
@@ -1980,24 +2076,25 @@ export default function LayoutEditor({
             onGoToShelf={goToShelf}
             zoomCategories={zoomCategories}
             onCategoryZoom={focusCanvasTarget}
-            maxFixtures={layout.autoCalc?.maxFixtures}
+            capacity={fixtureCapacity}
             onGrowStore={growStoreEnvelope}
             showShelfLabelHint={!shelfLabelsVisible && shelfLabelOptions.length > 0}
+            layoutHasShelves={layoutHasShelves}
+            arrangementAccepted={arrangementAccepted}
+            onOpenArrangement={() => setArrangementOpen(true)}
+            ctrlHeld={ctrlHeld}
           />
           ) : null}
 
-          {!planogram3dReturn && (layout.validation?.aisleViolations || []).map((text) =>
-            dismissedAlerts.has(`aisle:${text}`) ? null : (
-              <AlertBanner
-                key={text}
-                variant="error"
-                data-testid="editor-aisle-violation"
-                onDismiss={() => dismissAlert(`aisle:${text}`)}
-              >
-                {text}
-              </AlertBanner>
-            )
-          )}
+          {!planogram3dReturn && (layout.validation?.aisleViolations || []).length > 0 && !dismissedAlerts.has("aisle-violations") ? (
+            <AlertBanner
+              variant="error"
+              data-testid="editor-aisle-violation"
+              onDismiss={() => dismissAlert("aisle-violations")}
+            >
+              {(layout.validation.aisleViolations || []).join(" · ")}
+            </AlertBanner>
+          ) : null}
           {!planogram3dReturn && (layout.validation?.containmentViolations || []).length > 0 && !dismissedAlerts.has("containment") ? (
             <AlertBanner
               variant="error"
@@ -2037,19 +2134,43 @@ export default function LayoutEditor({
               onOrientationChange={setGenOrientation}
               categoryMix={categoryMix}
               onCategoryMixChange={setCategoryMix}
-              fillPlanogram={genFillPlanogram}
-              onFillPlanogramChange={setGenFillPlanogram}
               onGenerate={() => runGenerate()}
               generating={generating}
               disabled={editDisabled}
               lastGenStats={lastGenStats}
               categories={categories}
-              fixtureTypes={fixtureTypes}
+              fixtureTypes={permanentFixtureTypes}
+              hasDrawnArea={hasDrawnFixtureArea}
+              capacity={fixtureCapacity}
+              onDrawArea={() => {
+                setGenOpen(false);
+                setPaletteTool("draw");
+                setPaletteCollapsed(false);
+              }}
+              warehouseMode={layoutVertical === "warehouse"}
+            />
+          ) : null}
+
+          {!view3d && layoutHasShelves ? (
+            <LayoutArrangementPanel
+              open={arrangementOpen}
+              layoutId={layout.id}
+              token={token}
+              editDisabled={editDisabled}
+              accepted={arrangementAccepted}
+              toast={toast}
+              onClose={() => setArrangementOpen(false)}
+              onAccepted={(updated) => {
+                setLayout(updated);
+                if (updated.coverage) setPlanogramCoverage(updated.coverage);
+                setArrangementOpen(false);
+                onRefreshLayouts?.();
+              }}
             />
           ) : null}
 
           <div className={`canvas-stage${view3d ? " canvas-stage--3d" : ""}`} ref={stageRef} data-testid="editor-canvas-stage">
-            {!view3d && selectionInfo ? (
+            {!view3d && selectionInfo && selection?.layoutEdit ? (
               <div className="selection-bar selection-bar--overlay">
                 <span className="selection-bar-kind">{selectionInfo.kind}</span>
                 <span className="selection-bar-label">{selectionInfo.label}</span>
@@ -2061,6 +2182,16 @@ export default function LayoutEditor({
                 ) : null}
                 <span className="selection-bar-spacer" aria-hidden />
                 <div className="selection-bar-actions">
+                  {selectionInfo.kind === "shelf" ? (
+                    <button
+                      type="button"
+                      className="editor-canvas-chip editor-canvas-chip--primary"
+                      data-testid="open-aisle-shelf-view"
+                      onClick={() => openAisleShelfView(selection.id)}
+                    >
+                      Aisle shelf view
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="editor-canvas-chip"
@@ -2106,8 +2237,9 @@ export default function LayoutEditor({
                   categories={categories}
                   walkMode={walkMode}
                   highlightShelfId={highlightShelf3d?.shelfId}
-                  highlightPairId={highlightShelf3d?.pairId}
-                  highlightFaceId={selection?.faceId || "A"}
+                  highlightPairId={null}
+                  highlightFaceId={highlightShelf3d?.faceId || selection?.faceId || "A"}
+                  highlightAisleId={highlightShelf3d?.aisleId || null}
                   focusPhysicalShelfId={planogram3dReturn?.shelfId || null}
                   shelfFocusMode={Boolean(planogram3dReturn)}
                   focusRequest={focus3dRequest}
@@ -2129,6 +2261,7 @@ export default function LayoutEditor({
                 onSelectShelf={selectShelf}
                 paletteTool={paletteTool}
                 editDisabled={editDisabled}
+                ctrlHeld={ctrlHeld}
                 dragPos={dragPos}
                 setDragging={setDragging}
                 onDropTool={onDropTool}
@@ -2156,6 +2289,7 @@ export default function LayoutEditor({
                 onSelectShelf={selectShelf}
                 paletteTool={paletteTool}
                 editDisabled={editDisabled}
+                ctrlHeld={ctrlHeld}
                 dragPos={dragPos}
                 setDragging={setDragging}
                 onDropTool={onDropTool}
@@ -2171,32 +2305,12 @@ export default function LayoutEditor({
                 onCloseDraw={() => applyArea()}
                 onPolygonChange={(polygon) => savePolygon(polygon)}
                 onPolygonPreviewChange={handlePolygonPreview}
+                onPatchFloorPlan={patchFloorPlan}
               />
             )}
             </div>
           </div>
         </div>
-
-        {!view3d ? (
-          <EditorPanelShell
-            side="right"
-            label="Floor plan"
-            collapsed={floorPanelCollapsed}
-            onToggleCollapse={() => setFloorPanelCollapsed((v) => !v)}
-          >
-            <FloorPlanPanel
-              layout={layout}
-              editDisabled={editDisabled}
-              selection={selection}
-              onUploadFloorPlan={uploadFloorPlan}
-              onPatchFloorPlan={patchFloorPlan}
-              onRemoveFloorPlan={removeFloorPlan}
-              onPatchObstacle={(id, body) => patchObstacle(id, body).catch((e) => notifyError(e))}
-              onDeleteObstacle={(id) => deleteObstacle(id).catch((e) => notifyError(e))}
-              onSelectObstacle={(id) => setSelection({ kind: "obstacle", id })}
-            />
-          </EditorPanelShell>
-        ) : null}
       </div>
 
       <PlanogramEditorModal
@@ -2222,6 +2336,22 @@ export default function LayoutEditor({
           setPlanogramEditor(null);
         }}
         onViewIn3d={(id, faceId) => viewShelfIn3d(id, faceId)}
+        onOpenAisleShelfView={(id) => openAisleShelfView(id)}
+      />
+
+      <AisleShelfViewModal
+        open={Boolean(aisleShelfViewShelfId)}
+        shelfId={aisleShelfViewShelfId}
+        layout={layout}
+        products={products}
+        categories={categories}
+        editDisabled={editDisabled}
+        onClose={() => setAisleShelfViewShelfId(null)}
+        onSelectShelf={selectShelfFromAisleView}
+        onOpenPlanogram={(id) => {
+          openPlanogramForShelf(id, "A");
+          setAisleShelfViewShelfId(null);
+        }}
       />
 
       <MissingProductsDialog
@@ -2234,7 +2364,7 @@ export default function LayoutEditor({
         layout={layout}
         products={products}
         onLocateShelf={(shelfId) => {
-          selectShelf(shelfId, "A", { openPlanogram: false });
+          selectShelf(shelfId, "A", { openPlanogram: false, layoutSelect: true });
           setFocus3dRequest((n) => n + 1);
           if (!view3d) frameShelfIds([shelfId]);
         }}

@@ -40,6 +40,16 @@ export function aisleDisplayLabel(aisle) {
   return n != null ? String(n) : aisle?.name || "—";
 }
 
+function canvasFaceLabelFallback(shelf, faceId) {
+  const num = shelf?.displayNumber;
+  if (num != null) {
+    if (shelf?.pairDisplay) return `${shelfUnitLabel(num)}${faceDigit(faceId)}`;
+    if (isPairedShelf(shelf)) return shelfFaceLabel(num, faceId === "B" ? "B" : pairFaceId(shelf));
+    return shelfFaceLabel(num, faceId);
+  }
+  return String(faceDigit(faceId));
+}
+
 export function shelfCanvasFaceLabel(shelf, faceId, aisles, allShelves) {
   if (shelf?.pairDisplay && shelf?.pairShelfIds) {
     const physId = faceId === "B" ? shelf.pairShelfIds.back : shelf.pairShelfIds.front;
@@ -47,11 +57,12 @@ export function shelfCanvasFaceLabel(shelf, faceId, aisles, allShelves) {
     if (phys) {
       const lbl = shelfFaceDisplayLabel(phys, aisles);
       if (lbl) return lbl;
+      return canvasFaceLabelFallback(phys, faceId);
     }
   }
   const lbl = shelfFaceDisplayLabel(shelf, aisles);
   if (lbl) return lbl;
-  return faceDigit(faceId);
+  return canvasFaceLabelFallback(shelf, faceId);
 }
 
 export function displayNumberToLetter(displayNumber) {
@@ -246,38 +257,31 @@ export function mergePairedShelfForCanvas(front, back) {
   };
 }
 
-/** Resolve paired gondola for planogram editor — one UI, two physical shelf records. */
+/** Merchandising face (2D/3D) for a shelf record — gondola halves map from pairRole. */
+export function merchandisingFaceId(shelf, editorFaceId = "A") {
+  if (isPairedShelf(shelf) && !shelf?.pairDisplay) {
+    return shelf.pairRole === "back" ? "B" : "A";
+  }
+  return editorFaceId === "B" ? "B" : "A";
+}
+
+/** Face id for planogram API / segments on this shelf record. */
+export function planogramEditorFaceId(shelf, merchandisingFaceId = "A") {
+  if (isPairedShelf(shelf) && !shelf?.pairDisplay) return "A";
+  return merchandisingFaceId === "B" ? "B" : "A";
+}
+
+/** Resolve shelf for planogram editor — always the clicked physical shelf (aisle-bound). */
 export function resolveGondolaForEditor(layout, shelfId) {
   const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
   const shelf = shelves.find((s) => s.id === shelfId);
   if (!shelf) return null;
 
-  if (!shelf.pairId) {
-    return {
-      mode: "single",
-      shelf: normalizeShelfUI(shelf),
-      physicalShelfId: () => shelfId,
-      apiFaceId: (faceId) => (faceId === "B" ? "B" : "A"),
-    };
-  }
-
-  const front =
-    shelves.find((s) => s.pairId === shelf.pairId && s.pairRole !== "back") || shelf;
-  const back = shelves.find((s) => s.pairId === shelf.pairId && s.pairRole === "back");
-  if (!back) {
-    return {
-      mode: "single",
-      shelf: normalizeShelfUI(shelf),
-      physicalShelfId: () => shelfId,
-      apiFaceId: () => "A",
-    };
-  }
-
   return {
-    mode: "gondola",
-    shelf: mergePairedShelfForCanvas(front, back),
-    physicalShelfId: (faceId) => (faceId === "B" ? back.id : front.id),
-    apiFaceId: () => "A",
+    mode: "single",
+    shelf: normalizeShelfUI(shelf),
+    physicalShelfId: () => shelfId,
+    apiFaceId: (faceId) => planogramEditorFaceId(shelf, faceId),
   };
 }
 

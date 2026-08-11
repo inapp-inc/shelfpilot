@@ -68,10 +68,75 @@ export class LayoutEditorPage {
       { timeout: 120_000 }
     );
     await runBtn.click();
+    // If a native confirm still appears, accept it (confirm stub usually prevents this).
+    this.page.once("dialog", (d) => d.accept().catch(() => {}));
     const res = await responsePromise;
     expect(res.ok(), `autogenerate failed: ${res.status()}`).toBeTruthy();
     await expect(this.page.getByTestId("smart-generate-panel")).toHaveCount(0, { timeout: 30_000 });
     await expect(this.root()).toBeVisible();
+    // Next workflow step: arrangement & volume (acceptance clears on regenerate)
+    await expect(this.page.getByTestId("arrangement-panel")).toBeVisible({ timeout: 30_000 });
+  }
+
+  async expectArrangementPending() {
+    await expect(this.page.getByTestId("arrangement-panel")).toBeVisible();
+    await expect(this.page.getByTestId("arrangement-pending-banner")).toBeVisible();
+    await expect(this.page.getByTestId("arrangement-accept")).toBeEnabled();
+  }
+
+  async expectArrangementKpis() {
+    const total = this.page.getByTestId("arrangement-total-shelves");
+    await expect(total).toBeVisible();
+    const n = Number((await total.innerText()).replace(/,/g, ""));
+    expect(n, "expected shelves after generate/arrange").toBeGreaterThan(0);
+    await expect(this.page.getByTestId("arrangement-row-count")).toBeVisible();
+    await expect(this.page.getByTestId("arrangement-total-volume")).toBeVisible();
+    await expect(this.page.getByTestId("arrangement-layout-summary")).toBeVisible();
+    await expect(this.page.getByTestId("arrangement-max-qty")).toBeVisible();
+  }
+
+  /**
+   * Accept arrangement summary. Defaults to no planogram fill (faster smoke).
+   * @param {{ fillPlanogram?: boolean }} [opts]
+   */
+  async acceptArrangement({ fillPlanogram = false } = {}) {
+    await this.expectArrangementPending();
+    await this.expectArrangementKpis();
+    const fill = this.page.getByTestId("arrangement-fill-on-accept");
+    if (await fill.count()) {
+      if (fillPlanogram) await fill.check();
+      else await fill.uncheck();
+    }
+    const responsePromise = this.page.waitForResponse(
+      (res) => res.url().includes("/arrangement/accept") && res.request().method() === "POST",
+      { timeout: 120_000 }
+    );
+    await this.page.getByTestId("arrangement-accept").click();
+    const res = await responsePromise;
+    expect(res.ok(), `arrangement accept failed: ${res.status()}`).toBeTruthy();
+    await expect(this.page.getByTestId("arrangement-modal")).toHaveCount(0, { timeout: 30_000 });
+    await expect(this.page.getByTestId("arrangement-reopen")).toBeVisible({ timeout: 30_000 });
+  }
+
+  async openArrangementSummary() {
+    await this.page.getByTestId("arrangement-reopen").click();
+    await expect(this.page.getByTestId("arrangement-panel")).toBeVisible();
+  }
+
+  async expectArrangementAcceptedView() {
+    await expect(this.page.getByTestId("arrangement-accepted-banner")).toBeVisible();
+    await this.expectArrangementKpis();
+  }
+
+  async closeArrangementPanel() {
+    const close = this.page.getByTestId("arrangement-close");
+    if (await close.isVisible().catch(() => false)) {
+      await close.click();
+    } else {
+      await this.page.getByTestId("arrangement-done").click();
+    }
+    await expect(this.page.getByTestId("arrangement-modal")).toHaveCount(0);
+    await expect(this.page.getByTestId("arrangement-reopen")).toBeVisible();
   }
 
   async open3d() {

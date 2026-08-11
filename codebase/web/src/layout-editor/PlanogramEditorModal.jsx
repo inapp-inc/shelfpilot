@@ -6,6 +6,7 @@ import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import { filterProductsForShelf } from "./categoryFilter.js";
 import { friendlyError } from "../validationMessages.js";
 import MissingProductsPanel from "./MissingProductsPanel.jsx";
+import SearchableSelect from "../components/SearchableSelect.jsx";
 import ShelfPlanogramConfig from "./ShelfPlanogramConfig.jsx";
 import { MISSING_PRODUCT_MIME, parseMissingProduct } from "./missingProductDrag.js";
 
@@ -14,7 +15,7 @@ const TEMPERATURE_ZONES = {
   chilled: { emoji: "🧊", label: "Chilled" },
   frozen: { emoji: "❄️", label: "Frozen" },
 };
-import { isDoubleSided, normalizeShelfUI, resolveGondolaForEditor, shelfCanvasFaceLabel, shelfFaceDisplayLabel, shelfDisplayLabel } from "./shelfFaces.js";
+import { isDoubleSided, isPairedShelf, merchandisingFaceId, normalizeShelfUI, planogramEditorFaceId, resolveGondolaForEditor, shelfCanvasFaceLabel, shelfFaceDisplayLabel, shelfDisplayLabel } from "./shelfFaces.js";
 import {
   buildEqualSegmentsClient,
   defaultSegmentId,
@@ -29,6 +30,7 @@ import {
   shelfLevels,
 } from "./planogramSegments.js";
 import { formatInchesFromMeters, formatDimensionTripleInches } from "../units.js";
+import { levelClearanceMeters } from "../scene3dDimensions.js";
 import { catalogProductDimensionsInches } from "../catalog/productDimensions.js";
 import { resolveCategoryStorageType, storageTypeLabel } from "../storageType.js";
 import { weightWarningMessage } from "../shelfLoad.js";
@@ -38,6 +40,18 @@ function activeFace(shelf, faceId) {
     return { id: "A", categoryId: shelf?.categoryId, planogram: shelf?.planogram || [] };
   }
   return shelf.faces.find((f) => f.id === faceId) || shelf.faces[0];
+}
+
+/** Tooltip for the left gutter height — board position, not capacity. */
+function levelGutterTooltip(level, levels, shelfHeightMeters) {
+  if (level?.heightFromFloorMeters == null) return "Shelf level";
+  const fromFloor = formatInchesFromMeters(level.heightFromFloorMeters);
+  const clearAbove = formatInchesFromMeters(levelClearanceMeters(level, levels, shelfHeightMeters));
+  return (
+    `Height from floor: ${fromFloor}\n` +
+    `Where the Level ${(level.levelIndex ?? 0) + 1} shelf board sits (not product capacity).\n` +
+    `Clear space above this board for products: about ${clearAbove}.`
+  );
 }
 
 /** Visual level × bay planogram editor with draggable dividers. */
@@ -61,6 +75,7 @@ export default function PlanogramEditorModal({
   onMapShelf,
   onDeleteShelf,
   onViewIn3d,
+  onOpenAisleShelfView,
 }) {
   const [faceId, setFaceId] = useState(initialFaceId);
   const [addCell, setAddCell] = useState(null);
@@ -68,6 +83,7 @@ export default function PlanogramEditorModal({
   const [productId, setProductId] = useState("");
   const [facings, setFacings] = useState("");
   const [depthFacings, setDepthFacings] = useState("");
+  const [stackLayers, setStackLayers] = useState("");
   const [preview, setPreview] = useState(null);
   const [dragDivider, setDragDivider] = useState(null);
   const [draftSegmentsByLevel, setDraftSegmentsByLevel] = useState({});
@@ -75,7 +91,9 @@ export default function PlanogramEditorModal({
   const [dismissedFillWarning, setDismissedFillWarning] = useState(false);
   const [cellDropTarget, setCellDropTarget] = useState(null);
   const [sidebarTab, setSidebarTab] = useState("missing");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const gridRef = useRef(null);
+  const addPanelRef = useRef(null);
   const draftRef = useRef(null);
   const dragLevelRef = useRef(null);
 
@@ -86,12 +104,12 @@ export default function PlanogramEditorModal({
   const shelfRaw = useMemo(() => {
     if (!gondolaCtx) return null;
     const shelves = layout?.shelves || layout?.fixtures || [];
-    return shelves.find((s) => s.id === gondolaCtx.physicalShelfId(faceId)) || shelves.find((s) => s.id === shelfId);
-  }, [gondolaCtx, layout, shelfId, faceId]);
+    return shelves.find((s) => s.id === shelfId) || null;
+  }, [gondolaCtx, layout, shelfId]);
   const shelf = gondolaCtx?.shelf ?? (shelfRaw ? normalizeShelfUI(shelfRaw) : null);
-  const dualFace = shelf ? isDoubleSided(shelf) || gondolaCtx?.mode === "gondola" : false;
-  const activePhysicalId = gondolaCtx ? gondolaCtx.physicalShelfId(faceId) : shelfId;
-  const activeApiFaceId = gondolaCtx ? gondolaCtx.apiFaceId(faceId) : faceId;
+  const dualFace = shelf ? isDoubleSided(shelf) : false;
+  const activePhysicalId = shelfId;
+  const activeApiFaceId = shelfRaw ? planogramEditorFaceId(shelfRaw, faceId) : faceId;
   const face = shelf ? activeFace(shelf, faceId) : null;
   const faceCategory = face?.categoryId || null;
   const levels = shelf ? shelfLevels(shelf) : [];
@@ -108,25 +126,33 @@ export default function PlanogramEditorModal({
   );
   const typeLabel = (FIXTURE_TYPES[shelf?.type] || FIXTURE_TYPES.shelf)?.label || shelf?.type || "Shelf";
   const productList = faceCategory ? filterProductsForShelf(products, faceCategory, categories) : [];
+  const productSelectOptions = useMemo(
+    () =>
+      productList.map((p) => ({
+        value: p.id,
+        label: `${p.name || p.id}${p.sku ? ` (${p.sku})` : ""}`,
+        searchText: [p.sku, p.id, p.name].filter(Boolean).join(" "),
+      })),
+    [productList]
+  );
   const planogram = face?.planogram || [];
 
-  const missingForFace = useMemo(() => {
-    if (!faceCategory || !planogramCoverage?.missingProducts?.length) return [];
-    return filterProductsForShelf(planogramCoverage.missingProducts, faceCategory, categories);
-  }, [faceCategory, planogramCoverage?.missingProducts, categories]);
-
-  const faceCoverage = useMemo(() => {
-    if (!planogramCoverage) return null;
-    return {
-      ...planogramCoverage,
-      missingProducts: missingForFace,
-      missingCount: missingForFace.length,
-    };
-  }, [planogramCoverage, missingForFace]);
+  const missingCount =
+    planogramCoverage?.missingCount ??
+    planogramCoverage?.missingProducts?.length ??
+    0;
 
   useEffect(() => {
     if (open) {
-      setFaceId(initialFaceId);
+      const shelves = layout?.shelves || layout?.fixtures || [];
+      const phys = shelves.find((s) => s.id === shelfId);
+      const editorFace =
+        phys && isPairedShelf(phys) && !phys.pairDisplay
+          ? "A"
+          : initialFaceId === "B"
+            ? "B"
+            : "A";
+      setFaceId(editorFace);
       setAddCell(null);
       setEditPlacement(null);
       setDraftSegmentsByLevel({});
@@ -134,7 +160,7 @@ export default function PlanogramEditorModal({
       setDismissedFillWarning(false);
       setSidebarTab("missing");
     }
-  }, [open, shelfId, initialFaceId]);
+  }, [open, shelfId, initialFaceId, layout?.shelves, layout?.fixtures]);
 
   useEffect(() => {
     if (levelsDesc.length) {
@@ -282,6 +308,7 @@ export default function PlanogramEditorModal({
       faceId: activeApiFaceId,
       facings: facings !== "" ? Number(facings) : undefined,
       depthFacings: depthFacings !== "" ? Number(depthFacings) : undefined,
+      stackLayers: stackLayers !== "" ? Number(stackLayers) : undefined,
     };
     if (segmentId && segmentId !== "implicit") body.segmentId = segmentId;
     if (replaceId) {
@@ -313,8 +340,8 @@ export default function PlanogramEditorModal({
     if (!productIdToPlace) return;
 
     const existing = placementInCell(planogram, { levelIndex, segmentId, shelf, faceId });
-    if (existing) {
-      toast?.("This position already has a product — remove it first or click to edit.", { type: "warning" });
+    if (existing && existing.productId !== productIdToPlace) {
+      toast?.("Another product occupies this position — remove it first or click to edit.", { type: "warning" });
       return;
     }
 
@@ -338,14 +365,21 @@ export default function PlanogramEditorModal({
         return;
       }
 
-      const body = {
-        productId: productIdToPlace,
-        levelIndex,
-        faceId: activeApiFaceId,
-        facings: prev.maxFacings,
-        depthFacings: prev.maxDepthFacings > 0 ? prev.maxDepthFacings : undefined,
-      };
-      if (segmentIdResolved && segmentIdResolved !== "implicit") body.segmentId = segmentIdResolved;
+      const body = existing
+        ? {
+            productId: productIdToPlace,
+            levelIndex,
+            faceId: activeApiFaceId,
+            ...(segmentIdResolved && segmentIdResolved !== "implicit" ? { segmentId: segmentIdResolved } : {}),
+          }
+        : {
+            productId: productIdToPlace,
+            levelIndex,
+            faceId: activeApiFaceId,
+            facings: prev.maxFacings,
+            depthFacings: prev.maxDepthFacings > 0 ? prev.maxDepthFacings : undefined,
+            ...(segmentIdResolved && segmentIdResolved !== "implicit" ? { segmentId: segmentIdResolved } : {}),
+          };
 
       const updated = await api(`/layouts/${layout.id}/shelves/${activePhysicalId}/planogram`, {
         token,
@@ -355,16 +389,28 @@ export default function PlanogramEditorModal({
       onLayoutUpdated(updated);
       await onRefreshCoverage?.();
       const name = draggedProduct.name || productIdToPlace;
+      const stacked = Boolean(updated.stacked);
+      const wide = existing?.facings ?? prev.maxFacings ?? 1;
+      const deep = existing?.depthFacings ?? prev.maxDepthFacings ?? 1;
+      const high = updated.stackLayers ?? existing?.stackLayers ?? 1;
+      const units = wide * deep * high;
       const overload = weightWarningMessage(updated);
       if (overload) toast?.(overload, { type: "warning" });
-      else toast?.(`Placed ${name} on ${levelDisplayLabel(levelIndex)}`, { type: "success" });
+      else if (stacked) {
+        toast?.(
+          `Stacked ${name} — ${high} high (${units} units on ${levelDisplayLabel(levelIndex)})`,
+          { type: "success" }
+        );
+      } else {
+        toast?.(`Placed ${name} on ${levelDisplayLabel(levelIndex)}`, { type: "success" });
+      }
     } catch (err) {
       toast?.(friendlyError(err, "Could not place product in this position."), { type: "error" });
     }
   }
 
-  function handleCellDragOver(e, levelIndex, segmentId, hasPlacement) {
-    if (editDisabled || hasPlacement || !faceCategory) return;
+  function handleCellDragOver(e, levelIndex, segmentId) {
+    if (editDisabled || !faceCategory) return;
     if (!e.dataTransfer.types.includes(MISSING_PRODUCT_MIME)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -400,6 +446,7 @@ export default function PlanogramEditorModal({
       setProductId(existing.productId);
       setFacings(String(existing.facings));
       setDepthFacings(String(existing.depthFacings ?? 1));
+      setStackLayers(String(existing.stackLayers ?? 1));
       setAddCell(null);
       return;
     }
@@ -408,6 +455,7 @@ export default function PlanogramEditorModal({
     setProductId("");
     setFacings("");
     setDepthFacings("");
+    setStackLayers("");
   }
 
   async function removePlacement(placementId) {
@@ -466,17 +514,25 @@ export default function PlanogramEditorModal({
         : "—";
 
   const faceLabel =
-    shelf && layout
-      ? shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves) || planogramTitle
+    shelfRaw && layout
+      ? shelfFaceDisplayLabel(shelfRaw, layout.aisles) ||
+        shelfCanvasFaceLabel(shelf, faceId, layout.aisles, layout.shelves) ||
+        planogramTitle
       : planogramTitle;
   const heightM = Number(shelfRaw?.heightMeters ?? shelf?.heightMeters) || 2;
   const depthM = Number(shelfRaw?.depthMeters ?? shelf?.depthMeters) || 0.6;
   const zone = TEMPERATURE_ZONES[shelfRaw?.temperatureZone || "ambient"] || TEMPERATURE_ZONES.ambient;
   const mapTarget = { shelfId: activePhysicalId, faceId: activeApiFaceId };
+  const pickerOpen = addCell || editPlacement;
+
+  useEffect(() => {
+    if (!open || !pickerOpen || !addPanelRef.current) return;
+    requestAnimationFrame(() => {
+      addPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [open, pickerOpen, addCell?.levelIndex, addCell?.segmentId, editPlacement?.id]);
 
   if (!open || !shelf) return null;
-
-  const pickerOpen = addCell || editPlacement;
 
   return (
     <div
@@ -516,10 +572,10 @@ export default function PlanogramEditorModal({
             {dualFace ? (
               <div className="merch-face-toggle">
                 <button type="button" className={faceId === "A" ? "active" : ""} onClick={() => setFaceId("A")}>
-                  {shelfCanvasFaceLabel(shelf, "A", layout?.aisles, layout?.shelves)}
+                  Face A
                 </button>
                 <button type="button" className={faceId === "B" ? "active" : ""} onClick={() => setFaceId("B")}>
-                  {shelfCanvasFaceLabel(shelf, "B", layout?.aisles, layout?.shelves)}
+                  Face B
                 </button>
               </div>
             ) : null}
@@ -527,9 +583,19 @@ export default function PlanogramEditorModal({
               <button
                 type="button"
                 className="btn-primary planogram-view-3d-btn"
-                onClick={() => onViewIn3d(activePhysicalId, faceId)}
+                onClick={() => onViewIn3d(activePhysicalId, merchandisingFaceId(shelfRaw, faceId))}
               >
                 View in 3D
+              </button>
+            ) : null}
+            {onOpenAisleShelfView && shelfRaw?.aisleId ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid="planogram-aisle-shelf-view"
+                onClick={() => onOpenAisleShelfView(activePhysicalId)}
+              >
+                Aisle shelf view
               </button>
             ) : null}
             <button type="button" className="btn-secondary planogram-close-btn" onClick={() => onClose?.()}>
@@ -549,7 +615,7 @@ export default function PlanogramEditorModal({
         ) : null}
 
         <div className="planogram-editor-body">
-          <div className="planogram-editor-main">
+          <div className={`planogram-editor-main${pickerOpen ? " planogram-editor-main--picker-open" : ""}`}>
         <div className="planogram-editor-toolbar">
           <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>
             Positions · {levelDisplayLabel(selectedLevelIndex)}
@@ -589,8 +655,15 @@ export default function PlanogramEditorModal({
                 >
                   <span className="mono">{levelDisplayLabel(levelIndex)}</span>
                   {lv.heightFromFloorMeters != null ? (
-                    <span className="muted" style={{ fontSize: 10 }}>
-                      {formatInchesFromMeters(lv.heightFromFloorMeters)}
+                    <span
+                      className="planogram-level-gutter-height muted"
+                      title={levelGutterTooltip(lv, levels, heightM)}
+                      aria-label={levelGutterTooltip(lv, levels, heightM).replace(/\n/g, ". ")}
+                    >
+                      <span className="mono planogram-level-gutter-height-value">
+                        {formatInchesFromMeters(lv.heightFromFloorMeters)}
+                      </span>
+                      <span className="planogram-level-gutter-height-label">from floor</span>
                     </span>
                   ) : null}
                 </div>
@@ -643,7 +716,7 @@ export default function PlanogramEditorModal({
                             setSelectedLevelIndex(levelIndex);
                             handleAddToCell(levelIndex, seg.id);
                           }}
-                          onDragOver={(e) => handleCellDragOver(e, levelIndex, seg.id, Boolean(placement))}
+                          onDragOver={(e) => handleCellDragOver(e, levelIndex, seg.id)}
                           onDragLeave={() => setCellDropTarget(null)}
                           onDrop={(e) => handleCellDrop(e, levelIndex, seg.id)}
                         >
@@ -660,6 +733,10 @@ export default function PlanogramEditorModal({
                               ) : null}
                               <div className="mono planogram-product-count">
                                 {placement.facings} wide × {placement.depthFacings ?? 1} deep
+                                {(placement.stackLayers ?? 1) > 1 ? ` × ${placement.stackLayers} high` : ""}
+                                {" · "}
+                                {(placement.facings || 0) * (placement.depthFacings ?? 1) * (placement.stackLayers ?? 1)}{" "}
+                                units
                               </div>
                               <div className="planogram-fill-bar">
                                 <div className="planogram-fill-bar-inner" style={{ width: `${fillPct}%` }} />
@@ -700,7 +777,7 @@ export default function PlanogramEditorModal({
         </div>
 
         {pickerOpen ? (
-          <div className="planogram-add-panel">
+          <div className="planogram-add-panel" ref={addPanelRef}>
             <div className="section-label">
               {editPlacement ? "Edit placement" : `Add · Level ${addCell?.levelIndex}`}
             </div>
@@ -712,18 +789,16 @@ export default function PlanogramEditorModal({
               ) : null}
               <label>
                 Product
-                <select
+                <SearchableSelect
                   disabled={editDisabled || !!editPlacement}
                   value={productId}
-                  onChange={(e) => setProductId(e.target.value)}
-                >
-                  <option value="">Select product</option>
-                  {productList.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.sku ? `(${p.sku})` : ""}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setProductId}
+                  options={productSelectOptions}
+                  noneLabel="Select product"
+                  placeholder="Type to search…"
+                  emptyLabel="No matching products"
+                  className="planogram-product-search"
+                />
                 {!productList.length && faceCategory ? (
                   <span className="muted" style={{ fontSize: 11 }}>
                     No matching products — set storage type on products in Catalog to match this category.
@@ -752,6 +827,17 @@ export default function PlanogramEditorModal({
                   onChange={(e) => setDepthFacings(e.target.value)}
                 />
               </label>
+              <label>
+                Stack (high)
+                <input
+                  className="mono"
+                  type="number"
+                  min="1"
+                  disabled={editDisabled || !preview}
+                  value={stackLayers}
+                  onChange={(e) => setStackLayers(e.target.value)}
+                />
+              </label>
             </div>
             {productId ? (() => {
               const selected = productList.find((p) => p.id === productId) || products.find((p) => p.id === productId);
@@ -766,7 +852,7 @@ export default function PlanogramEditorModal({
             })() : null}
             {preview ? (
               <div className="mono muted" style={{ fontSize: 11.5 }}>
-                Max {preview.maxFacings} wide · {preview.maxDepthFacings ?? 1} deep
+                Max {preview.maxFacings} wide · {preview.maxDepthFacings ?? 1} deep · {preview.maxStackLayers ?? 1} high
               </div>
             ) : null}
             <div className="planogram-add-actions">
@@ -809,28 +895,75 @@ export default function PlanogramEditorModal({
         </footer>
           </div>
 
-          <aside className="planogram-editor-sidebar" aria-label="Shelf settings and missing products">
+          <aside
+            className={`planogram-editor-sidebar${sidebarCollapsed ? " planogram-editor-sidebar--collapsed" : ""}`}
+            aria-label="Shelf settings and missing products"
+          >
+            <button
+              type="button"
+              className="planogram-sidebar-collapse-btn"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              aria-label={sidebarCollapsed ? "Expand side panel" : "Collapse side panel"}
+              title={sidebarCollapsed ? "Expand panel" : "Collapse panel — more room for planogram"}
+            >
+              {sidebarCollapsed ? "‹" : "›"}
+            </button>
+
+            {sidebarCollapsed ? (
+              <div className="planogram-sidebar-rail">
+                <button
+                  type="button"
+                  className={`planogram-sidebar-rail-btn${sidebarTab === "settings" ? " active" : ""}`}
+                  title="Shelf settings"
+                  onClick={() => {
+                    setSidebarTab("settings");
+                    setSidebarCollapsed(false);
+                  }}
+                >
+                  <span aria-hidden>⚙</span>
+                  <span className="planogram-sidebar-rail-label">Setup</span>
+                </button>
+                <button
+                  type="button"
+                  className={`planogram-sidebar-rail-btn${sidebarTab === "missing" ? " active" : ""}`}
+                  title="Missing products"
+                  onClick={() => {
+                    setSidebarTab("missing");
+                    setSidebarCollapsed(false);
+                  }}
+                >
+                  <span aria-hidden>📦</span>
+                  <span className="planogram-sidebar-rail-label">Missing</span>
+                  {missingCount > 0 ? (
+                    <span className="planogram-sidebar-rail-badge">{missingCount}</span>
+                  ) : null}
+                </button>
+              </div>
+            ) : (
+              <>
             <nav className="planogram-sidebar-tabs" aria-label="Side panel tabs">
               <button
                 type="button"
                 className={`planogram-sidebar-tab${sidebarTab === "settings" ? " active" : ""}`}
                 onClick={() => setSidebarTab("settings")}
               >
-                Shelf settings
+                Settings
               </button>
               <button
                 type="button"
                 className={`planogram-sidebar-tab${sidebarTab === "missing" ? " active" : ""}`}
                 onClick={() => setSidebarTab("missing")}
               >
-                Missing products
-                {missingForFace.length > 0 ? (
-                  <span className="planogram-sidebar-tab-badge">{missingForFace.length}</span>
+                Missing
+                {missingCount > 0 ? (
+                  <span className="planogram-sidebar-tab-badge">{missingCount}</span>
                 ) : null}
               </button>
             </nav>
 
-            <div className="planogram-sidebar-panel">
+            <div
+              className={`planogram-sidebar-panel${sidebarTab === "missing" ? " planogram-sidebar-panel--missing" : " planogram-sidebar-panel--settings"}`}
+            >
               {sidebarTab === "settings" ? (
                 <ShelfPlanogramConfig
                   shelfRaw={shelfRaw}
@@ -847,55 +980,37 @@ export default function PlanogramEditorModal({
                   onDeleteShelf={onDeleteShelf}
                   mapTarget={mapTarget}
                   hideTitle
+                  compact
                 />
               ) : (
                 <>
-                  <div className="planogram-sidebar-toolbar">
-                    <p className="planogram-sidebar-toolbar-hint">
-                      Drag products onto empty positions in the planogram.
-                    </p>
-                    {onRefreshCoverage ? (
-                      <button
-                        type="button"
-                        className="btn-secondary planogram-sidebar-refresh"
-                        onClick={() => onRefreshCoverage()}
-                        disabled={coverageLoading}
-                      >
-                        {coverageLoading ? "…" : "Refresh"}
-                      </button>
-                    ) : null}
-                  </div>
                   {!faceCategory ? (
-                    <div className="planogram-sidebar-empty">
-                      <p className="planogram-sidebar-empty-title">No category assigned</p>
-                      <p className="muted planogram-sidebar-hint">
-                        Set a category in Shelf settings to filter missing products for this face.
-                      </p>
-                      <button
-                        type="button"
-                        className="btn-secondary planogram-sidebar-empty-btn"
-                        onClick={() => setSidebarTab("settings")}
-                      >
-                        Open shelf settings
-                      </button>
-                    </div>
-                  ) : (
-                    <MissingProductsPanel
-                      coverage={faceCoverage}
-                      loading={coverageLoading}
-                      categories={categories}
-                      alwaysShow
-                      embedded
-                      variant="sidebar"
-                      maxProductsPerCategory={null}
-                      draggable={!editDisabled}
-                      editDisabled={editDisabled}
-                      dragHint="Drop on an empty position at left."
-                    />
-                  )}
+                    <AlertBanner variant="warning" style={{ margin: "0 0 6px", flexShrink: 0 }}>
+                      Assign a shelf category in <strong>Settings</strong> to place products on this shelf.
+                    </AlertBanner>
+                  ) : null}
+                  <MissingProductsPanel
+                    coverage={planogramCoverage}
+                    loading={coverageLoading}
+                    categories={categories}
+                    alwaysShow
+                    embedded
+                    variant="sidebar"
+                    compactSidebar
+                    hierarchical
+                    showCategoryFilter
+                    onRefresh={onRefreshCoverage}
+                    refreshLoading={coverageLoading}
+                    maxProductsPerCategory={null}
+                    draggable={!editDisabled && !!faceCategory}
+                    editDisabled={editDisabled || !faceCategory}
+                    hideDragHint
+                  />
                 </>
               )}
             </div>
+              </>
+            )}
           </aside>
         </div>
       </div>

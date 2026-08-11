@@ -3,33 +3,23 @@ import { catalogProductDimensionsInches } from "../catalog/productDimensions.js"
 import {
   groupPlanogramByLevel,
   normalizeShelfUI,
-  resolveGondolaForEditor,
   shelfCanvasFaceLabel,
   shelfFaceDisplayLabel,
+  planogramEditorFaceId,
 } from "./shelfFaces.js";
 
 /** Planogram rows for the hovered shelf face only — no cross-face bleed. */
 function planogramForHover(layout, hover) {
   const faceId = hover.faceId || "A";
   const shelves = layout.shelves || layout.fixtures || [];
-
-  if (hover.mergedShelf?.faces?.length) {
-    const face = hover.mergedShelf.faces.find((f) => f.id === faceId);
-    return (face?.planogram || []).filter((p) => p?.productId);
-  }
-
-  const gondola = resolveGondolaForEditor(layout, hover.shelfId);
-  if (gondola?.mode === "gondola") {
-    const face = gondola.shelf.faces?.find((f) => f.id === faceId);
-    return (face?.planogram || []).filter((p) => p?.productId);
-  }
-
   const raw = shelves.find((s) => s.id === hover.shelfId);
   if (!raw) return [];
+
+  const storageFaceId = planogramEditorFaceId(raw, faceId);
   const shelf = normalizeShelfUI(raw);
-  const face = shelf.faces?.find((f) => f.id === faceId);
+  const face = shelf.faces?.find((f) => f.id === storageFaceId);
   if (face) return (face.planogram || []).filter((p) => p?.productId);
-  if (faceId === "A" && !shelf.faces?.length) {
+  if (storageFaceId === "A" && !shelf.faces?.length) {
     return (shelf.planogram || []).filter((p) => p?.productId);
   }
   return [];
@@ -38,23 +28,13 @@ function planogramForHover(layout, hover) {
 function categoryForHover(layout, hover) {
   const faceId = hover.faceId || "A";
   const shelves = layout.shelves || layout.fixtures || [];
-
-  if (hover.mergedShelf?.faces?.length) {
-    const face = hover.mergedShelf.faces.find((f) => f.id === faceId);
-    return face?.categoryId ?? null;
-  }
-
-  const gondola = resolveGondolaForEditor(layout, hover.shelfId);
-  if (gondola?.mode === "gondola") {
-    const face = gondola.shelf.faces?.find((f) => f.id === faceId);
-    return face?.categoryId ?? null;
-  }
-
   const raw = shelves.find((s) => s.id === hover.shelfId);
   if (!raw) return null;
+
+  const storageFaceId = planogramEditorFaceId(raw, faceId);
   const shelf = normalizeShelfUI(raw);
-  const face = shelf.faces?.find((f) => f.id === faceId);
-  return face?.categoryId ?? (faceId === "A" ? shelf.categoryId : null) ?? null;
+  const face = shelf.faces?.find((f) => f.id === storageFaceId);
+  return face?.categoryId ?? (storageFaceId === "A" ? shelf.categoryId : null) ?? null;
 }
 
 function labelForHover(layout, hover) {
@@ -62,17 +42,12 @@ function labelForHover(layout, hover) {
   const faceId = hover.faceId || "A";
   const phys = shelves.find((s) => s.id === hover.shelfId);
 
-  if (hover.mergedShelf) {
+  if (hover.mergedShelf && phys) {
     return (
       shelfCanvasFaceLabel(hover.mergedShelf, faceId, layout.aisles, shelves) ||
       shelfFaceDisplayLabel(phys, layout.aisles) ||
       "Shelf"
     );
-  }
-
-  const gondola = resolveGondolaForEditor(layout, hover.shelfId);
-  if (gondola?.mode === "gondola") {
-    return shelfCanvasFaceLabel(gondola.shelf, faceId, layout.aisles, shelves) || "Shelf";
   }
 
   return shelfFaceDisplayLabel(phys, layout.aisles) || shelfCanvasFaceLabel(phys, faceId, layout.aisles, shelves) || "Shelf";

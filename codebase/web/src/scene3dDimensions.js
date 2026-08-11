@@ -5,6 +5,7 @@
 import { shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb } from "./layout-editor/polygonCanvas.js";
 import { normalizeShelfUI } from "./layout-editor/shelfFaces.js";
 import { productDimensions as catalogProductDimensions } from "./productCatalog.js";
+import { facingWidthInSlot, PRODUCT_LATERAL_BUFFER_TOTAL_M } from "../../shared/productBuffer.mjs";
 
 import { formatLengthFromMeters } from "./units.js";
 
@@ -35,17 +36,14 @@ export function shelf3dLocalBox(shelf, layout) {
 
   if (f.pairDisplay && f.pairShelfIds?.front) {
     const front = shelves.find((s) => s.id === f.pairShelfIds.front) || f;
-    const back = shelves.find((s) => s.id === f.pairShelfIds.back);
     const local = shelfLocalMeters(front);
-    const backD = back ? shelfLocalMeters(back).d : local.d;
-    // One mesh spans both gondola halves so Face A and Face B sit on opposite aisles.
-    const totalDepth = local.d + backD;
+    // Front/back share one floor footprint — both faces sit back-to-back inside local.d.
     return {
       widthMeters: local.w,
-      depthMeters: totalDepth,
+      depthMeters: local.d,
       heightMeters: Number(front.heightMeters ?? f.heightMeters) || 2,
       merchWidthMeters: local.w,
-      faceDepthMeters: local.d,
+      faceDepthMeters: local.d / 2,
       originX: Number(front.x ?? f.x) || 0,
       originZ: Number(front.y ?? f.y) || 0,
       rotationRad: rotationRad(front),
@@ -64,6 +62,51 @@ export function shelf3dLocalBox(shelf, layout) {
     originZ: Number(f.y ?? f.canvasOriginY) || 0,
     rotationRad: rotationRad(f),
     isGondola: Boolean(f.pairDisplay),
+  };
+}
+
+/** World XZ of the shopper-facing side for the selected merchandising face. */
+export function shelfFaceWorldFocus(rawShelf, layout, { physicalShelfId = null, faceId = "A" } = {}) {
+  const base = shelfWorldFocus(rawShelf, layout, null);
+  const activeFace = faceId === "B" ? "B" : "A";
+  const box = shelf3dLocalBox(rawShelf, layout);
+  const rot = base.rot || 0;
+  const dual = base.dual;
+  const w = box.widthMeters;
+  const d = box.depthMeters;
+  const faceDepth = Math.max(0.15, Number(box.faceDepthMeters) || (dual ? d / 2 : d));
+  const originX = box.originX;
+  const originZ = box.originZ;
+
+  const ringZ = dual
+    ? activeFace === "B"
+      ? d - faceDepth * 0.35
+      : faceDepth * 0.35
+    : d * 0.42;
+  const localX = w / 2;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+  const x = originX + localX * cos - ringZ * sin;
+  const z = originZ + localX * sin + ringZ * cos;
+
+  const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
+  let aisleId = null;
+  if (physicalShelfId) {
+    aisleId = shelves.find((s) => s.id === physicalShelfId)?.aisleId || null;
+  }
+  if (!aisleId && rawShelf?.pairDisplay) {
+    aisleId = activeFace === "B" ? rawShelf.rearAisleId : rawShelf.facingAisleId;
+  }
+  if (!aisleId) aisleId = rawShelf?.aisleId || null;
+
+  return {
+    ...base,
+    x,
+    z,
+    activeFace,
+    faceDepth,
+    aisleId,
+    physicalShelfId: physicalShelfId || null,
   };
 }
 
@@ -108,7 +151,10 @@ export function levelClearanceMeters(level, levels, shelfHeightMeters) {
   const idx = sorted.findIndex((l) => Number(l.levelIndex) === Number(level?.levelIndex));
   const next = idx >= 0 ? sorted[idx + 1] : null;
   const ceiling = next ? Number(next.heightFromFloorMeters) : Number(shelfHeightMeters) || 2;
-  return Math.max(0.12, ceiling - floorY - 0.035);
+  let gap = Math.max(0.12, ceiling - floorY - 0.035);
+  const cap = Number(level?.clearanceMeters);
+  if (Number.isFinite(cap) && cap > 0) gap = Math.min(gap, cap);
+  return gap;
 }
 
 /** Product facing size from catalog dimensions and bay slot (matches planogram math). */
@@ -121,10 +167,11 @@ export function productFacingSize(product, slotWidthMeters, levelClearanceMeters
   const catalogW = Number.isFinite(dims.w) && dims.w > 0 && dims.w < 2 ? dims.w : 0.12;
   const catalogH = Number.isFinite(dims.h) && dims.h > 0 && dims.h < 2.5 ? dims.h : 0.2;
   const catalogD = Number.isFinite(dims.d) && dims.d > 0 && dims.d < 1.5 ? dims.d : Math.min(catalogW, 0.12);
-  const facingW = Math.min(slotW * 0.98, catalogW);
+  const facingW = Math.max(0.05, facingWidthInSlot(slotW, catalogW));
   const facingH = Math.min(catalogH, clearance * 0.95);
   // One unit must leave room for depth stacking — never claim ~90% of the whole face depth.
-  const facingD = Math.min(catalogD, shelfD * 0.42);
+  const depthSlot = Math.max(0.06, shelfD * 0.42);
+  const facingD = Math.max(0.04, Math.min(catalogD, depthSlot - PRODUCT_LATERAL_BUFFER_TOTAL_M));
   return {
     w: Math.max(0.05, facingW),
     h: Math.max(0.06, facingH),

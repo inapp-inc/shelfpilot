@@ -37,3 +37,28 @@ test("bindShelvesToAisles assigns aisleId on single shelves", () => {
   bindShelvesToAisles(shelves, aisles, RECT);
   assert.ok(shelves.some((s) => s.aisleId));
 });
+
+test("face-derived aisles bind most gondola fronts on a hypermarket floor", () => {
+  const layout = {
+    widthMeters: 23.1,
+    depthMeters: 15,
+    shape: "polygon",
+    polygon: [
+      { x: 0, y: 0 },
+      { x: 23.1, y: 0 },
+      { x: 23.1, y: 15 },
+      { x: 0, y: 15 },
+    ],
+  };
+  const { aisles, shelves } = packAislesAndShelves(layout, {
+    orientation: "horizontal",
+    minAisleWidthMeters: 1.5,
+    compactMode: true,
+    fillRemaining: true,
+    shelfTemplate: { type: "gondola", usableWidthMeters: 1.8, depthMeters: 0.9, defaultLevels: 3 },
+  });
+  const fronts = shelves.filter((s) => s.pairRole !== "back");
+  const bound = fronts.filter((s) => s.aisleId).length;
+  assert.ok(aisles.length >= 2, "walk corridors should render");
+  assert.ok(bound / fronts.length >= 0.95, `expected ≥95% fronts bound (${bound}/${fronts.length})`);
+});

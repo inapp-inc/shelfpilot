@@ -19,6 +19,7 @@ RUN echo "cachebust=$CACHEBUST"
 # Copy source last so edits invalidate only the build layer (not npm install).
 COPY web/index.html web/vite.config.js web/nginx.conf ./web/
 COPY web/public ./web/public
+COPY shared ./shared
 COPY web/src ./web/src
 RUN npm run build -w web
 

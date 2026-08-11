@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ShelfGotoInput from "./ShelfGotoInput.jsx";
 
-/** Single compact strip above the canvas — dimensions, navigation, zoom. */
+/** Single compact strip above the canvas — dimensions, capacity, navigation, zoom. */
 export default function EditorCanvasBar({
   view3d,
   editDisabled,
@@ -25,9 +25,13 @@ export default function EditorCanvasBar({
   onGoToShelf,
   zoomCategories,
   onCategoryZoom,
-  maxFixtures,
+  capacity = null,
   onGrowStore,
   showShelfLabelHint = false,
+  layoutHasShelves = false,
+  arrangementAccepted = false,
+  onOpenArrangement,
+  ctrlHeld = false,
 }) {
   const [dimsOpen, setDimsOpen] = useState(false);
 
@@ -41,6 +45,10 @@ export default function EditorCanvasBar({
     );
   }
 
+  const ready = Boolean(capacity?.ready);
+  const areaLabel = capacity?.areaLabel || "—";
+  const maxShelves = capacity?.maxShelves;
+
   return (
     <div className="editor-canvas-bar">
       <div className="editor-canvas-bar-left">
@@ -50,7 +58,7 @@ export default function EditorCanvasBar({
           onClick={() => setDimsOpen((v) => !v)}
           title="Store & fixture dimensions"
         >
-          📐 Size
+          Size
         </button>
         {dimsOpen ? (
           <div className="editor-dims-inline">
@@ -121,6 +129,33 @@ export default function EditorCanvasBar({
             ) : null}
           </div>
         ) : null}
+
+        <div
+          className={`editor-capacity-strip${ready ? " is-ready" : ""}`}
+          data-testid="editor-capacity-strip"
+          title={
+            ready
+              ? "Drawn fixture area × Store Master shelf templates (≈65% after aisles)"
+              : "Configure Store Master shelf types and draw the fixture area to see capacity"
+          }
+        >
+          <span className="editor-capacity-item">
+            <span className="editor-capacity-label">Total space</span>
+            <strong className="mono" data-testid="editor-capacity-space">
+              {ready ? areaLabel : "—"}
+            </strong>
+          </span>
+          <span className="editor-capacity-sep" aria-hidden>
+            ·
+          </span>
+          <span className="editor-capacity-item">
+            <span className="editor-capacity-label">Shelves fit</span>
+            <strong className="mono" data-testid="editor-capacity-shelves">
+              {ready && maxShelves != null ? `~${maxShelves}` : "—"}
+            </strong>
+          </span>
+        </div>
+
         <ShelfGotoInput
           options={shelfLabelOptions}
           onGo={onGoToShelf}
@@ -148,17 +183,39 @@ export default function EditorCanvasBar({
             ))}
           </select>
         ) : null}
+        {ctrlHeld ? (
+          <span className="editor-canvas-layout-mode-hint muted" data-testid="shelf-layout-mode-hint">
+            Ctrl held — click a shelf or aisle to select
+          </span>
+        ) : (
+          <span className="editor-canvas-layout-mode-hint muted" data-testid="canvas-planogram-hint">
+            Click shelf → planogram · Ctrl+click → select · click floor to deselect
+          </span>
+        )}
       </div>
       <div className="editor-canvas-bar-right">
         {!showShelfLabelHint ? null : (
-          <span className="editor-canvas-label-hint muted" title="Shelf numbers appear when each fixture is large enough on screen">
+          <span
+            className="editor-canvas-label-hint muted"
+            title="Shelf numbers appear when each fixture is large enough on screen"
+          >
             Zoom in for shelf numbers
           </span>
         )}
-        {maxFixtures != null ? (
-          <span className="editor-canvas-stat mono" title="Max shelves from auto-calc">
-            Max {maxFixtures}
-          </span>
+        {layoutHasShelves && onOpenArrangement ? (
+          <button
+            type="button"
+            className={`editor-canvas-chip${arrangementAccepted ? "" : " editor-canvas-chip--warn"}`}
+            data-testid="arrangement-reopen"
+            onClick={onOpenArrangement}
+            title={
+              arrangementAccepted
+                ? "View layout summary (arrangement & volume)"
+                : "Review and accept layout summary to unlock product allocation"
+            }
+          >
+            {arrangementAccepted ? "Layout summary" : "Review summary"}
+          </button>
         ) : null}
         <button type="button" className="editor-canvas-chip" onClick={onFitView}>
           Fit

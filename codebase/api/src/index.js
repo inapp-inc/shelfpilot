@@ -17,6 +17,7 @@ import { layoutsRouter } from "./routes/layouts.js";
 import { catalogRouter } from "./routes/catalog.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { adminRouter } from "./routes/admin.js";
+import { shopRouter } from "./routes/shop.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -67,6 +68,7 @@ if (basePath) mountFloorPlans("/floor-plans");
 const routers = [
   healthRouter,
   authRouter,
+  shopRouter,
   layoutsRouter,
   catalogRouter,
   analyticsRouter,

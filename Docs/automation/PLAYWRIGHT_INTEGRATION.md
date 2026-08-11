@@ -155,13 +155,13 @@ Do **not** use these credentials outside local/demo automation.
 
 1. Layouts portfolio lists demo layout.
 2. Create layout modal: Length / Width / Height labels + submit.
-3. Smart Generate without aisle-width violations banner.
+3. Smart Generate without aisle-width violations banner; arrangement panel → accept.
 4. Dashboard / analytics shell loads + 3D toggle.
 
 ### Phase C — RBAC / catalog / admin / approval ✅ (smoke slice)
 
-Specs: `rbac.viewer`, `catalog.crud`, `admin.config`, `approval.workflow`.  
-**22 `@smoke` tests green** against Docker (`http://localhost:8080`).
+Specs: `rbac.viewer`, `catalog.crud`, `admin.config`, `approval.workflow`, `layouts.arrangement`.  
+**~24+ `@smoke` tests** against Docker (`http://localhost:8080`) including arrangement & volume gate.
 
 Remaining matrix rows (`@critical` / `@full`) still tracked in [COVERAGE_MATRIX.md](./COVERAGE_MATRIX.md).
 
@@ -202,8 +202,8 @@ Remaining matrix rows (`@critical` / `@full`) still tracked in [COVERAGE_MATRIX.
 ## 10. Definition of done (automation program)
 
 - [x] Docs under `Docs/automation/` reviewed (this pack)
-- [x] Playwright scaffold with `@smoke` suite green on Docker (22 tests, Phases A–C)
-- [ ] Coverage matrix rows marked Automated for all P0 items (most P0 smoke done; remaining planogram/demo-gate)
+- [x] Playwright scaffold with `@smoke` suite green on Docker (Phases A–C + arrangement gate)
+- [ ] Coverage matrix rows marked Automated for all P0 items (most P0 smoke done; remaining planogram open / demo-gate)
 - [ ] CI job publishes report artifacts (**Phase D**)
 - [x] Handover / README mentions `test:e2e` commands
 

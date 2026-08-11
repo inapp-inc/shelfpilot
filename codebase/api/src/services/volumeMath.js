@@ -65,7 +65,8 @@ export function productVolumeM3(product) {
 export function placementVolumeM3(placement, product) {
   const facings = Math.max(1, Math.round(Number(placement?.facings) || 1));
   const depthFacings = Math.max(1, Math.round(Number(placement?.depthFacings) || 1));
-  return productVolumeM3(product) * facings * depthFacings;
+  const stackLayers = Math.max(1, Math.round(Number(placement?.stackLayers) || 1));
+  return productVolumeM3(product) * facings * depthFacings * stackLayers;
 }
 
 function productIndex(products) {

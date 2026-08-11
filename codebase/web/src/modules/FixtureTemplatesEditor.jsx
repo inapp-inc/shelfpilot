@@ -6,8 +6,14 @@ import {
   normalizeFixtureTemplate,
   uniqueFixtureTypeId,
 } from "../fixtureTypeUtils.js";
+import {
+  feetInputFromMeters,
+  feetToMeters,
+  formatVolumeFromCubicMeters,
+  shelfEnvelopeVolumeM3,
+} from "../units.js";
 
-/** Edit shared store shelf layer (fixture templates) before layouts use them. */
+/** Compact Store Master shelf-template editor — dense rows, live volume. */
 export default function FixtureTemplatesEditor({ templates, onChange, disabled }) {
   const rows = (templates?.length ? templates : []).map(normalizeFixtureTemplate);
 
@@ -22,6 +28,10 @@ export default function FixtureTemplatesEditor({ templates, onChange, disabled }
       return merged;
     });
     onChange(next);
+  }
+
+  function updateDimFeet(idx, key, feetValue) {
+    updateRow(idx, { [key]: feetToMeters(feetValue) });
   }
 
   function addPreset(preset) {
@@ -49,148 +59,183 @@ export default function FixtureTemplatesEditor({ templates, onChange, disabled }
   }
 
   return (
-    <div className="fixture-templates-editor">
-      <div style={{ fontWeight: 700, marginBottom: 4 }}>Shelf types (shared templates)</div>
-      <p className="muted" style={{ fontSize: 12, margin: "0 0 10px" }}>
-        Add Ambient, Chilled, Frozen, or custom shelf types. Each type sets dimensions and levels used by the palette
-        and Smart Generate.
-      </p>
+    <div className="fixture-templates-editor" data-testid="fixture-templates-editor">
       {!disabled ? (
-        <div className="fixture-preset-chips">
-          {SHELF_TYPE_PRESETS.slice(0, 3).map((preset) => (
-            <button
-              key={preset.type}
-              type="button"
-              className="btn-secondary fixture-preset-chip"
-              onClick={() => addPreset(preset)}
-            >
-              {preset.temperatureZone === "chilled" ? "🧊" : preset.temperatureZone === "frozen" ? "❄️" : "🛒"}{" "}
-              {preset.label}
+        <div className="fixture-toolbar">
+          <div className="fixture-preset-chips" role="group" aria-label="Quick add shelf types">
+            {SHELF_TYPE_PRESETS.slice(0, 3).map((preset) => (
+              <button
+                key={preset.type}
+                type="button"
+                className="btn-secondary fixture-preset-chip"
+                onClick={() => addPreset(preset)}
+              >
+                + {preset.label}
+              </button>
+            ))}
+            <button type="button" className="btn-secondary fixture-preset-chip" onClick={addCustomRow}>
+              + Custom
             </button>
-          ))}
-          <button type="button" className="btn-secondary fixture-preset-chip" onClick={addCustomRow}>
-            + Custom shelf
-          </button>
+          </div>
+          <span className="muted fixture-toolbar-hint">W / D / H in feet · volume auto</span>
         </div>
       ) : null}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {rows.map((row, idx) => (
-          <div key={`${row.type}-${idx}`} className="fixture-template-row">
-            <div className="field" style={{ margin: 0 }}>
-              <label>Shelf name</label>
-              <input
-                value={row.label}
-                disabled={disabled}
-                placeholder="e.g. Ambient, Chilled, Promo end"
-                onChange={(e) => updateRow(idx, { label: e.target.value })}
-                style={{ padding: "7px 8px", borderRadius: 8, border: "1px solid #e5e7eb", width: "100%" }}
-              />
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Base fixture</label>
-              <select
-                value={row.baseKind}
-                disabled={disabled}
-                onChange={(e) => {
-                  const baseKind = e.target.value;
-                  const fb = FIXTURE_TYPES[baseKind];
-                  updateRow(idx, {
-                    baseKind,
-                    defaultWidthMeters: fb?.w ?? row.defaultWidthMeters,
-                    defaultDepthMeters: fb?.d ?? row.defaultDepthMeters,
-                  });
-                }}
-                style={{ padding: "7px 8px", borderRadius: 8, border: "1px solid #e5e7eb", width: "100%" }}
-              >
-                {FIXTURE_BASE_KINDS.map((t) => (
-                  <option key={t} value={t}>
-                    {FIXTURE_TYPES[t].label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Zone</label>
-              <select
-                value={row.temperatureZone || "ambient"}
-                disabled={disabled}
-                onChange={(e) => updateRow(idx, { temperatureZone: e.target.value })}
-                style={{ padding: "7px 8px", borderRadius: 8, border: "1px solid #e5e7eb", width: "100%" }}
-              >
-                {TEMPERATURE_ZONES.map((z) => (
-                  <option key={z.id} value={z.id}>
-                    {z.emoji} {z.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Width m</label>
-              <input
-                className="mono"
-                type="number"
-                step="0.1"
-                min="0.3"
-                disabled={disabled}
-                value={row.defaultWidthMeters}
-                onChange={(e) => updateRow(idx, { defaultWidthMeters: e.target.value })}
-              />
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Depth m</label>
-              <input
-                className="mono"
-                type="number"
-                step="0.1"
-                min="0.3"
-                disabled={disabled}
-                value={row.defaultDepthMeters}
-                onChange={(e) => updateRow(idx, { defaultDepthMeters: e.target.value })}
-              />
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Height m</label>
-              <input
-                className="mono"
-                type="number"
-                step="0.1"
-                min="0.5"
-                disabled={disabled}
-                value={row.defaultHeightMeters ?? 2}
-                onChange={(e) => updateRow(idx, { defaultHeightMeters: e.target.value })}
-              />
-            </div>
-            <div className="field" style={{ margin: 0 }}>
-              <label>Levels</label>
-              <input
-                className="mono"
-                type="number"
-                min="1"
-                max="8"
-                disabled={disabled}
-                value={row.defaultLevels ?? 2}
-                onChange={(e) => updateRow(idx, { defaultLevels: e.target.value })}
-              />
-            </div>
-            <div className="field fixture-type-id-field" style={{ margin: 0 }}>
-              <label>ID</label>
-              <span className="mono muted" style={{ fontSize: 11 }} title="Internal type key">
-                {row.type}
-              </span>
-            </div>
-            {!disabled ? (
-              <button type="button" className="btn-secondary" style={{ padding: "8px 10px" }} onClick={() => removeRow(idx)}>
-                Remove
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </div>
-      {!disabled ? (
-        <button type="button" className="btn-secondary" style={{ marginTop: 10, padding: "8px 12px" }} onClick={addCustomRow}>
-          Add shelf type
-        </button>
-      ) : null}
+
+      {!rows.length ? (
+        <div className="fixture-templates-empty muted" data-testid="fixture-templates-empty">
+          No shelf types yet — add Ambient, Chilled, Frozen, or Custom.
+        </div>
+      ) : (
+        <div className="fixture-table-wrap">
+          <table className="fixture-table" data-testid="fixture-templates-table">
+            <thead>
+              <tr>
+                <th className="fixture-col-name">Name</th>
+                <th className="fixture-col-base">Base</th>
+                <th className="fixture-col-zone">Zone</th>
+                <th className="fixture-col-num">W (ft)</th>
+                <th className="fixture-col-num">D (ft)</th>
+                <th className="fixture-col-num">H (ft)</th>
+                <th className="fixture-col-num">Lvl</th>
+                <th className="fixture-col-vol">Volume (cu ft)</th>
+                {!disabled ? <th className="fixture-col-actions" aria-label="Actions" /> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => {
+                const volumeM3 = shelfEnvelopeVolumeM3(
+                  row.defaultWidthMeters,
+                  row.defaultDepthMeters,
+                  row.defaultHeightMeters ?? 2
+                );
+                return (
+                  <tr key={`${row.type}-${idx}`} data-testid={`fixture-template-card-${row.type}`}>
+                    <td className="fixture-col-name">
+                      <input
+                        value={row.label}
+                        disabled={disabled}
+                        title={`ID: ${row.type}`}
+                        placeholder="Shelf name"
+                        aria-label="Shelf name"
+                        onChange={(e) => updateRow(idx, { label: e.target.value })}
+                      />
+                    </td>
+                    <td className="fixture-col-base">
+                      <select
+                        value={row.baseKind}
+                        disabled={disabled}
+                        aria-label="Base fixture"
+                        onChange={(e) => {
+                          const baseKind = e.target.value;
+                          const fb = FIXTURE_TYPES[baseKind];
+                          updateRow(idx, {
+                            baseKind,
+                            defaultWidthMeters: fb?.w ?? row.defaultWidthMeters,
+                            defaultDepthMeters: fb?.d ?? row.defaultDepthMeters,
+                          });
+                        }}
+                      >
+                        {FIXTURE_BASE_KINDS.map((t) => (
+                          <option key={t} value={t}>
+                            {FIXTURE_TYPES[t].label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="fixture-col-zone">
+                      <select
+                        value={row.temperatureZone || "ambient"}
+                        disabled={disabled}
+                        aria-label="Temperature zone"
+                        onChange={(e) => updateRow(idx, { temperatureZone: e.target.value })}
+                      >
+                        {TEMPERATURE_ZONES.map((z) => (
+                          <option key={z.id} value={z.id}>
+                            {z.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="fixture-col-num" data-testid={`fixture-dims-${row.type}`}>
+                      <input
+                        className="mono"
+                        type="number"
+                        step="0.1"
+                        min="1"
+                        disabled={disabled}
+                        value={feetInputFromMeters(row.defaultWidthMeters)}
+                        onChange={(e) => updateDimFeet(idx, "defaultWidthMeters", e.target.value)}
+                        aria-label="Width feet"
+                        data-testid={`fixture-width-ft-${row.type}`}
+                      />
+                    </td>
+                    <td className="fixture-col-num">
+                      <input
+                        className="mono"
+                        type="number"
+                        step="0.1"
+                        min="1"
+                        disabled={disabled}
+                        value={feetInputFromMeters(row.defaultDepthMeters)}
+                        onChange={(e) => updateDimFeet(idx, "defaultDepthMeters", e.target.value)}
+                        aria-label="Depth feet"
+                        data-testid={`fixture-depth-ft-${row.type}`}
+                      />
+                    </td>
+                    <td className="fixture-col-num">
+                      <input
+                        className="mono"
+                        type="number"
+                        step="0.1"
+                        min="1.5"
+                        disabled={disabled}
+                        value={feetInputFromMeters(row.defaultHeightMeters ?? 2)}
+                        onChange={(e) => updateDimFeet(idx, "defaultHeightMeters", e.target.value)}
+                        aria-label="Height feet"
+                        data-testid={`fixture-height-ft-${row.type}`}
+                      />
+                    </td>
+                    <td className="fixture-col-num">
+                      <input
+                        className="mono"
+                        type="number"
+                        min="1"
+                        max="8"
+                        disabled={disabled}
+                        value={row.defaultLevels ?? 2}
+                        onChange={(e) => updateRow(idx, { defaultLevels: e.target.value })}
+                        aria-label="Levels"
+                        data-testid={`fixture-levels-${row.type}`}
+                      />
+                    </td>
+                    <td className="fixture-col-vol" data-testid={`fixture-volume-${row.type}`}>
+                      <span
+                        className="fixture-vol-value mono"
+                        title={volumeM3 != null ? "W × D × H (read-only)" : undefined}
+                        data-testid={`fixture-volume-cuft-${row.type}`}
+                      >
+                        {volumeM3 != null ? formatVolumeFromCubicMeters(volumeM3, { decimals: 1 }) : "—"}
+                      </span>
+                    </td>
+                    {!disabled ? (
+                      <td className="fixture-col-actions">
+                        <button
+                          type="button"
+                          className="fixture-row-remove"
+                          aria-label={`Remove ${row.label || "shelf type"}`}
+                          onClick={() => removeRow(idx)}
+                        >
+                          ×
+                        </button>
+                      </td>
+                    ) : null}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

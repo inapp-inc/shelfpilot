@@ -92,13 +92,13 @@ test("previewFacings uses segment width when segmentId set", () => {
     segmentId: seg.id,
     faceId: "A",
   });
-  assert.equal(preview.maxFacings, 6);
+  assert.equal(preview.maxFacings, 5);
   const full = previewFacings({
     shelf,
     product: { id: "p1", attributes: { widthMeters: 0.2 } },
     faceId: "A",
   });
-  assert.equal(full.maxFacings, 18);
+  assert.equal(full.maxFacings, 17);
 });
 
 test("dual-face shelves keep independent segment layouts per face", () => {
@@ -134,8 +134,8 @@ test("dual-face shelves keep independent segment layouts per face", () => {
     segmentId: segB.id,
     faceId: "B",
   });
-  assert.equal(previewA.maxFacings, 9);
-  assert.equal(previewB.maxFacings, 6);
+  assert.equal(previewA.maxFacings, 8);
+  assert.equal(previewB.maxFacings, 5);
 });
 
 test("per-level segments split independently on the same face", () => {

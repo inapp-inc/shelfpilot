@@ -272,6 +272,16 @@ export function layoutContentBounds(layout, previewPoly = null) {
     expand(fp.x, fp.y, fp.w, fp.d);
   }
 
+  const plan = layout.floorPlan;
+  if (plan?.url) {
+    expand(
+      Number(plan.x) || 0,
+      Number(plan.y) || 0,
+      Number(plan.widthMeters) || layout.widthMeters || 10,
+      Number(plan.depthMeters) || layout.depthMeters || 8
+    );
+  }
+
   if (Number.isFinite(minX)) {
     return { minX, minY, maxX, maxY };
   }

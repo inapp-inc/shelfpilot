@@ -8,10 +8,13 @@ export function buildCategoryTree(flat) {
     if (!byParent[key]) byParent[key] = [];
     byParent[key].push(c);
   }
-  return (byParent.__root || []).map((c) => ({
-    ...c,
-    children: byParent[c.id] || [],
-  }));
+
+  function attachChildren(cat) {
+    const children = (byParent[cat.id] || []).map((child) => attachChildren(child));
+    return { ...cat, children };
+  }
+
+  return (byParent.__root || []).map((cat) => attachChildren(cat));
 }
 
 /** id → category record */

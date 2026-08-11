@@ -14,6 +14,7 @@ export const DASHBOARD_DEFAULT_VISIBLE_WIDGET_IDS = [
   "kpi-unmapped-shelves",
   "kpi-fixtures",
   "kpi-storage-volume",
+  "kpi-linear-fill",
   "kpi-shelf-load",
   "kpi-capacity-variance",
   "space-utilization",
@@ -22,6 +23,7 @@ export const DASHBOARD_DEFAULT_VISIBLE_WIDGET_IDS = [
   "vertical-space",
   "category-allocation",
   "fixture-mix",
+  "temporary-storage",
   "capacity-compare",
   "aisle-compliance",
 ];
@@ -101,6 +103,15 @@ export const ANALYTICS_WIDGETS = [
     defaultVisible: true,
     description:
       "How to calculate: used volume ÷ available volume × 100. Available = Σ usable width × face depth × clear height per level.",
+  },
+  {
+    id: "kpi-linear-fill",
+    label: "Shelf linear fill",
+    group: "kpi",
+    section: "executive",
+    defaultVisible: true,
+    description:
+      "How to calculate: Σ(facings × product width) ÷ Σ(usable shelf width × levels per face) × 100 from planogram placements.",
   },
   {
     id: "kpi-shelf-load",
@@ -204,7 +215,16 @@ export const ANALYTICS_WIDGETS = [
     section: "capacity",
     defaultVisible: true,
     description:
-      "Share of physical units by type (gondola pair counted once). Count % aligns with fixture KPI.",
+      "Share of permanent physical units by type (gondola pair counted once). Temporary storage excluded.",
+  },
+  {
+    id: "temporary-storage",
+    label: "Temporary storage",
+    group: "report",
+    section: "capacity",
+    defaultVisible: true,
+    description:
+      "Seasonal / promo fixtures (display tables, pallets) counted separately from permanent fixture density and mix.",
   },
   {
     id: "scenario-compare",
@@ -233,7 +253,7 @@ export const ANALYTICS_WIDGETS = [
     section: "category",
     defaultVisible: true,
     description:
-      "Mapped shelf floor-share split evenly across categories on that shelf. Chart values are sq ft (m² × 10.7639). Share % = category ÷ total mapped × 100.",
+      "When planograms exist: linear metres from facings × product width per category (chart in metres). Otherwise mapped shelf floor-share in sq ft. Share % = category ÷ total mapped × 100.",
   },
   {
     id: "facings-by-category",

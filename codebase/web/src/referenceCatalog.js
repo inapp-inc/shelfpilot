@@ -87,6 +87,19 @@ export const VERTICALS = {
     ],
     compliance: ["Min aisle 1.0m"],
   },
+  warehouse: {
+    label: "Warehouse",
+    minAisle: 3.0,
+    color: "#475569",
+    categories: [
+      { id: "wh-bulk", name: "Bulk storage", color: "#64748b" },
+      { id: "wh-pick", name: "Pick face", color: "#0ea5e9" },
+      { id: "wh-cold", name: "Cold storage", color: "#38bdf8" },
+      { id: "wh-staging", name: "Staging / dispatch", color: "#f59e0b" },
+      { id: "wh-returns", name: "Returns", color: "#a855f7" },
+    ],
+    compliance: ["Min forklift aisle 3.0m", "Rack height ≤ ceiling − 0.5m"],
+  },
 };
 
 export const FIXTURE_TYPES = {
@@ -94,6 +107,12 @@ export const FIXTURE_TYPES = {
   rack: { label: "Rack", w: 1.0, d: 0.5 },
   gondola: { label: "Gondola", w: 1.8, d: 0.9 },
   storage: { label: "Storage", w: 2.0, d: 1.0 },
+  temp_table: { label: "Display table", w: 1.6, d: 0.8 },
+  temp_pallet: { label: "Pallet", w: 1.2, d: 1.2 },
+  pallet_rack: { label: "Pallet rack", w: 2.7, d: 1.1 },
+  selective_rack: { label: "Selective rack", w: 2.4, d: 1.0 },
+  bulk_storage: { label: "Bulk storage", w: 3.6, d: 1.2 },
+  staging_lane: { label: "Staging lane", w: 2.0, d: 1.5 },
 };
 
 export const ZONE_TYPES = {

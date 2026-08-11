@@ -66,7 +66,8 @@ export function shelfLoadLimitKg(shelf) {
 export function placementWeightKg(placement, product) {
   const facings = Math.max(1, Math.round(Number(placement?.facings) || 1));
   const depthFacings = Math.max(1, Math.round(Number(placement?.depthFacings) || 1));
-  return productWeightKg(product) * facings * depthFacings;
+  const stackLayers = Math.max(1, Math.round(Number(placement?.stackLayers) || 1));
+  return productWeightKg(product) * facings * depthFacings * stackLayers;
 }
 
 /**

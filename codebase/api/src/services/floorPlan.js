@@ -10,9 +10,20 @@
 
 export function normalizeFloorPlan(floorPlan) {
   if (!floorPlan || !floorPlan.url) return null;
+  const sourceType =
+    floorPlan.sourceType === "pdf" || floorPlan.sourceType === "svg" || floorPlan.sourceType === "image"
+      ? floorPlan.sourceType
+      : "image";
   return {
     url: String(floorPlan.url),
     fileName: floorPlan.fileName ? String(floorPlan.fileName) : null,
+    sourceType,
+    sourceFileName: floorPlan.sourceFileName
+      ? String(floorPlan.sourceFileName)
+      : floorPlan.fileName
+        ? String(floorPlan.fileName)
+        : null,
+    pageIndex: Math.max(0, Number(floorPlan.pageIndex) || 0),
     x: Number(floorPlan.x) || 0,
     y: Number(floorPlan.y) || 0,
     widthMeters: Math.max(0.5, Number(floorPlan.widthMeters) || 10),
@@ -37,6 +48,9 @@ export function patchFloorPlan(existing, patch = {}) {
     "opacity",
     "visible",
     "locked",
+    "sourceType",
+    "sourceFileName",
+    "pageIndex",
   ]) {
     if (patch[key] !== undefined) next[key] = patch[key];
   }

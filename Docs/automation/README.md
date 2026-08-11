@@ -38,6 +38,7 @@ npm run test:e2e:smoke          # login + layouts + generate + dashboard + 3D + 
 - [x] Layouts portfolio (open, clone, delete)
 - [x] Layout editor palette (draw, aisles, fixtures, zones, obstacles, entry)
 - [x] Smart Generate + aisle min rules
+- [x] Shelf arrangement & volume accept gate
 - [x] Planogram / merchandising
 - [x] **3D view** (Orbit + Walk)
 - [x] Approval workflow (submit / approve / reject)

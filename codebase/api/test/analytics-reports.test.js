@@ -54,7 +54,7 @@ test("fixture density uses sq ft (doc benchmarking units)", () => {
   assert.ok(Math.abs(d.fixturesPer100SqFt - 0.09) < 0.02);
 });
 
-test("vertical utilization requires products on the level, not just category map", () => {
+test("vertical utilization uses linear fill from facings × product width", () => {
   const layout = {
     id: "L-vert",
     widthMeters: 10,
@@ -70,13 +70,14 @@ test("vertical utilization requires products on the level, not just category map
           {
             id: "A",
             categoryId: "cat-a",
-            planogram: [{ productId: "p1", levelIndex: 0, facings: 1 }],
+            planogram: [{ productId: "p1", levelIndex: 0, facings: 10 }],
           },
         ],
       },
     ],
   };
-  const v = computeVerticalSpaceUtilization(layout);
+  const products = [{ id: "p1", categoryId: "cat-a", attributes: { widthMeters: 0.2, heightMeters: 0.25 } }];
+  const v = computeVerticalSpaceUtilization(layout, products);
   const bottom = v.levels.find((l) => l.levelIndex === 0);
   const eye = v.levels.find((l) => l.levelIndex === 1);
   assert.equal(bottom.utilizationPercent, 100);

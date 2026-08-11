@@ -29,7 +29,12 @@ test.describe("Admin tabs @admin @smoke", () => {
     await admin.goto();
     await admin.openTab("stores");
     await expect(page.getByTestId("admin-stores")).toBeVisible();
-    await expect(page.getByTestId("admin-stores").getByText(/^Shelf types —/)).toBeVisible();
+    await expect(page.getByTestId("fixture-templates-editor")).toBeVisible();
+    await expect(page.getByTestId("fixture-templates-table")).toBeVisible();
+    const volume = page.locator("[data-testid^='fixture-volume-cuft-']").first();
+    await expect(volume).toBeVisible();
+    await expect(volume).not.toHaveText("—");
+    await expect(page.getByTestId("admin-stores-vertical")).toBeVisible();
     await admin.openTab("approval");
     await expect(page.getByTestId("admin-approval-enabled")).toBeVisible();
     await admin.expectHypermarketMinAisle("1.5");

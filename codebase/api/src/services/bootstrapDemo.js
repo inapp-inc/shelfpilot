@@ -230,8 +230,13 @@ export function ensureDemoGeneratedLayout({ force = false } = {}) {
     widthMeters: 24,
     depthMeters: 16,
     heightMeters: 3.2,
-    shape: "rectangle",
-    polygon: [],
+    shape: "polygon",
+    polygon: [
+      { x: 0, y: 0 },
+      { x: 24, y: 0 },
+      { x: 24, y: 16 },
+      { x: 0, y: 16 },
+    ],
     storeEnvelope: { x: 0, y: 0, widthMeters: 24, depthMeters: 16 },
     aisles: [],
     shelves: [],
@@ -296,6 +301,8 @@ export function ensureDemoGeneratedLayout({ force = false } = {}) {
   ));
 
   if (existing) layout.id = existing.id;
+  layout.arrangementAcceptedAt = new Date().toISOString();
+  layout.arrangementAcceptedBy = "system@shelfpilot.local";
   refreshLayout(layout);
   repo.saveLayout(layout);
 
@@ -346,6 +353,7 @@ export function ensureDemoReady() {
     const configMin = Math.max(0.9, Number(repo.getConfig("hypermarket")?.minAisleWidthMeters) || 1.5);
     const narrow = (existing.aisles || []).some((a) => Number(a.widthMeters) < configMin - 1e-9);
     if (narrow) force = true;
+    if (!(existing.polygon?.length >= 3)) force = true;
   }
   const layout = ensureDemoGeneratedLayout({ force });
   const result = { catalog, layout, forceLayoutRefresh: force };

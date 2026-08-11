@@ -96,6 +96,7 @@ export function normalizeFixtureTemplate(tmpl) {
     label,
     baseKind,
     temperatureZone,
+    temporaryStorage: tmpl?.temporaryStorage === true,
     defaultWidthMeters: Number(tmpl?.defaultWidthMeters ?? fallback.w) || fallback.w,
     defaultDepthMeters: Number(tmpl?.defaultDepthMeters ?? fallback.d) || fallback.d,
     defaultHeightMeters: Number(tmpl?.defaultHeightMeters ?? 2) || 2,

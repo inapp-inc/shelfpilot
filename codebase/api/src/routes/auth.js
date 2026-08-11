@@ -11,7 +11,7 @@ authRouter.post("/auth/login", (req, res) => {
   if (!user || user.password !== password) {
     return res.status(401).json({ error: "invalid_credentials" });
   }
-  const allowed = ["Designer", "Approver", "Viewer", "Admin"];
+  const allowed = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
   if (!allowed.includes(role)) {
     return res.status(400).json({ error: "invalid_role" });
   }

@@ -93,8 +93,11 @@ Feature list: [FULL_FEATURE_INVENTORY.md](./FULL_FEATURE_INVENTORY.md)
 | F-02 | Shows store min aisle rule | Designer | P0 | @critical | Automated | TP-EDIT-02 |
 | F-03 | Mix must be 100% before run | Designer | P1 | @critical | Todo | — |
 | F-04 | Run generate — aisles ≥ min, no width violations | Designer | P0 | @smoke | Automated | TP-EDIT-03 |
-| F-05 | Auto-fill planogram stats | Designer | P1 | @critical | Todo | — |
+| F-05 | Auto-fill planogram on arrangement accept | Designer | P1 | @critical | Todo | TP-ARR-02 |
 | F-06 | Orientation options work | Designer | P2 | @full | Todo | — |
+| F-07 | Arrangement panel after generate | Designer | P0 | @smoke | Automated | TP-ARR-01 |
+| F-08 | Accept arrangement unlocks allocation | Designer | P0 | @smoke | Automated | TP-ARR-02 |
+| F-09 | Demo layout arrangement pre-accepted | Designer | P0 | @smoke | Automated | TP-ARR-03 |
 
 ---
 
@@ -103,6 +106,7 @@ Feature list: [FULL_FEATURE_INVENTORY.md](./FULL_FEATURE_INVENTORY.md)
 | ID | Scenario | Role | Pri | Tag | Status | Plan |
 |----|----------|------|-----|-----|--------|------|
 | G-01 | Open planogram on shelf | Designer | P1 | @critical | Todo | TP-POG-01 |
+| G-01b | Planogram blocked until arrangement accepted | Designer | P0 | @smoke | Todo | TP-POG-01b |
 | G-02 | Dual-face A/B (gondola) | Designer | P2 | @full | Todo | — |
 | G-03 | Find products search | Designer | P1 | @critical | Todo | TP-POG-02 |
 | G-04 | Missing products panel | Designer | P2 | @full | Todo | TP-POG-03 |
@@ -214,7 +218,8 @@ Feature list: [FULL_FEATURE_INVENTORY.md](./FULL_FEATURE_INVENTORY.md)
 | M-01 | Open Store Master | Admin | P0 | @smoke @admin | Automated | TP-ADM-03 |
 | M-02 | Switch vertical / store type | Admin | P1 | @admin | Todo | TP-ADM-03 |
 | M-03 | Shelf templates editor visible | Admin | P0 | @critical @admin | Automated | TP-ADM-03 |
-| M-04 | Save shelf templates (safe) | Admin | P1 | @admin | Todo | TP-ADM-03 |
+| M-04 | Shelf volume updates from W×D×H (ft) | Admin | P0 | @smoke @admin | Automated | TP-ADM-03 |
+| M-05 | Save shelf templates (safe) | Admin | P1 | @admin | Todo | TP-ADM-03 |
 
 ---
 
@@ -255,7 +260,7 @@ Feature list: [FULL_FEATURE_INVENTORY.md](./FULL_FEATURE_INVENTORY.md)
 
 ---
 
-## Counts (Phases A–C smoke live — 22 `@smoke` green)
+## Counts (Phases A–C smoke + arrangement gate)
 
 | Area | Scenarios | Automated |
 |------|----------:|----------:|
@@ -263,22 +268,22 @@ Feature list: [FULL_FEATURE_INVENTORY.md](./FULL_FEATURE_INVENTORY.md)
 | RBAC / Nav | 6 | 5 |
 | Store creation | 11 | 4 |
 | Portfolio | 5 | 2 |
-| Editor / Generate | 19 | 5 |
-| Planogram | 5 | 0 |
+| Editor / Generate / Arrangement | 22 | 8 |
+| Planogram | 6 | 0 |
 | **3D** | 5 | 2 |
 | Approval | 4 | 4 |
 | **Dashboard** | 40 | 3 |
 | Catalog | 10 | 4 |
 | **Admin (all tabs)** | 14 | 10 |
 | Demo gate | 2 | 0 |
-| **Total** | **~127** | **~45** |
+| **Total** | **~131** | **~48** |
 
 ---
 
 ## Recommended build order
 
-1. ~~**Phases A–C `@smoke`**~~ **Done** (auth, layouts, generate, 3D, dashboard shell, RBAC, catalog CRUD, admin tabs, approval)  
-2. Remaining `@critical` (planogram, Walk 3D, clone/delete, import)  
+1. ~~**Phases A–C `@smoke`**~~ **Done** (auth, layouts, generate, arrangement accept, 3D, dashboard shell, RBAC, catalog CRUD, admin tabs, approval)  
+2. Remaining `@critical` (planogram open after accept, Walk 3D, clone/delete, import)  
 3. Full dashboard widget loop (J-07…J-38)  
 4. `@full` canvas placements / import / Walk polish  
 5. **Phase D** — CI job for `test:e2e:smoke`

@@ -9,7 +9,8 @@ import {
   shelfLoadLimitKg,
   unitsWithinLoad,
 } from "../src/services/weightMath.js";
-import { fillPlanogramsForLayout } from "../src/services/planogramAutoFill.js";
+import { fillPlanogramsForLayout, fitToLoadLimit } from "../src/services/planogramAutoFill.js";
+import { previewFacings } from "../src/services/planogramMath.js";
 import { normalizeShelf } from "../src/services/shelfFaces.js";
 
 const categories = [{ id: "cat-a", name: "Ambient", vertical: "retail" }];
@@ -98,10 +99,10 @@ test("smart generate fills depth facings instead of a single row", () => {
   const layout = { vertical: "retail", shelves: [shelf] };
   fillPlanogramsForLayout(layout, products, categories);
   const placement = layout.shelves[0].faces[0].planogram[0];
-  assert.equal(placement.facings, 6);
-  // 0.6 m of usable depth / 0.2 m product depth
-  assert.equal(placement.depthFacings, 3);
-  assert.equal(placement.maxDepthFacings, 3);
+  assert.equal(placement.facings, 5);
+  // 0.6 m of usable depth / (0.2 m product + 1 cm buffer)
+  assert.equal(placement.depthFacings, 2);
+  assert.equal(placement.maxDepthFacings, 2);
 });
 
 test("smart generate caps facings so a level stays under its load limit", () => {
@@ -117,8 +118,53 @@ test("smart generate caps facings so a level stays under its load limit", () => 
   const layout = { vertical: "retail", shelves: [shelf] };
   fillPlanogramsForLayout(layout, products, categories);
   const placement = layout.shelves[0].faces[0].planogram[0];
-  // 6 wide × 3 deep × 10 kg = 180 kg would blow the 80 kg limit; depth is shed first.
-  assert.ok(placement.facings * placement.depthFacings * 10 <= 80);
-  assert.equal(placement.facings, 6);
-  assert.equal(placement.depthFacings, 1);
+  const units = placement.facings * placement.depthFacings * (placement.stackLayers || 1);
+  assert.ok(units * 10 <= 80);
+  assert.equal(placement.facings, 5);
+});
+
+test("fitToLoadLimit sheds vertical stack before depth and width", () => {
+  const fitted = fitToLoadLimit(6, 3, 5, 2, 80);
+  assert.ok(fitted.facings * fitted.depthFacings * fitted.stackLayers * 2 <= 80);
+  assert.equal(fitted.facings, 6);
+  assert.equal(fitted.depthFacings, 3);
+  assert.equal(fitted.stackLayers, 2);
+});
+
+test("top level stack respects clearanceMeters cap", () => {
+  const shelf = shelfWith([], {
+    heightMeters: 2,
+    levels: [
+      { levelIndex: 0, heightFromFloorMeters: 0.3, clearanceMeters: 0.35 },
+      { levelIndex: 1, heightFromFloorMeters: 0.9, clearanceMeters: 0.35 },
+    ],
+  });
+  const product = {
+    id: "p-light",
+    attributes: { widthMeters: 0.2, heightMeters: 0.25, depthMeters: 0.2, weightKg: 0.5 },
+  };
+  const top = previewFacings({ shelf, product, levelIndex: 1, faceId: "A" });
+  assert.ok(top.levelClearHeightMeters <= 0.351);
+  assert.equal(top.maxStackLayers, 1);
+});
+
+test("smart generate fills vertical stack from level clearance", () => {
+  const products = [
+    {
+      id: "p-light",
+      name: "Light",
+      categoryId: "cat-a",
+      attributes: { widthMeters: 0.2, heightMeters: 0.25, depthMeters: 0.2, weightKg: 0.5 },
+    },
+  ];
+  const shelf = shelfWith([], {
+    heightMeters: 2,
+    levels: [{ levelIndex: 0, heightFromFloorMeters: 0.3, clearanceMeters: 1.2 }],
+  });
+  const layout = { vertical: "retail", shelves: [shelf] };
+  fillPlanogramsForLayout(layout, products, categories);
+  const placement = layout.shelves[0].faces[0].planogram[0];
+  assert.ok(placement.stackLayers >= 2, `expected stack >= 2, got ${placement.stackLayers}`);
+  assert.equal(placement.facings, 5);
+  assert.equal(placement.depthFacings, 2);
 });

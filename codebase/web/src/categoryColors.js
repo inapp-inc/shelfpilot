@@ -8,19 +8,19 @@
  * never shifts between renders or sessions.
  */
 
-export const BRAND_COLOR = "#A30A2A";
+import { AISLE_ACTIVE, BRAND, BRAND_COLOR as BRAND_HEX, FACE_A, FACE_B } from "./designTokens.js";
+
+export const BRAND_COLOR = BRAND_HEX;
 
 /** Distinguishable hues that stay legible as translucent fills on the light floor. */
 export const CATEGORY_PALETTE = [
-  "#A30A2A",
-  "#0EA5E9",
+  BRAND.hex,
+  FACE_B.hex,
   "#16A34A",
-  "#F59E0B",
-  "#7C3AED",
+  FACE_A.hex,
+  AISLE_ACTIVE.hex,
   "#DB2777",
-  "#0F766E",
   "#2563EB",
-  "#EA580C",
   "#65A30D",
   "#9333EA",
   "#0891B2",
@@ -28,10 +28,17 @@ export const CATEGORY_PALETTE = [
   "#BE123C",
   "#4338CA",
   "#047857",
+  "#7C3AED",
+  "#0EA5E9",
 ];
 
 /** Colours treated as "no colour chosen" so we derive a distinct one instead. */
-const GENERIC_COLORS = new Set([BRAND_COLOR.toLowerCase(), "#a30a2a", "#c4183a"]);
+const GENERIC_COLORS = new Set([
+  BRAND.hex.toLowerCase(),
+  BRAND.hot.toLowerCase(),
+  "#a30a2a",
+  "#c4183a",
+]);
 
 function hashString(value) {
   let hash = 0;

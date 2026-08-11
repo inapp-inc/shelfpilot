@@ -86,10 +86,22 @@ If a feature is listed here, it belongs in the coverage matrix and (eventually) 
 | Min aisle width | ≥ store rule (hypermarket **1.5 m**) |
 | Orientation | Mixed / Auto / Horizontal / Vertical |
 | Category mix | Must total **100%** |
-| Auto-fill planogram | Optional checkbox |
-| Replace existing | Regenerates aisles + shelves |
-| Outcomes | Gondola units, walk aisles, coverage stats |
+| Auto-fill planogram | Optional on **Accept arrangement** (not during Smart Generate) |
+| Replace existing | Regenerates aisles + shelves; clears arrangement acceptance |
+| Outcomes | Gondola units, walk aisles; then arrangement & volume review |
 | Must not create | Aisle width violations (`width < min`) |
+
+---
+
+## 6b. Shelf arrangement & volume (workflow gate)
+
+| Feature | Details |
+|---------|---------|
+| After Smart Generate | Arrangement panel shows rows, shelves/row, utilization, volume, capacity |
+| Layout summary | Store / walking / fixture / unused area, bays, total volume |
+| Accept | Unlocks product allocation / planogram editing |
+| Optional fill | Auto-fill planogram from catalog on accept |
+| Reopen | View summary after accept without re-locking |
 
 ---
 
@@ -97,6 +109,7 @@ If a feature is listed here, it belongs in the coverage matrix and (eventually) 
 
 | Feature | Details |
 |---------|---------|
+| Requires arrangement accepted | Planogram blocked until summary accepted |
 | Assign category to shelf | Required before products |
 | Open planogram editor | Per shelf / face (A/B dual-face) |
 | Place facings on levels | Product on shelf level |
@@ -230,7 +243,7 @@ If a feature is listed here, it belongs in the coverage matrix and (eventually) 
 | Tab | Who sees it | Features to automate |
 |-----|-------------|----------------------|
 | **Users & Roles** | Admin | List users; create user (name, email, role, password) |
-| **Store Master** | Admin | Pick store type/vertical; edit **fixture/shelf templates** (ambient/chilled/frozen dimensions & levels); save |
+| **Store Master** | Admin | Pick store type/vertical; edit **shelf templates** with **feet** dimensions; **live shelf volume** (cu ft / cu in); save |
 | **Approval Workflow** | Admin | Enable/disable approval workflow per vertical |
 | **Configuration** | Admin | Min aisle width (m) per vertical; save |
 | **Audit Log** | Admin + Approver | Recent audit events list |

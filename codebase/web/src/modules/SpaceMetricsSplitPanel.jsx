@@ -2,15 +2,24 @@ import BarChart from "./charts/BarChart.jsx";
 import ColumnChart from "./charts/ColumnChart.jsx";
 import WidgetInfoTip from "./WidgetInfoTip.jsx";
 import { CHART, utilizationTierColor } from "./charts/chartColors.js";
-import { formatAreaFromSqm } from "../units.js";
+import { formatAreaFromSqm, formatLengthFromMeters } from "../units.js";
 
 /** Half-page split: vertical space by level (left) + fixture density & unmapped (right). */
-export default function SpaceMetricsSplitPanel({ verticalLevels = [], fixtureDensity, fixtureDensityByZone, unmappedShelves }) {
+export default function SpaceMetricsSplitPanel({
+  verticalLevels = [],
+  fixtureDensity,
+  fixtureDensityByZone,
+  unmappedShelves,
+}) {
+  const linearMode = verticalLevels.some((lv) => lv.linearCapacityMeters != null);
+
   const levelChart = verticalLevels.map((lv) => ({
     label: lv.levelLabel,
     value: lv.utilizationPercent,
     color: utilizationTierColor(lv.utilizationPercent),
-    title: `${lv.levelLabel}: ${lv.utilizedAreaSqm} m² with products ÷ ${lv.totalAreaSqm} m² level share = ${lv.utilizationPercent}%`,
+    title: linearMode
+      ? `${lv.levelLabel}: ${formatLengthFromMeters(lv.usedLinearMeters ?? lv.utilizedAreaSqm, { suffix: false })} used ÷ ${formatLengthFromMeters(lv.linearCapacityMeters ?? lv.totalAreaSqm)} usable width = ${lv.utilizationPercent}%`
+      : `${lv.levelLabel}: ${lv.utilizedAreaSqm} m² with products ÷ ${lv.totalAreaSqm} m² level share = ${lv.utilizationPercent}%`,
   }));
 
   const zones = fixtureDensityByZone?.rows || [];
@@ -30,11 +39,17 @@ export default function SpaceMetricsSplitPanel({ verticalLevels = [], fixtureDen
           <div className="section-label">
             Vertical space by level
             <WidgetInfoTip
-              text="Tier % = shelf floor-share for levels that have products ÷ that level’s total share × 100. Empty mapped shelves do not count as filled."
+              text={
+                linearMode
+                  ? "Tier % = Σ min(usable width, facings × product width) per face-level ÷ Σ usable width × 100."
+                  : "Tier % = shelf floor-share for levels that have products ÷ that level’s total share × 100. Empty mapped shelves do not count as filled."
+              }
               label="Vertical utilization"
             />
           </div>
-          <span className="muted space-metrics-half-sub">§1.4 tier utilization</span>
+          <span className="muted space-metrics-half-sub">
+            {linearMode ? "Linear fill by shelf level" : "§1.4 tier utilization"}
+          </span>
         </div>
         {levelChart.length ? (
           <>
@@ -44,13 +59,19 @@ export default function SpaceMetricsSplitPanel({ verticalLevels = [], fixtureDen
                 <div
                   key={lv.levelIndex}
                   className="space-metrics-level-stat"
-                  title={`${lv.utilizedAreaSqm} / ${lv.totalAreaSqm} m² with products`}
+                  title={
+                    linearMode
+                      ? `${formatLengthFromMeters(lv.usedLinearMeters ?? lv.utilizedAreaSqm, { suffix: false })} / ${formatLengthFromMeters(lv.linearCapacityMeters ?? lv.totalAreaSqm)} linear`
+                      : `${lv.utilizedAreaSqm} / ${lv.totalAreaSqm} m² with products`
+                  }
                 >
                   <span className="space-metrics-level-name">{lv.levelLabel}</span>
                   <span className="mono">
-                    {formatAreaFromSqm(lv.utilizedAreaSqm, { suffix: false })} / {formatAreaFromSqm(lv.totalAreaSqm)}
+                    {linearMode
+                      ? `${formatLengthFromMeters(lv.usedLinearMeters ?? lv.utilizedAreaSqm, { suffix: false })} / ${formatLengthFromMeters(lv.linearCapacityMeters ?? lv.totalAreaSqm)}`
+                      : `${formatAreaFromSqm(lv.utilizedAreaSqm, { suffix: false })} / ${formatAreaFromSqm(lv.totalAreaSqm)}`}
                   </span>
-                  <span className="muted">{lv.fixtureCount} level slots</span>
+                  <span className="muted">{lv.fixtureCount} face-levels</span>
                 </div>
               ))}
             </div>

@@ -215,6 +215,7 @@ export default function FloorPlanPanel({
         <button
           type="button"
           className="btn-primary"
+          data-testid="floorplan-upload"
           style={{ padding: "8px 10px", fontSize: 12, width: "100%" }}
           disabled={busy}
           onClick={() => fileRef.current?.click()}

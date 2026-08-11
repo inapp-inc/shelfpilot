@@ -1,10 +1,34 @@
 # ShelfPilot — Demo changes summary
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-08-11_
 
 A running record of the enhancements delivered in the current demo cycle. Newest work is at
-the top. Detailed spec/design lives in
-`openspec/changes/demo-enhancements-images-dashboard/`.
+the top.
+
+**BRD / product brief:** [BRD_ADDENDUM_DEMO_AUG_2026.md](./BRD_ADDENDUM_DEMO_AUG_2026.md) · root [`project.md`](../project.md)
+
+---
+
+## Iteration 6 — Aug 2026 demo cycle + customer feedback capture
+
+### Delivered
+1. **Floor plan import** — PNG/PDF dimensions → analyze/build layout (not image underlay as primary UX). Spec: `FLOOR_PLAN_IMPORT_SPEC.md`.
+2. **Smart Generate / packer** — leftover fill, aisle clear, no-overlap; arrangement summary accept UI.
+3. **Planogram auto-fill** — wide × deep × stack from product vs shelf dimensions; stack capped by level clear height + `clearanceMeters` + layer gap.
+4. **Shelf layout mode** — Ctrl+click move/resize; Enter exits; normal click opens planogram (Ctrl no longer pans when clicking shelves).
+5. **3D product images** — persistent texture cache so planogram → View in 3D keeps images.
+6. **Docs** — BRD addendum + `project.md` / `openspec/project.md` updated for demo feedback.
+7. **FR-AISLE-01/02** — aisle-based shelf selection (2D per-face; 3D face highlight + corridor emphasis; no gondola pair co-select).
+
+### Customer feedback captured (planned)
+| ID | Item |
+|----|------|
+| ~~FR-AISLE-01/02~~ | ~~Done~~ |
+| FR-BUF-01 | 1 cm product buffer (0.5 cm each side) |
+| FR-TEMP-01 | Temporary storage (tables / pallets) |
+| FR-CUST-01 | Customer role — find product, layout select, no edit |
+| FR-VIEW-01 | Flat adjacent/opposite shelves viewing menu |
+| FR-WH-01 | Warehouse store type (design first) |
 
 ---
 

@@ -114,6 +114,43 @@ function migrate(db) {
   } catch {
     /* already present */
   }
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN shopper_layout_id TEXT");
+  } catch {
+    /* already present */
+  }
+  upsertMissingConfigs(db);
+}
+
+function upsertMissingConfigs(db) {
+  const userCount = db.prepare("SELECT COUNT(*) AS c FROM users").get().c;
+  if (userCount === 0) return;
+  const insert = db.prepare(
+    `INSERT INTO configs (vertical, payload) VALUES (?, ?)
+     ON CONFLICT(vertical) DO NOTHING`
+  );
+  const update = db.prepare("UPDATE configs SET payload = ? WHERE vertical = ?");
+  for (const [vertical, payload] of Object.entries(DEFAULT_CONFIGS)) {
+    insert.run(vertical, JSON.stringify(payload));
+  }
+  const whRow = db.prepare("SELECT payload FROM configs WHERE vertical = 'warehouse'").get();
+  if (whRow) {
+    const cur = JSON.parse(whRow.payload);
+    const merged = {
+      ...DEFAULT_CONFIGS.warehouse,
+      ...cur,
+      vertical: "warehouse",
+      layoutMode: "warehouse",
+      minAisleWidthMeters: Math.max(
+        DEFAULT_CONFIGS.warehouse.minAisleWidthMeters,
+        Number(cur.minAisleWidthMeters) || 0
+      ),
+      fixtureTemplates: DEFAULT_CONFIGS.warehouse.fixtureTemplates,
+    };
+    if (JSON.stringify(merged) !== whRow.payload) {
+      update.run(JSON.stringify(merged), "warehouse");
+    }
+  }
 }
 
 const DEFAULT_CONFIGS = {
@@ -177,6 +214,53 @@ const DEFAULT_CONFIGS = {
     complianceRules: ["Min aisle 1.0m"],
     approvalWorkflowEnabled: true,
   },
+  warehouse: {
+    vertical: "warehouse",
+    units: "metric",
+    layoutMode: "warehouse",
+    minAisleWidthMeters: 3.0,
+    defaultCeilingMeters: 8,
+    fixtureTemplates: [
+      {
+        type: "pallet_rack",
+        label: "Pallet rack",
+        baseKind: "rack",
+        defaultWidthMeters: 2.7,
+        defaultDepthMeters: 1.1,
+        defaultHeightMeters: 6,
+        defaultLevels: 4,
+      },
+      {
+        type: "selective_rack",
+        label: "Selective rack",
+        baseKind: "rack",
+        defaultWidthMeters: 2.4,
+        defaultDepthMeters: 1.0,
+        defaultHeightMeters: 5,
+        defaultLevels: 5,
+      },
+      {
+        type: "bulk_storage",
+        label: "Bulk storage",
+        baseKind: "storage",
+        defaultWidthMeters: 3.6,
+        defaultDepthMeters: 1.2,
+        defaultHeightMeters: 4,
+        defaultLevels: 3,
+      },
+      {
+        type: "staging_lane",
+        label: "Staging lane",
+        baseKind: "storage",
+        defaultWidthMeters: 2.0,
+        defaultDepthMeters: 1.5,
+        defaultHeightMeters: 0.5,
+        defaultLevels: 1,
+      },
+    ],
+    complianceRules: ["Min forklift aisle 3.0m", "Rack height ≤ ceiling − 0.5m clearance"],
+    approvalWorkflowEnabled: true,
+  },
 };
 
 const DEFAULT_USERS = [
@@ -184,6 +268,7 @@ const DEFAULT_USERS = [
   { id: "u-designer", email: "designer@shelfpilot.local", name: "Dana Designer", role: "Designer", password: "password" },
   { id: "u-approver", email: "approver@shelfpilot.local", name: "Pat Approver", role: "Approver", password: "password" },
   { id: "u-viewer", email: "viewer@shelfpilot.local", name: "Vera Viewer", role: "Viewer", password: "password" },
+  { id: "u-customer", email: "customer@shelfpilot.local", name: "Casey Customer", role: "Customer", password: "password" },
 ];
 
 const DEFAULT_CATEGORIES = [
@@ -208,6 +293,11 @@ const DEFAULT_CATEGORIES = [
   { id: "womens", name: "Womenswear", vertical: "apparel", parentId: null, color: "#db2777", storageType: "ambient" },
   { id: "mens", name: "Menswear", vertical: "apparel", parentId: null, color: "#A30A2A", storageType: "ambient" },
   { id: "skincare", name: "Skincare", vertical: "beauty", parentId: null, color: "#f43f5e", storageType: "ambient" },
+  { id: "wh-bulk", name: "Bulk storage", vertical: "warehouse", parentId: null, color: "#64748b", storageType: "ambient" },
+  { id: "wh-pick", name: "Pick face", vertical: "warehouse", parentId: null, color: "#0ea5e9", storageType: "ambient" },
+  { id: "wh-cold", name: "Cold storage", vertical: "warehouse", parentId: null, color: "#38bdf8", storageType: "chilled" },
+  { id: "wh-staging", name: "Staging / dispatch", vertical: "warehouse", parentId: null, color: "#f59e0b", storageType: "ambient" },
+  { id: "wh-returns", name: "Returns", vertical: "warehouse", parentId: null, color: "#a855f7", storageType: "ambient" },
 ];
 
 const DEFAULT_PRODUCTS = [
@@ -257,7 +347,13 @@ export function now() {
 }
 
 export function publicUser(u) {
-  return { id: u.id, email: u.email, name: u.name, role: u.role };
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.name,
+    role: u.role,
+    shopperLayoutId: u.shopper_layout_id || u.shopperLayoutId || null,
+  };
 }
 
 function rowToLayout(row) {
@@ -297,6 +393,8 @@ function layoutToPayload(layout) {
     reviewComment: n.reviewComment ?? null,
     reviewedAt: n.reviewedAt ?? null,
     reviewedBy: n.reviewedBy ?? null,
+    arrangementAcceptedAt: n.arrangementAcceptedAt ?? null,
+    arrangementAcceptedBy: n.arrangementAcceptedBy ?? null,
     contentRevision: n.contentRevision ?? 0,
     submittedRevision: n.submittedRevision ?? null,
     lastSubmittedAt: n.lastSubmittedAt ?? null,
@@ -311,13 +409,26 @@ export const repo = {
     return getDb().prepare("SELECT * FROM users WHERE id = ?").get(id) || null;
   },
   listUsers() {
-    return getDb().prepare("SELECT id, email, name, role FROM users").all();
+    return getDb()
+      .prepare(
+        "SELECT id, email, name, role, shopper_layout_id AS shopperLayoutId FROM users"
+      )
+      .all();
   },
   createUser(user) {
     getDb()
-      .prepare("INSERT INTO users (id, email, name, role, password) VALUES (?, ?, ?, ?, ?)")
-      .run(user.id, user.email, user.name, user.role, user.password);
-    return { id: user.id, email: user.email, name: user.name, role: user.role };
+      .prepare(
+        "INSERT INTO users (id, email, name, role, password, shopper_layout_id) VALUES (?, ?, ?, ?, ?, ?)"
+      )
+      .run(
+        user.id,
+        user.email,
+        user.name,
+        user.role,
+        user.password,
+        user.shopperLayoutId || null
+      );
+    return publicUser(user);
   },
   updateUser(id, patch) {
     const existing = this.findUserById(id);
@@ -325,10 +436,16 @@ export const repo = {
     const name = patch.name != null ? patch.name : existing.name;
     const role = patch.role != null ? patch.role : existing.role;
     const password = patch.password != null ? patch.password : existing.password;
+    const shopperLayoutId =
+      patch.shopperLayoutId !== undefined
+        ? patch.shopperLayoutId || null
+        : existing.shopper_layout_id || null;
     getDb()
-      .prepare("UPDATE users SET name = ?, role = ?, password = ? WHERE id = ?")
-      .run(name, role, password, id);
-    return { id, email: existing.email, name, role };
+      .prepare(
+        "UPDATE users SET name = ?, role = ?, password = ?, shopper_layout_id = ? WHERE id = ?"
+      )
+      .run(name, role, password, shopperLayoutId, id);
+    return publicUser({ ...existing, name, role, shopper_layout_id: shopperLayoutId });
   },
   /**
    * AUTH_SESSION_TTL — seconds. 0 or unset = long-lived demo sessions (no expiry).
@@ -422,6 +539,7 @@ export const repo = {
     const key = String(vertical || "retail").toLowerCase();
     const row = getDb().prepare("SELECT payload FROM configs WHERE vertical = ?").get(key);
     if (row) return JSON.parse(row.payload);
+    if (DEFAULT_CONFIGS[key]) return { ...DEFAULT_CONFIGS[key] };
     const retail = getDb().prepare("SELECT payload FROM configs WHERE vertical = 'retail'").get();
     return retail ? JSON.parse(retail.payload) : DEFAULT_CONFIGS.retail;
   },
@@ -433,6 +551,20 @@ export const repo = {
       )
       .run(config.vertical, JSON.stringify(config));
     return config;
+  },
+  getShopperExperience() {
+    const row = getDb().prepare("SELECT payload FROM configs WHERE vertical = '__shopper__'").get();
+    if (row) return JSON.parse(row.payload);
+    return { enabled: false, layoutId: null, displayName: "", entryPointId: null };
+  },
+  putShopperExperience(exp) {
+    getDb()
+      .prepare(
+        `INSERT INTO configs (vertical, payload) VALUES ('__shopper__', ?)
+         ON CONFLICT(vertical) DO UPDATE SET payload = excluded.payload`
+      )
+      .run(JSON.stringify(exp));
+    return exp;
   },
   listCategories(vertical) {
     if (vertical) {

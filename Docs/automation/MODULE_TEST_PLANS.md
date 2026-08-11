@@ -98,14 +98,34 @@ Use these plans when writing specs. Each plan maps to IDs in [COVERAGE_MATRIX.md
 - **Given** Viewer opens layout  
 - **Then** Generate disabled/hidden **or** API returns 403 if forced  
 
+### TP-ARR-01 · Arrangement panel after generate
+- **Given** Designer runs Smart Generate successfully  
+- **Then** arrangement panel shows pending banner, shelf KPIs, volume, layout summary  
+- **And** Accept is enabled when total shelves > 0  
+
+### TP-ARR-02 · Accept unlocks allocation
+- **Given** pending arrangement summary  
+- **When** Accept arrangement (fill optional)  
+- **Then** reopen control appears; planogram mutations allowed (API 201 vs 409 before)  
+
+### TP-ARR-03 · Demo pre-accepted
+- **Given** Demo Hypermarket — Generated  
+- **When** open editor  
+- **Then** “View arrangement & volume summary” is available with accepted banner  
+
 ---
 
 # Plan 5 — Planogram
 
 ### TP-POG-01 · Open planogram
-- **Given** shelf with category on demo layout  
+- **Given** shelf with category on layout **and arrangement accepted**  
 - **When** select shelf / open planogram  
 - **Then** planogram modal/panel shows levels  
+
+### TP-POG-01b · Blocked until arrangement accepted
+- **Given** shelves present and arrangement not accepted  
+- **When** try to open planogram  
+- **Then** toast/error `arrangement_not_accepted`; arrangement panel stays/opens  
 
 ### TP-POG-02 · Find products
 - **Given** editor with filled planograms  
@@ -240,9 +260,11 @@ Use these plans when writing specs. Each plan maps to IDs in [COVERAGE_MATRIX.md
 ### TP-ADM-03 · Store Master — shelf templates
 - **Given** Admin → Store Master  
 - **When** select Hypermarket vertical  
-- **Then** fixture/shelf template editor visible with types (e.g. gondola)  
-- **When** save templates (if changed safely)  
-- **Then** success feedback (prefer non-destructive assert: editor loads + save button works on no-op)  
+- **Then** shelf template cards show Width / Depth / Height in **feet**  
+- **And** Shelf volume (cu ft / cu in) is visible and read-only  
+- **When** dimensions change  
+- **Then** volume updates automatically  
+- **And** layout remains usable on narrow viewports  
 
 ### TP-ADM-04 · Approval Workflow toggle
 - **Given** Admin → Approval Workflow  

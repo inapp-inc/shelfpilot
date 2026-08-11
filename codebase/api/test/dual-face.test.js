@@ -72,7 +72,7 @@ test("packAislesAndShelves assigns sequential displayNumber per front/back pair"
       { x: 0, y: 10 },
     ],
   };
-  const { shelves } = packAislesAndShelves(layout, { minAisleWidthMeters: 1.2 });
+  const { shelves } = packAislesAndShelves(layout, { minAisleWidthMeters: 1.2, orientation: "horizontal" });
   assert.ok(shelves.length >= 2);
   assert.ok(shelves.every((s) => s.pairId && (s.pairRole === "front" || s.pairRole === "back")));
   const byPair = new Map();

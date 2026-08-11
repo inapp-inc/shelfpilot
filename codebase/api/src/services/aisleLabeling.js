@@ -3,6 +3,7 @@
  */
 import { aisleFootprint } from "./polygonContainment.js";
 import { shelfCenter } from "./aisleBinding.js";
+import { syncPairedShelfFootprints } from "./shelfFaces.js";
 
 const SHELF_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -110,11 +111,13 @@ export function shelfDisplayLabelFromAisle(shelf, aisles) {
 /** Snap fixture positions to 5 cm grid for alignment. */
 export function quantizeFixturePositions(shelves) {
   const q = (v) => Math.round(Number(v) * 20) / 20;
-  return (shelves || []).map((s) => ({
+  const snapped = (shelves || []).map((s) => ({
     ...s,
     x: q(s.x),
     y: q(s.y),
   }));
+  // Re-derive pair backs from snapped fronts so faces stay on one footprint.
+  return syncPairedShelfFootprints(snapped);
 }
 
 export function quantizeAislePositions(aisles) {

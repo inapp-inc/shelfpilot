@@ -14,6 +14,7 @@ export class LayoutCreateModal {
   }
 
   async fill({ name, storeTypeId = "hypermarket", length = "24", width = "16", height = "3.2" }) {
+    await this.page.getByTestId("layout-create-mode-dimensions").click();
     await this.page.getByTestId("layout-create-name").fill(name);
     await this.page.getByTestId("layout-create-store-type").selectOption(storeTypeId);
     await this.page.getByTestId("layout-create-length").fill(String(length));

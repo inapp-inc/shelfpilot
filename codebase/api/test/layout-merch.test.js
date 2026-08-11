@@ -10,6 +10,7 @@ import {
   previewFacings,
 } from "../src/services/planogramMath.js";
 import { normalizeShelf, setFaceCategory, faceCategoryId } from "../src/services/shelfFaces.js";
+import { acceptArrangement } from "./helpers.js";
 
 async function withServer(fn) {
   resetDbForTests();
@@ -35,9 +36,9 @@ async function login(port) {
   return body.token;
 }
 
-test("computeSuggestedDepthFacings floors shelf depth / product depth", () => {
-  assert.equal(computeSuggestedDepthFacings(0.6, 0.2), 3);
-  assert.equal(computeSuggestedDepthFacings(0.5, 0.25), 2);
+test("computeSuggestedDepthFacings floors shelf depth / product depth with FR-BUF-01 buffer", () => {
+  assert.equal(computeSuggestedDepthFacings(0.6, 0.2), 2);
+  assert.equal(computeSuggestedDepthFacings(0.5, 0.25), 1);
 });
 
 test("previewFacings returns maxDepthFacings and suggestedLevels", () => {
@@ -48,8 +49,8 @@ test("previewFacings returns maxDepthFacings and suggestedLevels", () => {
       attributes: { widthMeters: 0.2, heightMeters: 0.4, depthMeters: 0.2 },
     },
   });
-  assert.equal(preview.maxFacings, 6);
-  assert.equal(preview.maxDepthFacings, 3);
+  assert.equal(preview.maxFacings, 5);
+  assert.equal(preview.maxDepthFacings, 2);
   assert.equal(preview.suggestedLevels, 5);
   assert.equal(preview.assumedDimensions, false);
 });
@@ -170,8 +171,8 @@ test("planogram preview includes maxDepthFacings via API", async () => {
     });
     assert.equal(preview.status, 200);
     const body = await preview.json();
-    assert.equal(body.maxFacings, 6);
-    assert.equal(body.maxDepthFacings, 3);
+    assert.equal(body.maxFacings, 5);
+    assert.equal(body.maxDepthFacings, 2);
     assert.equal(body.suggestedLevels, 5);
   });
 });
@@ -254,7 +255,9 @@ test("planogram POST stores depthFacings; preview accepts segmentId", async () =
     });
     assert.equal(preview.status, 200);
     const previewBody = await preview.json();
-    assert.equal(previewBody.maxFacings, 6);
+    assert.equal(previewBody.maxFacings, 5);
+
+    await acceptArrangement(port, headers, layout.id);
 
     const pog = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}/shelves/${shelfId}/planogram`, {
       method: "POST",
@@ -274,7 +277,7 @@ test("planogram POST stores depthFacings; preview accepts segmentId", async () =
     const placement = faceA.planogram[0];
     assert.equal(placement.facings, 4);
     assert.equal(placement.depthFacings, 2);
-    assert.equal(placement.maxDepthFacings, 3);
+    assert.equal(placement.maxDepthFacings, 2);
     assert.equal(placement.segmentId, segA.id);
   });
 });

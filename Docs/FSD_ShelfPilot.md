@@ -1,12 +1,14 @@
 # Functional Specification: ShelfPilot
 
-**Version:** 1.1  
-**Date:** 2026-07-15  
-**Status:** Draft — consolidated (LE + AG + ML + docs-quality-refresh)  
+**Version:** 1.2  
+**Date:** 2026-08-11  
+**Status:** Draft — consolidated (LE + AG + ML + docs-quality-refresh) + Aug 2026 demo addendum  
 **Author:** AI-Generated from layout-editor-planogram, layout-autogen-walkthrough, merch-layers-polygon-fix  
-**Stakeholders:** Store Planning, Merchandising, Operations, Vertical Admin, IT Admin, Analytics, Executive Sponsors  
+**Stakeholders:** Store Planning, Merchandising, Operations, Vertical Admin, IT Admin, Analytics, Executive Sponsors, Customer/Shopper (planned)  
 
-**Traceability:** Gaps F1–F5, D1–D3, I1–I3, N1–N4, S1–S3 · Source: `project.md` · Changes: `layout-editor-planogram`, `layout-autogen-walkthrough`, `merch-layers-polygon-fix`, `docs-quality-refresh`
+**Traceability:** Gaps F1–F5, D1–D3, I1–I3, N1–N4, S1–S3 · Source: `project.md` · Changes: `layout-editor-planogram`, `layout-autogen-walkthrough`, `merch-layers-polygon-fix`, `docs-quality-refresh`  
+
+**Aug 2026 BRD addendum (authoritative for new demo requirements):** [`Docs/BRD_ADDENDUM_DEMO_AUG_2026.md`](./BRD_ADDENDUM_DEMO_AUG_2026.md) — FR-AISLE-*, FR-BUF-01, FR-TEMP-01, FR-CUST-01, FR-VIEW-01, FR-WH-01.
 
 ---
 

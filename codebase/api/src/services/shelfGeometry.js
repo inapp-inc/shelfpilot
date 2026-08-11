@@ -6,6 +6,9 @@
 /** Shelf board/deck thickness removed from each level's clear height. */
 export const BOARD_THICKNESS_M = 0.03;
 
+/** Vertical gap reserved between stacked product layers (matches 3D render). */
+export const STACK_LAYER_GAP_M = 0.008;
+
 /** Floor of clear height per level so degenerate data never yields zero volume. */
 const MIN_CLEAR_HEIGHT_M = 0.05;
 
@@ -86,9 +89,15 @@ export function levelClearHeights(shelf) {
       gap = Number.isFinite(clearance) && clearance > 0 ? clearance : shelfHeight / (count + 1);
     }
 
+    let clearM = Math.max(MIN_CLEAR_HEIGHT_M, gap);
+    const clearanceCap = Number(lv.clearanceMeters);
+    if (Number.isFinite(clearanceCap) && clearanceCap > 0) {
+      clearM = Math.min(clearM, clearanceCap);
+    }
+
     return {
       levelIndex: Number(lv.levelIndex) || 0,
-      clearHeightMeters: Number(Math.max(MIN_CLEAR_HEIGHT_M, gap).toFixed(3)),
+      clearHeightMeters: Number(clearM.toFixed(3)),
     };
   });
 }

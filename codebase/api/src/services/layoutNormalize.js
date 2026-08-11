@@ -13,7 +13,9 @@ import { normalizeObstacle } from "./obstacles.js";
 import { normalizeFloorPlan } from "./floorPlan.js";
 import { finalizeAisleLabeling } from "./aisleLabeling.js";
 import { finalizeAisleShelfBinding } from "./aisleBinding.js";
+import { guaranteeEveryShelfHasAisle } from "./aisleCoverage.js";
 import { alignLayoutGeometry } from "./polygonContainment.js";
+import { isTemporaryStorageShelf, isTemporaryStorageType } from "./temporaryStorage.js";
 
 export function fixtureToShelf(f) {
   const usable = Number(f.usableWidthMeters ?? f.widthMeters) || 1.2;
@@ -46,6 +48,7 @@ export function fixtureToShelf(f) {
     faces: f.faces,
     levels: Array.isArray(f.levels) && f.levels.length ? f.levels : levelsForType(type, height, f.defaultLevels),
     planogram: Array.isArray(f.planogram) ? f.planogram : [],
+    temporaryStorage: f.temporaryStorage === true || isTemporaryStorageType(type),
   };
   return normalizeShelf(shelf);
 }
@@ -70,6 +73,7 @@ export function shelfToFixture(s) {
     pairRole: s.pairRole || null,
     doubleSided: s.doubleSided,
     displayNumber: s.displayNumber ?? null,
+    temporaryStorage: isTemporaryStorageShelf(s),
   };
 }
 
@@ -99,8 +103,9 @@ export function normalizeLayout(layout) {
     layout.reviewComment = String(layout.reviewComment);
   }
   const fixtures = layout.fixtures || [];
-  let shelves = layout.shelves || [];
-  if (!shelves.length && fixtures.length) {
+  const shelvesProvided = Array.isArray(layout.shelves);
+  let shelves = shelvesProvided ? layout.shelves : [];
+  if (!shelves.length && !shelvesProvided && fixtures.length) {
     shelves = fixtures.map(fixtureToShelf);
   }
   shelves = shelves.map((s) => normalizeShelf({ ...s }));
@@ -145,8 +150,9 @@ export function normalizeLayout(layout) {
   }));
   if (layout.shelves?.length && layout.aisles?.length) {
     let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
-    layout.shelves = bound.shelves;
-    layout.aisles = bound.aisles;
+    const covered = guaranteeEveryShelfHasAisle(bound.shelves, bound.aisles, layout);
+    layout.shelves = covered.shelves;
+    layout.aisles = covered.aisles;
     const labeled = finalizeAisleLabeling(layout.shelves, layout.aisles, layout);
     layout.shelves = labeled.shelves;
     layout.aisles = labeled.aisles;
@@ -158,7 +164,20 @@ export function normalizeLayout(layout) {
   layout.zones = (layout.zones || []).map(normalizeZone);
   layout.entryPoints = (layout.entryPoints || []).map(normalizeEntryPoint);
   layout.obstacles = (layout.obstacles || []).map(normalizeObstacle);
+  if (layout.floorPlan?.url && (!Array.isArray(layout.polygon) || layout.polygon.length < 3)) {
+    const w = Number(layout.widthMeters) || 10;
+    const d = Number(layout.depthMeters) || 8;
+    layout.shape = "polygon";
+    layout.polygon = [
+      { x: 0, y: 0 },
+      { x: w, y: 0 },
+      { x: w, y: d },
+      { x: 0, y: d },
+    ];
+  }
   layout.floorPlan = normalizeFloorPlan(layout.floorPlan);
+  layout.arrangementAcceptedAt = layout.arrangementAcceptedAt || null;
+  layout.arrangementAcceptedBy = layout.arrangementAcceptedBy || null;
   return layout;
 }
 

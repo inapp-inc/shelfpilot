@@ -344,22 +344,37 @@ export default function AnalyticsWidgetBoard({
   const storageVolume = summary?.storageVolume;
   const categoryVolume = summary?.categoryVolumeAllocation;
   const weightLoad = summary?.weightLoad;
+  const merchFill = summary?.merchandisingFill;
+  const categorySpace = summary?.categorySpaceAllocation;
+
+  const categoryUsesLinearMerch = Boolean(
+    categorySpace?.totalLinearMeters && categorySpace.rows?.some((r) => r.linearSharePercent != null)
+  );
 
   const categoryBars = useMemo(
     () =>
       withSeriesColors(
-        (summary?.categorySpaceAllocation?.rows || summary?.allocationByCategory || []).map((r) => {
+        (categorySpace?.rows || summary?.allocationByCategory || []).map((r) => {
+          if (categoryUsesLinearMerch) {
+            const linearM = Number(r.linearMeters) || 0;
+            return {
+              label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
+              value: linearM,
+              color: r.color,
+              title: `${r.categoryName || r.categoryId}: ${formatLengthFromMeters(linearM)} linear · share ${r.linearSharePercent ?? "—"}% · facings × product width on shelf`,
+            };
+          }
           const sqm = Number(r.areaSqm) || 0;
           const sqft = Math.round(sqmToSqFt(sqm));
           return {
             label: categoryDisplayName(r.categoryId, categories) || r.categoryName,
             value: sqft,
             color: r.color,
-            title: `${r.categoryName || r.categoryId}: ${sqft} sq ft (${sqm.toFixed(2)} m²) · share ${r.areaSharePercent ?? "—"}% · floor-share ÷ mapped categories`,
+            title: `${r.categoryName || r.categoryId}: ${sqft} sq ft (${sqm.toFixed(2)} m²) · share ${r.areaSharePercent ?? r.sharePercent ?? "—"}% · shelf floor allocation`,
           };
         })
       ),
-    [summary, categories]
+    [summary, categories, categoryUsesLinearMerch, categorySpace]
   );
 
   const fixtureMix = withSeriesColors(
@@ -461,6 +476,20 @@ export default function AnalyticsWidgetBoard({
             />
           </AnalyticsWidgetCard>
         );
+      case "kpi-linear-fill":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            <KpiContent
+              value={exec?.linearFillPercent != null ? `${exec.linearFillPercent}%` : "—"}
+              hint={
+                merchFill
+                  ? `${formatLengthFromMeters(merchFill.usedLinearMeters, { suffix: false })} / ${formatLengthFromMeters(merchFill.totalLinearCapacityMeters)} shelf linear`
+                  : "Planogram vs usable width"
+              }
+              formula={merchFill?.formula?.linearFillPercent}
+            />
+          </AnalyticsWidgetCard>
+        );
       case "kpi-shelf-load":
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
@@ -550,8 +579,8 @@ export default function AnalyticsWidgetBoard({
             {categoryBars.length ? (
               <BarChart
                 data={categoryBars}
-                unit=" sq ft"
-                formula={summary?.categorySpaceAllocation?.formula}
+                unit={categoryUsesLinearMerch ? " m" : " sq ft"}
+                formula={categorySpace?.formula}
               />
             ) : (
               <div className="muted">No category mappings yet.</div>
@@ -562,6 +591,41 @@ export default function AnalyticsWidgetBoard({
         return (
           <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
             {fixtureMix.length ? <DonutChart data={fixtureMix} centerValue={String(summary.fixtureCount)} centerLabel="fixtures" /> : <div className="muted">No fixtures placed.</div>}
+          </AnalyticsWidgetCard>
+        );
+      case "temporary-storage":
+        return (
+          <AnalyticsWidgetCard key={id} {...widgetCardProps(id)}>
+            {summary?.temporaryStorage?.count ? (
+              <div className="analytics-temp-storage">
+                <div className="analytics-inline-kpi">
+                  <strong>{summary.temporaryStorage.count}</strong>
+                  <span className="muted">units · {summary.temporaryStorage.areaSqm} m² floor area</span>
+                </div>
+                {(summary.temporaryStorage.byType || []).length ? (
+                  <table className="analytics-table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Count</th>
+                        <th>Area</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.temporaryStorage.byType.map((row) => (
+                        <tr key={row.type}>
+                          <td>{row.label || row.type}</td>
+                          <td className="mono">{row.count}</td>
+                          <td className="mono">{row.areaSqm} m²</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : null}
+              </div>
+            ) : (
+              <div className="muted">No temporary storage placed.</div>
+            )}
           </AnalyticsWidgetCard>
         );
       case "capacity-compare":

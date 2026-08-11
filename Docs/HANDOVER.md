@@ -24,7 +24,10 @@
 ## 2) Specs and contracts
 
 - **OpenSpec:** `openspec/specs/**`, changes `shelfpilot-mvp/`, `layout-editor-planogram/`, `layout-autogen-walkthrough/`, `merch-layers-polygon-fix/`, `docs-quality-refresh/`
-- **FSD:** `Docs/FSD_ShelfPilot.md`
+- **Product brief:** root `project.md` · `openspec/project.md`
+- **BRD addendum (Aug 2026 demo):** `Docs/BRD_ADDENDUM_DEMO_AUG_2026.md`
+- **FSD:** `Docs/FSD_ShelfPilot.md` (v1.2 points at addendum)
+- **Floor plan import:** `Docs/FLOOR_PLAN_IMPORT_SPEC.md`
 - **OpenAPI:** `Docs/openapi.yaml`
 - **UI SoT:** `ui/ShelfPilot.dc.html`
 - **Local architecture:** `Docs/ARCHITECTURE_LOCAL.md`
@@ -60,7 +63,7 @@ npm run seed:demo
 npm run smoke:demo
 ```
 
-**Playwright E2E (Phases A–C smoke):** [`Docs/automation/`](./automation/README.md) · `cd codebase && npm run test:e2e:smoke` (app must be up at http://localhost:8080) — auth, layouts, Smart Generate, 3D, dashboard, Viewer RBAC, catalog CRUD, admin tabs, approval.
+**Playwright E2E (Phases A–C smoke):** [`Docs/automation/`](./automation/README.md) · `cd codebase && npm run test:e2e:smoke` (app must be up at http://localhost:8080) — auth, layouts, Smart Generate, arrangement & volume accept, 3D, dashboard, Viewer RBAC, catalog CRUD, admin tabs, approval.
 
 **Evidence (2026-07-15):** **25 API tests passed; OpenAPI 36 operations verified**; seed + smoke scripts ship in `codebase/`.
 

@@ -67,7 +67,7 @@ export default function ShelfBadge({ shelf: rawShelf, pixelWidth, categories, ai
     if (w < 36) {
       return (
         <span className="mono shelf-badge-compact" title={title} style={{ fontSize: 9, fontWeight: 700, color: "#1f2933" }}>
-          {labelA.replace(/[A-Z]$/, "")}
+          {String(labelA ?? "—").replace(/[A-Z]$/, "")}
           <span style={{ display: "inline-flex", gap: 2, marginLeft: 3 }}>
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: colorA || "#A30A2A" }} />
             <span style={{ width: 5, height: 5, borderRadius: "50%", background: colorB || "#0ea5e9" }} />
