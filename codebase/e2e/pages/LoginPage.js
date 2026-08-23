@@ -11,16 +11,14 @@ export class LoginPage {
     await expect(this.page.getByTestId("login-form")).toBeVisible();
   }
 
-  async login(email, password, role = "Designer") {
+  async login(email, password) {
     await this.page.getByTestId("login-email").fill(email);
     await this.page.getByTestId("login-password").fill(password);
-    await this.page.getByTestId("login-role").selectOption(role);
     await this.page.getByTestId("login-submit").click();
   }
 
   async expectLoggedIn(role) {
     await expect(this.page.getByTestId("login-form")).toHaveCount(0);
-    await expect(this.page.getByTestId("nav-layouts")).toBeVisible();
     if (role) {
       await expect(this.page.getByTestId("user-role")).toHaveText(role);
     }

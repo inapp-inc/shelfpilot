@@ -16,7 +16,7 @@ if "%VITE_BASE_PATH%"=="" set "VITE_BASE_PATH=/shelfpilot/"
 
 REM Read version + build a timestamp using Node (avoids locale issues)
 for /f "usebackq delims=" %%v in (`node -p "require('./package.json').version"`) do set "VERSION=%%v"
-for /f "usebackq delims=" %%t in (`node -e "console.log(new Date().toISOString().replace(/[-:T]/g,'').slice(0,15))"`) do set "STAMP=%%t"
+for /f "usebackq delims=" %%t in (`node -e "console.log(new Date().toISOString().replace(/[-:T]/g,'').slice(0,14))"`) do set "STAMP=%%t"
 set "NAME=shelfpilot-%VERSION%-%STAMP%"
 set "STAGE=%REPO%\.package\%NAME%"
 
@@ -33,6 +33,7 @@ mkdir "%STAGE%\api"
 mkdir "%STAGE%\web"
 robocopy "api\src" "%STAGE%\api\src" /e /nfl /ndl /njh /njs /nc /ns >nul
 copy /y "api\package.json" "%STAGE%\api\package.json" >nul
+robocopy "shared" "%STAGE%\shared" /e /nfl /ndl /njh /njs /nc /ns >nul
 robocopy "web\dist" "%STAGE%\web\dist" /e /nfl /ndl /njh /njs /nc /ns >nul
 copy /y "deploy\deploy.sh" "%STAGE%\" >nul
 copy /y "deploy\start.sh" "%STAGE%\" >nul
@@ -58,7 +59,7 @@ if not exist "%REPO%\dist-package" mkdir "%REPO%\dist-package"
 set "ZIP=%REPO%\dist-package\%NAME%.zip"
 if exist "%ZIP%" del /q "%ZIP%"
 pushd "%STAGE%"
-tar -a -c -f "%ZIP%" api web deploy.sh start.sh ecosystem.config.cjs .env.example README.md Dockerfile docker-compose.yml VERSION || ( popd & goto :err )
+tar -a -c -f "%ZIP%" api shared web deploy.sh start.sh ecosystem.config.cjs .env.example README.md Dockerfile docker-compose.yml VERSION || ( popd & goto :err )
 popd
 
 rmdir /s /q "%REPO%\.package"

@@ -2,15 +2,15 @@
 import { NAV_MODULES } from "./storeTypes.js";
 import { pathForModule } from "./routes.js";
 
-const ALL = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
+const ALL = ["Designer", "Approver", "Viewer", "Admin", "SuperAdmin", "Customer"];
 
 /** Top-level modules visible in header nav. */
 const MODULE_ROLES = {
   dashboard: ALL.filter((r) => r !== "Customer"),
-  layouts: ALL.filter((r) => r !== "Customer"),
-  catalog: ALL.filter((r) => r !== "Customer"),
-  analytics: ALL.filter((r) => r !== "Customer"),
-  admin: ["Admin", "Approver"],
+  layouts: ALL.filter((r) => r !== "Customer" && r !== "SuperAdmin"),
+  catalog: ALL.filter((r) => r !== "Customer" && r !== "SuperAdmin"),
+  analytics: ALL.filter((r) => r !== "Customer" && r !== "SuperAdmin"),
+  admin: ["Admin", "SuperAdmin", "Approver"],
   shop: ["Customer"],
 };
 
@@ -30,7 +30,16 @@ export function navModulesForRole(role) {
 
 export function shopPathForUser(user) {
   if (user?.shopperLayoutId) return pathForModule("shop", user.shopperLayoutId);
+  const firstGrant = user?.storeAccess?.[0];
+  if (firstGrant) return pathForModule("shop", firstGrant);
   return null;
+}
+
+export function permittedShopLayoutIds(user) {
+  const ids = new Set();
+  if (user?.shopperLayoutId) ids.add(user.shopperLayoutId);
+  for (const id of user?.storeAccess || []) ids.add(id);
+  return [...ids];
 }
 
 export function defaultModuleForRole(role) {
@@ -51,20 +60,37 @@ export function canApproveLayouts(role) {
 }
 
 export function canManageUsers(role) {
-  return role === "Admin";
+  return role === "Admin" || role === "SuperAdmin";
+}
+
+export function creatableUserRoles(role) {
+  if (role === "SuperAdmin") return ["Admin"];
+  if (role === "Admin") return ["Designer", "Approver", "Viewer", "Customer"];
+  return [];
+}
+
+export function canDeleteUser(actorRole, actorId, targetUser) {
+  if (!canManageUsers(actorRole) || !targetUser || targetUser.id === actorId) return false;
+  if (targetUser.role === "SuperAdmin") return false;
+  if (actorRole === "SuperAdmin") return targetUser.role === "Admin";
+  if (actorRole === "Admin") {
+    return ["Designer", "Approver", "Viewer", "Customer"].includes(targetUser.role);
+  }
+  return false;
 }
 
 export function canEditAdminConfig(role) {
-  return role === "Admin";
+  return role === "Admin" || role === "SuperAdmin";
 }
 
 export function canViewAuditLog(role) {
-  return ["Admin", "Approver"].includes(role);
+  return ["Admin", "SuperAdmin", "Approver"].includes(role);
 }
 
 /** Admin section tabs — Approver sees audit only. */
 export function adminTabsForRole(role) {
-  if (role === "Admin") return ["users", "stores", "approval", "configuration", "shopper", "audit"];
+  if (role === "SuperAdmin") return ["users", "audit"];
+  if (role === "Admin") return ["users", "stores", "approval", "configuration", "audit"];
   if (role === "Approver") return ["audit"];
   return [];
 }
@@ -74,16 +100,15 @@ export function adminTabLabel(tab) {
   if (tab === "stores") return "Store Master";
   if (tab === "approval") return "Approval Workflow";
   if (tab === "configuration") return "Configuration";
-  if (tab === "shopper") return "Shopper kiosk";
   if (tab === "audit") return "Audit Log";
   return tab;
 }
 
 /** Widgets restricted by role — omitted roles see all non-listed widgets. */
 export const ANALYTICS_WIDGET_ROLES = {
-  "audit-activity": ["Admin", "Approver"],
-  "layout-standardization": ["Admin", "Approver"],
-  "store-benchmarking": ["Admin", "Approver"],
+  "audit-activity": ["Admin", "SuperAdmin", "Approver"],
+  "layout-standardization": ["Admin", "SuperAdmin", "Approver"],
+  "store-benchmarking": ["Admin", "SuperAdmin", "Approver"],
 };
 
 export function canViewAnalyticsWidget(role, widgetId) {

@@ -152,8 +152,8 @@ export function aisleOverlapArea(a, b, layout) {
   return ox * oy;
 }
 
-/** Merge same-orientation aisles that share cross-axis band or overlap footprint. */
-export function dedupeOverlappingParallelAisles(aisles, layout, { parallelTol = 0.22 } = {}) {
+/** Merge same-orientation aisles that share cross-axis band AND are close/overlapping along the run. */
+export function dedupeOverlappingParallelAisles(aisles, layout, { parallelTol = 0.22, maxRunJoin = 0.5 } = {}) {
   if (!aisles?.length) return [];
   const out = aisles.map((a) => ({ ...a }));
   let changed = true;
@@ -170,9 +170,13 @@ export function dedupeOverlappingParallelAisles(aisles, layout, { parallelTol = 
         const eb = aisleRunSpan(b);
         const crossNear = Math.abs(ea.cross - eb.cross) <= parallelTol;
         const runOverlap = Math.min(ea.end, eb.end) - Math.max(ea.start, eb.start);
+        const runGap = Math.max(0, Math.max(ea.start, eb.start) - Math.min(ea.end, eb.end));
         const footprintOverlap = aisleOverlapArea(a, b, layout) > 0.02;
+        // Require run proximity — crossNear alone used to bridge distant segments and
+        // invent corridors through empty space (often outside the fixture polygon).
+        const runJoinable = runGap <= maxRunJoin;
 
-        if (crossNear || (footprintOverlap && runOverlap > 0.2)) {
+        if ((crossNear && runJoinable) || (footprintOverlap && runOverlap > 0.2)) {
           mergeParallelAisles(a, b);
           out.splice(j, 1);
           changed = true;
@@ -367,12 +371,29 @@ export function enforceAisleMinimums(aisles, shelves, layout, minWidth, options 
   return dedupeOverlappingParallelAisles(working, layout);
 }
 
+function aisleAreaSqm(aisle) {
+  return (Number(aisle.lengthMeters) || 1) * (Number(aisle.widthMeters) || 1);
+}
+
+/**
+ * True when two same-orientation walk aisles occupy the same strip (stacked).
+ * Short leftover stubs are left alone so corner bays keep a face aisle.
+ */
+export function aislesAreCoincident(a, b, layout, { sameOrientRatio = 0.5, maxCrossSep = 0.28 } = {}) {
+  if (!a || !b || a.orientation !== b.orientation) return false;
+  if (Math.min(Number(a.lengthMeters) || 0, Number(b.lengthMeters) || 0) < 2.4) return false;
+  const ea = aisleRunSpan(a);
+  const eb = aisleRunSpan(b);
+  if (Math.abs(ea.cross - eb.cross) > maxCrossSep) return false;
+  const overlap = aisleOverlapArea(a, b, layout);
+  if (overlap < 0.04) return false;
+  const ratio = overlap / Math.max(0.01, Math.min(aisleAreaSqm(a), aisleAreaSqm(b)));
+  return ratio >= sameOrientRatio;
+}
+
 /** Drop shorter aisles when footprints overlap (warehouse corridor cleanup). */
 export function pruneOverlappingAisles(aisles, layout, minOverlapSqm = 0.08) {
-  const sorted = [...(aisles || [])].sort((a, b) => {
-    const area = (x) => (Number(x.lengthMeters) || 1) * (Number(x.widthMeters) || 1);
-    return area(b) - area(a);
-  });
+  const sorted = [...(aisles || [])].sort((a, b) => aisleAreaSqm(b) - aisleAreaSqm(a));
   const kept = [];
   for (const candidate of sorted) {
     let blocked = false;
@@ -382,6 +403,26 @@ export function pruneOverlappingAisles(aisles, layout, minOverlapSqm = 0.08) {
         break;
       }
     }
+    if (!blocked) kept.push(candidate);
+  }
+  return kept;
+}
+
+/**
+ * Drop aisles stacked on another aisle. Keeps legitimate T/X crossings so mixed
+ * packs still have a connected walk grid.
+ */
+export function pruneCoincidentAisles(aisles, layout) {
+  const sorted = [...(aisles || [])].sort((a, b) => {
+    if (a.source === "manual" && b.source !== "manual") return -1;
+    if (b.source === "manual" && a.source !== "manual") return 1;
+    return aisleAreaSqm(b) - aisleAreaSqm(a);
+  });
+  const kept = [];
+  for (const candidate of sorted) {
+    const blocked =
+      candidate.source !== "manual" &&
+      kept.some((existing) => aislesAreCoincident(candidate, existing, layout));
     if (!blocked) kept.push(candidate);
   }
   return kept;

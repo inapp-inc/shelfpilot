@@ -30,6 +30,11 @@ import {
 } from "./layout-editor/shelfFaces.js";
 import { effectiveSegmentsForLevel, resolveSegmentId, shelfLevels } from "./layout-editor/planogramSegments.js";
 import {
+  SHELF_3D_GROUP_FOCUS,
+  shelfUnitContainsPhysicalId,
+  shelfUnitInFocusGroup,
+} from "./layout-editor/shelfFocusGroup.js";
+import {
   buildProductLookup,
   productImageUrl,
   resolveCatalogProduct,
@@ -370,8 +375,11 @@ function collectShelfFacingInstances({
   layout,
   activeFace,
   focusPhysicalShelfId,
+  focusPhysicalShelfIds,
   shelfFocusMode,
+  focusLevelIndex = null,
   isHighlighted,
+  isTarget,
   d,
   dual,
   merchW,
@@ -386,8 +394,10 @@ function collectShelfFacingInstances({
     layout,
     activeFace,
     focusPhysicalShelfId,
+    focusPhysicalShelfIds,
     shelfFocusMode,
-    isHighlighted
+    isHighlighted,
+    isTarget
   ).map((face) => ({
     ...face,
     z: faceShoppersideZ(d, dual, face.id, faceDepthMeters),
@@ -405,6 +415,14 @@ function collectShelfFacingInstances({
 
     for (const placement of face.planogram) {
       if (!placement?.productId) continue;
+      if (
+        shelfFocusMode &&
+        focusLevelIndex != null &&
+        isHighlighted &&
+        Number(placement.levelIndex) !== Number(focusLevelIndex)
+      ) {
+        continue;
+      }
       const lv =
         levels.find((l) => Number(l.levelIndex) === Number(placement.levelIndex)) ||
         levels[Number(placement.levelIndex)] ||
@@ -643,14 +661,39 @@ function overviewBlockSize(block, segW, maxDim) {
   };
 }
 
-function planogramRowsForFace(f, layout, faceId, focusPhysicalShelfId, shelfFocusMode, isHighlighted, activeFace) {
-  if (shelfFocusMode && isHighlighted && focusPhysicalShelfId) {
-    // Only the selected aisle face carries planogram products in focus mode.
+function planogramRowsForFace(
+  f,
+  layout,
+  faceId,
+  focusPhysicalShelfId,
+  focusPhysicalShelfIds,
+  shelfFocusMode,
+  isHighlighted,
+  activeFace,
+  isTarget
+) {
+  if (shelfFocusMode && !isHighlighted) {
+    return [];
+  }
+  if (shelfFocusMode && isHighlighted) {
+    let physId = focusPhysicalShelfId;
     if (f.pairDisplay && f.pairShelfIds) {
-      const physId = faceId === "B" ? f.pairShelfIds.back : f.pairShelfIds.front;
-      if (physId !== focusPhysicalShelfId) return [];
+      physId = faceId === "B" ? f.pairShelfIds.back : f.pairShelfIds.front;
+      if (physId !== focusPhysicalShelfId) {
+        return focusPhysicalShelfIds?.includes(physId)
+          ? planogramFromPhysicalShelf(layout, physId, "A")
+          : [];
+      }
+      if (faceId !== activeFace) return [];
       return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, "A");
     }
+    physId = f.id;
+    const allowed =
+      focusPhysicalShelfIds?.length > 0
+        ? focusPhysicalShelfIds.includes(physId)
+        : physId === focusPhysicalShelfId;
+    if (!allowed) return [];
+    if (!isTarget) return planogramFromPhysicalShelf(layout, physId, "A");
     if (faceId !== activeFace) return [];
     return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, faceId);
   }
@@ -664,17 +707,67 @@ function planogramRowsForFace(f, layout, faceId, focusPhysicalShelfId, shelfFocu
   return planogramForMerchandisingFace(f, faceId, layout);
 }
 
-function resolveFacePlanograms(f, layout, faceId, focusPhysicalShelfId, shelfFocusMode, isHighlighted) {
+function resolveFacePlanograms(
+  f,
+  layout,
+  faceId,
+  focusPhysicalShelfId,
+  focusPhysicalShelfIds,
+  shelfFocusMode,
+  isHighlighted,
+  isTarget
+) {
   const dual = isDoubleSided(f);
   const activeFace = faceId === "B" ? "B" : "A";
 
   if (dual) {
     return [
-      { id: "A", planogram: planogramRowsForFace(f, layout, "A", focusPhysicalShelfId, shelfFocusMode, isHighlighted, activeFace) },
-      { id: "B", planogram: planogramRowsForFace(f, layout, "B", focusPhysicalShelfId, shelfFocusMode, isHighlighted, activeFace) },
+      {
+        id: "A",
+        planogram: planogramRowsForFace(
+          f,
+          layout,
+          "A",
+          focusPhysicalShelfId,
+          focusPhysicalShelfIds,
+          shelfFocusMode,
+          isHighlighted,
+          activeFace,
+          isTarget
+        ),
+      },
+      {
+        id: "B",
+        planogram: planogramRowsForFace(
+          f,
+          layout,
+          "B",
+          focusPhysicalShelfId,
+          focusPhysicalShelfIds,
+          shelfFocusMode,
+          isHighlighted,
+          activeFace,
+          isTarget
+        ),
+      },
     ];
   }
-  return [{ id: "A", planogram: planogramRowsForFace(f, layout, "A", focusPhysicalShelfId, shelfFocusMode, isHighlighted, activeFace) }];
+  return [
+    {
+      id: "A",
+      planogram: planogramRowsForFace(
+        f,
+        layout,
+        "A",
+        focusPhysicalShelfId,
+        focusPhysicalShelfIds,
+        shelfFocusMode,
+        isHighlighted,
+        activeFace,
+        isTarget
+      ),
+    },
+  ];
 }
 
 function facingCenterX(placement, shelf, storageFaceId, facingIndex, facingsCount, merchWidth) {
@@ -753,6 +846,47 @@ function shelfFocusCamera(highlight, faceId = "A", { peek = false } = {}) {
   };
 }
 
+function shelfGroupFocusCamera(focusPoints, faceId = "A") {
+  if (!focusPoints?.length) return null;
+  if (focusPoints.length === 1) {
+    return shelfFocusCamera(focusPoints[0], faceId, { peek: true });
+  }
+  const xs = focusPoints.map((p) => p.x);
+  const zs = focusPoints.map((p) => p.z);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const alongSpan = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
+  const merchSpan = Math.max(
+    alongSpan + Math.max(...focusPoints.map((p) => p.merchW || p.w || 1.2)) * 0.42,
+    ...focusPoints.map((p) => Math.max(p.merchW || p.w || 1.2, p.d || 0.6))
+  );
+  const h = Math.max(...focusPoints.map((p) => p.h || 2));
+  const view = shelfFocusCamera(
+    { x: cx, z: cz, h, merchW: merchSpan, d: merchSpan * 0.65, rot: focusPoints[0].rot || 0, dual: false },
+    faceId,
+    { peek: true }
+  );
+  return {
+    ...view,
+    minDist: Math.max(1.6, merchSpan * 0.5),
+    maxDist: Math.max(14, merchSpan * 3.4),
+  };
+}
+
+function levelsForFocusRender(levels, { shelfFocusMode, focusLevelIndex, isHighlighted, isTarget }) {
+  if (!shelfFocusMode || focusLevelIndex == null || !isHighlighted || !isTarget) return levels;
+  const idx = Number(focusLevelIndex);
+  return levels.filter((lv) => Number(lv.levelIndex) === idx);
+}
+
+function focusPhysicalIdForUnit(unit, focusIds, focusTargetId) {
+  if (focusTargetId && shelfUnitContainsPhysicalId(unit, focusTargetId)) return focusTargetId;
+  for (const id of focusIds || []) {
+    if (shelfUnitContainsPhysicalId(unit, id)) return id;
+  }
+  return unit?.id || focusTargetId || null;
+}
+
 /** Immersive Three.js: Orbit (zoom/pan) or Walk; shelves, levels, planogram facings. */
 export default function Scene3D({
   layout,
@@ -764,7 +898,10 @@ export default function Scene3D({
   highlightFaceId = "A",
   highlightAisleId = null,
   focusPhysicalShelfId = null,
+  focusPhysicalShelfIds = null,
+  focusLevelIndex = null,
   shelfFocusMode = false,
+  shelfGroupFocus = SHELF_3D_GROUP_FOCUS,
   focusRequest = 0,
   contentRevision = 0,
   routePoints = null,
@@ -874,6 +1011,19 @@ export default function Scene3D({
 
     let highlightCenter = null;
     let highlightFocus = null;
+    const groupFocusPoints = [];
+
+    const focusIds =
+      focusPhysicalShelfIds?.length > 0
+        ? focusPhysicalShelfIds
+        : focusPhysicalShelfId
+          ? [focusPhysicalShelfId]
+          : highlightShelfId
+            ? [highlightShelfId]
+            : [];
+    const focusTargetId = focusPhysicalShelfId || highlightShelfId;
+    const useGroupFocus = Boolean(shelfFocusMode && shelfGroupFocus && focusIds.length > 1);
+    const useFocusSet = Boolean(shelfFocusMode && focusIds.length > 0);
 
     const shelves = shelvesForScene3D(
       layout.shelves?.length ? layout.shelves : layout.fixtures || []
@@ -906,11 +1056,15 @@ export default function Scene3D({
       const faceA = f.faces?.find((face) => face.id === "A");
       const faceB = f.faces?.find((face) => face.id === "B");
 
-      // FR-AISLE-02: highlight only the selected physical shelf/face — never by pairId.
-      const isHighlighted = unitTouchesPhysicalShelf(f, highlightShelfId);
-      const activeFace = resolveActiveFaceForHighlight(f, highlightShelfId, highlightFaceId);
+      // FR-AISLE-02 / FR-VIEW-02: highlight the focus group in 3D; target shelf gets the ring.
+      const isTarget = shelfUnitContainsPhysicalId(f, focusTargetId);
+      const isHighlighted = useFocusSet
+        ? shelfUnitInFocusGroup(f, focusIds)
+        : unitTouchesPhysicalShelf(f, highlightShelfId);
+      const activeFace = resolveActiveFaceForHighlight(f, focusTargetId || highlightShelfId, highlightFaceId);
 
-      const dimOthers = false;
+      const dimOthers = shelfFocusMode ? !isHighlighted : false;
+      const neighborOpacity = isHighlighted && !isTarget ? 0.85 : 1;
 
       // Category colour coding: the base frame takes face A's category hue, and
       // each merchandising board takes its own face colour on double-sided units.
@@ -933,8 +1087,8 @@ export default function Scene3D({
       const frameMat = new THREE.MeshStandardMaterial({
         color: baseColor,
         roughness: 0.7,
-        transparent: dimOthers || (isHighlighted && dual),
-        opacity: dimOthers ? 0.28 : isHighlighted && dual ? 0.55 : 1,
+        transparent: dimOthers || (isHighlighted && dual) || neighborOpacity < 1,
+        opacity: dimOthers ? 0.28 : neighborOpacity < 1 ? neighborOpacity : isHighlighted && dual ? 0.55 : 1,
       });
       if (isHighlighted && !dual) {
         frameMat.emissive = new THREE.Color(faceHighlightColor(activeFace));
@@ -957,12 +1111,18 @@ export default function Scene3D({
       disposables.push(uprightGeo, uprightMat);
 
       if (isHighlighted) {
+        const unitFocusId = focusPhysicalIdForUnit(f, focusIds, focusTargetId || highlightShelfId);
         const focusPt = shelfFaceWorldFocus(raw, layout, {
-          physicalShelfId: highlightShelfId,
-          faceId: activeFace,
+          physicalShelfId: unitFocusId,
+          faceId: isTarget ? activeFace : "A",
         });
-        highlightCenter = { x: focusPt.x, z: focusPt.z };
-        highlightFocus = { ...focusPt, dual, activeFace };
+        if (isTarget) {
+          highlightCenter = { x: focusPt.x, z: focusPt.z };
+          highlightFocus = { ...focusPt, dual, activeFace };
+        }
+        if (useGroupFocus) {
+          groupFocusPoints.push({ ...focusPt, dual, activeFace, merchW, w, d, h, rot });
+        }
       }
 
       if (dual) {
@@ -1008,12 +1168,18 @@ export default function Scene3D({
       }
 
       const levels = shelfLevels(f);
+      const renderLevels = levelsForFocusRender(levels, {
+        shelfFocusMode,
+        focusLevelIndex,
+        isHighlighted,
+        isTarget,
+      });
       // Boards stay near-white so products read clearly; the category hue is a wash.
       const boardTint = (hex, fallback) =>
         hex ? new THREE.Color(fallback).lerp(new THREE.Color(hex), 0.22) : new THREE.Color(fallback);
 
       if (!dual) {
-        for (const lv of levels) {
+        for (const lv of renderLevels) {
           const y = Number(lv.heightFromFloorMeters) || 0.4;
           const boardGeo = new THREE.BoxGeometry(w * 0.96, 0.04, d * 0.92);
           const boardMat = new THREE.MeshStandardMaterial({
@@ -1026,7 +1192,7 @@ export default function Scene3D({
           disposables.push(boardGeo, boardMat);
         }
       } else {
-        for (const lv of levels) {
+        for (const lv of renderLevels) {
           const y = Number(lv.heightFromFloorMeters) || 0.4;
           const shelfGeo = new THREE.BoxGeometry(w * 0.94, 0.03, faceDepth * 0.88);
           const shelfAMat = new THREE.MeshStandardMaterial({
@@ -1070,9 +1236,12 @@ export default function Scene3D({
         f,
         layout,
         activeFace,
-        focusPhysicalShelfId,
+        focusPhysicalShelfId: focusTargetId,
+        focusPhysicalShelfIds: useFocusSet ? focusIds : null,
         shelfFocusMode,
+        focusLevelIndex,
         isHighlighted,
+        isTarget,
         d,
         dual,
         merchW,
@@ -1085,7 +1254,7 @@ export default function Scene3D({
         productBuildJobs.push({ group, rawPlacements });
       }
 
-      if (isHighlighted) {
+      if (isTarget) {
         const ringGeo = new THREE.RingGeometry(Math.max(w, d) * 0.38, Math.max(w, d) * 0.46, 48);
         const ringMat = new THREE.MeshBasicMaterial({
           color: faceHighlightColor(activeFace),
@@ -1149,20 +1318,24 @@ export default function Scene3D({
 
       camera.rotation.order = "YXZ";
       const onKey = (e) => {
+        touchActivity();
         if (e.type === "keydown") keys.add(e.code);
         else keys.delete(e.code);
       };
       const onMove = (e) => {
+        touchActivity();
         if (!pointerLocked) return;
         yaw -= e.movementX * 0.0022;
         pitch -= e.movementY * 0.0016;
         pitch = Math.max(-0.35, Math.min(0.65, pitch));
       };
       const onClick = () => {
+        touchActivity();
         renderer.domElement.requestPointerLock?.();
       };
       const onLockChange = () => {
         pointerLocked = document.pointerLockElement === renderer.domElement;
+        touchActivity();
       };
       window.addEventListener("keydown", onKey);
       window.addEventListener("keyup", onKey);
@@ -1180,10 +1353,15 @@ export default function Scene3D({
       };
     } else {
       const focusFace = highlightFocus?.activeFace || (highlightFaceId === "B" ? "B" : "A");
-      const focus =
-        highlightFocus && (shelfFocusMode || highlightShelfId)
-          ? shelfFocusCamera(highlightFocus, focusFace, { peek: !shelfFocusMode })
+      const groupCamera =
+        useGroupFocus && groupFocusPoints.length > 0
+          ? shelfGroupFocusCamera(groupFocusPoints, focusFace)
           : null;
+      const focus =
+        groupCamera ||
+        (highlightFocus && (shelfFocusMode || highlightShelfId)
+          ? shelfFocusCamera(highlightFocus, focusFace, { peek: !shelfFocusMode })
+          : null);
       const overview = layoutOverviewCamera(layout);
       const lookX = focus?.lookX ?? highlightCenter?.x ?? cx;
       const lookZ = focus?.lookZ ?? highlightCenter?.z ?? cz;
@@ -1242,13 +1420,16 @@ export default function Scene3D({
       }
 
       const onOrbitChange = () => {
+        touchActivity();
         softClampOrbitTarget(controls.target, layout, maxDim, orbitAnchor);
         camera.position.y = Math.max(0.22, camera.position.y);
       };
       const onOrbitStart = () => {
+        touchActivity();
         renderer.domElement.style.cursor = "grabbing";
       };
       const onOrbitEnd = () => {
+        touchActivity();
         renderer.domElement.style.cursor = "grab";
       };
       controls.addEventListener("change", onOrbitChange);
@@ -1261,17 +1442,21 @@ export default function Scene3D({
           return;
         }
         if (e.key === "+" || e.key === "=") {
+          touchActivity();
           dollyCamera(camera, controls.target, 0.82);
           controls.update();
           e.preventDefault();
         } else if (e.key === "-" || e.key === "_") {
+          touchActivity();
           dollyCamera(camera, controls.target, 1.18);
           controls.update();
           e.preventDefault();
         } else if (e.key === "0") {
+          touchActivity();
           applyView(overview, DEFAULT_OVERVIEW_ZOOM);
           e.preventDefault();
         } else if ((e.key === "r" || e.key === "R") && focus) {
+          touchActivity();
           applyView(focus);
           e.preventDefault();
         }
@@ -1317,9 +1502,48 @@ export default function Scene3D({
     window.addEventListener("resize", onResize);
 
     const clock = new THREE.Clock();
-    let frame = 0;
+    let animFrameId = 0;
+    let loopActive = false;
+    const IDLE_PAUSE_MS = 2000;
+    let lastActivity = performance.now();
+
+    const touchActivity = () => {
+      lastActivity = performance.now();
+      if (!loopActive && alive) {
+        loopActive = true;
+        animate();
+      }
+    };
+
+    const stopRenderLoop = () => {
+      if (animFrameId) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = 0;
+      }
+      loopActive = false;
+    };
+
+    const renderNeeded = () => {
+      if (!alive || document.visibilityState === "hidden") return false;
+      if (walkMode) {
+        return pointerLocked || keys.size > 0 || performance.now() - lastActivity < IDLE_PAUSE_MS;
+      }
+      return performance.now() - lastActivity < IDLE_PAUSE_MS;
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") stopRenderLoop();
+      else touchActivity();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     const animate = () => {
-      frame = requestAnimationFrame(animate);
+      if (!alive) return;
+      animFrameId = requestAnimationFrame(animate);
+      if (!renderNeeded()) {
+        stopRenderLoop();
+        return;
+      }
       const dt = clock.getDelta();
       if (walkMode && avatar) {
         const speed = (keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 2.2) * dt;
@@ -1418,7 +1642,13 @@ export default function Scene3D({
       }
 
       renderer.render(scene, camera);
+
+      if (!walkMode && performance.now() - lastActivity >= IDLE_PAUSE_MS) {
+        stopRenderLoop();
+      }
     };
+
+    touchActivity();
     animate();
 
     const matCache = new Map();
@@ -1484,7 +1714,8 @@ export default function Scene3D({
     return () => {
       alive = false;
       setProductsLoading(false);
-      cancelAnimationFrame(frame);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopRenderLoop();
       resizeObserver?.disconnect();
       window.removeEventListener("resize", onResize);
       cleanupWalk?.();
@@ -1511,7 +1742,10 @@ export default function Scene3D({
     highlightFaceId,
     highlightAisleId,
     focusPhysicalShelfId,
+    focusPhysicalShelfIds,
+    focusLevelIndex,
     shelfFocusMode,
+    shelfGroupFocus,
     contentRevision,
     routePoints,
     entryPoint,

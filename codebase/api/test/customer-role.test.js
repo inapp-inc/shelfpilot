@@ -112,6 +112,69 @@ test("Customer user requires shopper layout on create", async () => {
   });
 });
 
+test("Customer can only read the assigned shopper layout", async () => {
+  await withServer(async (port) => {
+    const adminToken = await fetch(`http://127.0.0.1:${port}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "admin@shelfpilot.local", password: "password", role: "Admin" }),
+    }).then((r) => r.json()).then((b) => b.token);
+
+    const createA = await fetch(`http://127.0.0.1:${port}/layouts`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Assigned store",
+        vertical: "retail",
+        widthMeters: 12,
+        depthMeters: 10,
+        heightMeters: 3,
+      }),
+    });
+    const layoutA = (await createA.json()).id;
+
+    const createB = await fetch(`http://127.0.0.1:${port}/layouts`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Other store",
+        vertical: "retail",
+        widthMeters: 12,
+        depthMeters: 10,
+        heightMeters: 3,
+      }),
+    });
+    const layoutB = (await createB.json()).id;
+
+    await fetch(`http://127.0.0.1:${port}/admin/users`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "shopper-only@test.local",
+        name: "Shopper Only",
+        role: "Customer",
+        password: "password",
+        shopperLayoutId: layoutA,
+      }),
+    });
+
+    const token = await login(port, "Customer", "shopper-only@test.local");
+    const headers = { authorization: `Bearer ${token}` };
+
+    const list = await fetch(`http://127.0.0.1:${port}/layouts`, { headers });
+    assert.equal(list.status, 200);
+    const items = (await list.json()).items || [];
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, layoutA);
+
+    const own = await fetch(`http://127.0.0.1:${port}/layouts/${layoutA}?include=planograms`, { headers });
+    assert.equal(own.status, 200);
+
+    const other = await fetch(`http://127.0.0.1:${port}/layouts/${layoutB}`, { headers });
+    assert.equal(other.status, 403);
+  });
+});
+
 test("login accepts Customer role", async () => {
   await withServer(async (port) => {
     const token = await login(port, "Customer");

@@ -1,6 +1,6 @@
 /** Auto-calc optimal fixture count from footprint and vertical template density. */
 
-import { buildLayoutAnalyticsReport, buildPortfolioAnalyticsReport, polygonArea } from "./analyticsReports.js";
+import { buildLayoutAnalyticsReport, buildPortfolioAnalyticsFromSummaries, polygonArea } from "./analyticsReports.js";
 import { totalObstacleAreaSqm } from "./obstacles.js";
 
 export function computeAutoCalc(layout, config) {
@@ -69,9 +69,9 @@ export function computeAnalytics(layout, categories, config = null, listProducts
   return buildLayoutAnalyticsReport(layout, categories, config || {}, listProducts);
 }
 
-export function computePortfolioAnalytics(layouts, categories, verticalFilter) {
+export function computePortfolioAnalytics(records, categories, verticalFilter) {
   const list = typeof categories === "function" ? [] : categories || [];
-  const report = buildPortfolioAnalyticsReport(layouts, list, verticalFilter);
+  const report = buildPortfolioAnalyticsFromSummaries(records, list, verticalFilter);
   // Legacy fields for backward compatibility
   return {
     layoutCount: report.layoutCount,

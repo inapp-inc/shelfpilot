@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import LoadingState from "../components/LoadingState.jsx";
+import { categoryLabel } from "../catalog/buildCategoryTree.js";
 import MissingProductsPanel from "./MissingProductsPanel.jsx";
 import {
   collectLayoutPlacements,
   uniquePlacedProducts,
   placementsGroupedByCategory,
+  summarizeProductSpace,
+  layoutPlanogramSignature,
 } from "./placementIndex.js";
 
 /** Toolbar modal — find product/category placements + missing SKUs. */
@@ -17,6 +21,7 @@ export default function MissingProductsDialog({
   layout = null,
   products = [],
   onLocateShelf,
+  planogramsLoading = false,
 }) {
   const [tab, setTab] = useState("product");
   const [query, setQuery] = useState("");
@@ -39,23 +44,80 @@ export default function MissingProductsDialog({
     setSelectedCategoryId(null);
   }, [open]);
 
-  const placements = useMemo(
-    () => (open && layout ? collectLayoutPlacements(layout, products, categories) : []),
-    [open, layout, products, categories]
-  );
+  const planogramSig = useMemo(() => layoutPlanogramSignature(layout), [layout]);
+
+  const placements = useMemo(() => {
+    if (!open || !layout || planogramsLoading) return [];
+    return collectLayoutPlacements(layout, products, categories, { dedupeGondolaMirrors: false });
+  }, [open, layout, products, categories, planogramsLoading, planogramSig]);
   const placedProducts = useMemo(() => uniquePlacedProducts(placements), [placements]);
   const categoryGroups = useMemo(() => placementsGroupedByCategory(placements), [placements]);
 
+  const catalogProducts = useMemo(() => {
+    if (!open) return [];
+    const allProducts = products || [];
+    const vertical = layout?.vertical;
+    const inVertical = vertical
+      ? allProducts.filter((p) => {
+          const cat = categories.find((c) => c.id === p.categoryId);
+          return !cat?.vertical || cat.vertical === vertical;
+        })
+      : allProducts;
+    const catalogSource = inVertical.length ? inVertical : allProducts;
+    const byId = new Map(placedProducts.map((p) => [p.productId, p]));
+    return catalogSource
+      .map((p) => {
+        const placed = byId.get(p.id);
+        return (
+          placed || {
+            productId: p.id,
+            productName: p.name || p.id,
+            sku: p.sku || "",
+            categoryId: p.categoryId,
+            categoryName: categoryLabel(categories, p.categoryId) || "",
+            placementCount: 0,
+          }
+        );
+      })
+      .sort((a, b) => a.productName.localeCompare(b.productName));
+  }, [open, layout?.vertical, products, categories, placedProducts]);
+
+  const listProducts = useMemo(() => {
+    const merged = new Map();
+    const source = catalogProducts.length ? catalogProducts : placedProducts;
+    for (const p of source) {
+      const key = String(p.productName || p.productId || "")
+        .trim()
+        .toLowerCase();
+      if (!key) continue;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, { ...p });
+        continue;
+      }
+      existing.placementCount = (existing.placementCount || 0) + (p.placementCount || 0);
+      existing.linearMeters = Number(existing.linearMeters || 0) + Number(p.linearMeters || 0);
+      existing.volumeM3 = Number(existing.volumeM3 || 0) + Number(p.volumeM3 || 0);
+      if ((p.placementCount || 0) > 0) {
+        existing.productId = p.productId;
+        existing.sku = p.sku || existing.sku;
+        existing.categoryId = p.categoryId || existing.categoryId;
+        existing.categoryName = p.categoryName || existing.categoryName;
+      }
+    }
+    return [...merged.values()].sort((a, b) => a.productName.localeCompare(b.productName));
+  }, [catalogProducts, placedProducts]);
+
   const filteredProducts = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return placedProducts;
-    return placedProducts.filter(
+    if (!q) return listProducts;
+    return listProducts.filter(
       (p) =>
         p.productName.toLowerCase().includes(q) ||
         String(p.sku || "").toLowerCase().includes(q) ||
         String(p.categoryName || "").toLowerCase().includes(q)
     );
-  }, [placedProducts, query]);
+  }, [listProducts, query]);
 
   const filteredCategories = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -65,12 +127,28 @@ export default function MissingProductsDialog({
 
   const selectedProductPlacements = useMemo(() => {
     if (!selectedProductId) return [];
-    return placements.filter((p) => p.productId === selectedProductId);
-  }, [placements, selectedProductId]);
+    const selected = listProducts.find((p) => p.productId === selectedProductId);
+    const nameKey = String(selected?.productName || "")
+      .trim()
+      .toLowerCase();
+    if (!nameKey) return placements.filter((p) => p.productId === selectedProductId);
+    return placements.filter(
+      (p) =>
+        p.productId === selectedProductId ||
+        String(p.productName || "")
+          .trim()
+          .toLowerCase() === nameKey
+    );
+  }, [placements, selectedProductId, listProducts]);
 
   const selectedCategory = useMemo(
     () => categoryGroups.find((g) => g.categoryId === selectedCategoryId) || null,
     [categoryGroups, selectedCategoryId]
+  );
+
+  const selectedProductSpace = useMemo(
+    () => summarizeProductSpace(selectedProductPlacements),
+    [selectedProductPlacements]
   );
 
   if (!open) return null;
@@ -148,11 +226,19 @@ export default function MissingProductsDialog({
 
         {tab === "product" ? (
           <div className="find-products-body">
+            {planogramsLoading ? (
+              <div className="find-products-loading">
+                <LoadingState label="Loading shelf placements…" size="md" />
+              </div>
+            ) : (
+              <>
             <div className="find-products-list-pane">
               {filteredProducts.length === 0 ? (
                 <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-                  {placedProducts.length === 0
-                    ? "No products placed on shelves yet. Use Smart Generate or open a shelf planogram."
+                  {listProducts.length === 0
+                    ? products.length === 0
+                      ? "No products in catalog yet — add products in Catalog first."
+                      : "No products placed on shelves yet. Use Smart Generate or open a shelf planogram."
                     : "No products match this search."}
                 </p>
               ) : (
@@ -166,7 +252,9 @@ export default function MissingProductsDialog({
                       >
                         <span className="find-products-list-name">{p.productName}</span>
                         <span className="muted mono find-products-list-count">
-                          {p.placementCount} loc{p.placementCount === 1 ? "" : "s"}
+                          {p.placementCount > 0
+                            ? `${p.placementCount} loc${p.placementCount === 1 ? "" : "s"}`
+                            : "Not on shelf"}
                         </span>
                       </button>
                     </li>
@@ -180,9 +268,15 @@ export default function MissingProductsDialog({
                   Select a product to see shelf number, level, and position.
                 </p>
               ) : selectedProductPlacements.length === 0 ? (
-                <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-                  No placements found.
-                </p>
+                <div className="find-products-not-placed">
+                  <strong>
+                    {listProducts.find((p) => p.productId === selectedProductId)?.productName ||
+                      selectedProductId}
+                  </strong>
+                  <p className="muted" style={{ margin: "8px 0 0", fontSize: 13 }}>
+                    This product is not on any shelf in this layout yet.
+                  </p>
+                </div>
               ) : (
                 <>
                   <div className="find-products-detail-head">
@@ -190,6 +284,9 @@ export default function MissingProductsDialog({
                     <span className="muted">
                       {selectedProductPlacements.length} location
                       {selectedProductPlacements.length === 1 ? "" : "s"}
+                      {selectedProductSpace.linearMeters > 0
+                        ? ` · ${selectedProductSpace.linearMeters} m linear · ${selectedProductSpace.volumeM3} m³`
+                        : ""}
                     </span>
                   </div>
                   <ul className="find-products-locations">
@@ -221,6 +318,8 @@ export default function MissingProductsDialog({
                 </>
               )}
             </div>
+              </>
+            )}
           </div>
         ) : null}
 

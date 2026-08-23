@@ -47,6 +47,7 @@ const REQUIRED_OPERATIONS = [
   ["get", "/admin/users"],
   ["post", "/admin/users"],
   ["patch", "/admin/users/{userId}"],
+  ["delete", "/admin/users/{userId}"],
   ["get", "/admin/audit"],
 ];
 

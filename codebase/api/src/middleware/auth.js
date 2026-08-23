@@ -11,14 +11,21 @@ export function authRequired(req, res, next) {
   if (!user) {
     return res.status(401).json({ error: "unauthorized" });
   }
-  req.user = { ...publicUser(user), role: session.role || user.role };
+  req.user = { ...publicUser(user), role: user.role };
   req.token = token;
   next();
 }
 
+function expandedRoles(roles) {
+  const out = new Set(roles);
+  if (roles.includes("Admin")) out.add("SuperAdmin");
+  return out;
+}
+
 export function requireRoles(...roles) {
+  const allowed = expandedRoles(roles);
   return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!req.user || !allowed.has(req.user.role)) {
       return res.status(403).json({ error: "forbidden" });
     }
     next();

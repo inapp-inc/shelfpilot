@@ -1,16 +1,17 @@
 /**
- * Aisle-centric shelf labels: aisle 4 → 4A, 4B, 4C (unique per physical shelf on that aisle).
+ * Aisle-centric shelf labels — delegates bay formatting to shared labelFormat.mjs (FR-NAME-01).
  */
 import { aisleFootprint } from "./polygonContainment.js";
 import { shelfCenter } from "./aisleBinding.js";
 import { syncPairedShelfFootprints } from "./shelfFaces.js";
+import {
+  DEFAULT_NAMING_CONVENTION,
+  formatShelfCode,
+  resolveNamingConvention,
+  shelfLetter,
+} from "../../../shared/labelFormat.mjs";
 
-const SHELF_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-export function shelfLetter(index) {
-  const i = Math.max(0, Math.floor(Number(index) || 0));
-  return SHELF_LETTERS[i] ?? String(i + 1);
-}
+export { shelfLetter };
 
 /** Map 0 → AA, 1 → AB, 26 → BA, etc. */
 export function labelIndexToSuffix(labelIndex) {
@@ -18,11 +19,9 @@ export function labelIndexToSuffix(labelIndex) {
   return `${shelfLetter(Math.floor(i / 26))}${shelfLetter(i % 26)}`;
 }
 
-/** e.g. aisle 4, label index 0 → "4A"; index 1 → "4B" */
-export function aisleShelfLabel(aisleNumber, labelIndex) {
-  const n = Number(aisleNumber);
-  if (!Number.isFinite(n) || n < 1) return "—";
-  return `${n}${shelfLetter(labelIndex)}`;
+/** e.g. aisle 4, label index 0 → "4A" using layout/vertical naming convention when provided. */
+export function aisleShelfLabel(aisleNumber, labelIndex, convention = DEFAULT_NAMING_CONVENTION) {
+  return formatShelfCode(aisleNumber, labelIndex, convention);
 }
 
 function aisleSortKey(aisle, layout) {
@@ -100,11 +99,14 @@ export function finalizeAisleLabeling(shelves, aisles, layout) {
   return { shelves: labeledShelves, aisles: numberedAisles };
 }
 
-export function shelfDisplayLabelFromAisle(shelf, aisles) {
+export function shelfDisplayLabelFromAisle(shelf, aisles, layout = null, verticalConfig = null) {
   const aisle = (aisles || []).find((a) => a.id === shelf?.aisleId);
   const n = aisle?.aisleNumber;
   const idx = shelf?.shelfIndexAlongAisle;
-  if (n != null && idx != null) return aisleShelfLabel(n, idx);
+  if (n != null && idx != null) {
+    const convention = resolveNamingConvention(layout, verticalConfig);
+    return aisleShelfLabel(n, idx, convention);
+  }
   return null;
 }
 

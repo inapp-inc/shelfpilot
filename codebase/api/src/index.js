@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -42,9 +43,11 @@ const corsOrigins = (process.env.CORS_ORIGINS || "")
   .filter(Boolean);
 
 app.use(helmet(serveWeb ? { contentSecurityPolicy: false } : undefined));
+app.use(compression());
 app.use(cors(corsOrigins.length ? { origin: corsOrigins, credentials: true } : undefined));
-// Floor-plan drawings are uploaded as base64 JSON and are far larger than thumbnails.
-app.use(express.json({ limit: "25mb" }));
+// Floor-plan drawings are uploaded as base64 JSON — cap body size to limit memory spikes.
+const jsonLimitMb = Number(process.env.JSON_BODY_LIMIT_MB) || 5;
+app.use(express.json({ limit: `${jsonLimitMb}mb` }));
 app.use(correlationId);
 app.use(morgan("combined"));
 
@@ -98,12 +101,11 @@ app.use((err, _req, res, _next) => {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  let demoBootstrap = null;
-  if (process.env.NODE_ENV !== "test" && process.env.SKIP_DEMO_BOOTSTRAP !== "1") {
-    getDb();
-    demoBootstrap = ensureDemoReady();
-  }
+  const startupStarted = Date.now();
+  getDb();
+  const dbReadyMs = Date.now() - startupStarted;
   app.listen(port, () => {
+    const listenMs = Date.now() - startupStarted;
     console.log(
       JSON.stringify({
         level: "info",
@@ -115,9 +117,36 @@ if (isMain) {
         productImagesDir: resolveProductImagesDir(),
         productImagesBootstrapped: imageBootstrap.copied,
         floorPlansDir: resolveFloorPlansDir(),
-        demoBootstrap,
+        skipDemoBootstrap: process.env.SKIP_DEMO_BOOTSTRAP === "1",
+        startupMs: listenMs,
+        dbReadyMs,
       })
     );
+    if (process.env.NODE_ENV !== "test" && process.env.SKIP_DEMO_BOOTSTRAP !== "1") {
+      setImmediate(() => {
+        const started = Date.now();
+        try {
+          const demoBootstrap = ensureDemoReady();
+          console.log(
+            JSON.stringify({
+              level: "info",
+              message: "demo_bootstrap_complete",
+              durationMs: Date.now() - started,
+              demoBootstrap,
+            })
+          );
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              message: "demo_bootstrap_failed",
+              durationMs: Date.now() - started,
+              error: err.message,
+            })
+          );
+        }
+      });
+    }
   });
 }
 

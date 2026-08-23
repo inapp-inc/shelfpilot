@@ -2,6 +2,15 @@ import { Router } from "express";
 import { repo, getConfig } from "../store/sqlite.js";
 import { authRequired } from "../middleware/auth.js";
 import { computeAnalytics, computePortfolioAnalytics } from "../services/layoutMath.js";
+import {
+  computePortfolioKpis,
+} from "../services/analyticsReports.js";
+import { listCategoriesForLayout } from "../services/categoryTree.js";
+import {
+  getCachedPortfolio,
+  invalidatePortfolioAnalyticsCache,
+  setCachedPortfolio,
+} from "../services/portfolioAnalyticsCache.js";
 
 export const analyticsRouter = Router();
 
@@ -14,13 +23,61 @@ function resolveLayoutOrSnapshot(layoutId, versionId) {
   return repo.getLayout(layoutId);
 }
 
+/** Backfill portfolioKpis for layouts saved before Phase 2 (one-time per layout). */
+function ensurePortfolioKpis(records) {
+  let backfilled = 0;
+  for (const rec of records) {
+    if (rec.portfolioKpis) continue;
+    const layout = repo.getLayout(rec.id);
+    if (!layout) continue;
+    const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
+    const config = getConfig(layout.vertical);
+    rec.portfolioKpis = computePortfolioKpis(layout, categories, config);
+    repo.patchPortfolioKpis(rec.id, rec.portfolioKpis);
+    backfilled += 1;
+  }
+  if (backfilled > 0) {
+    invalidatePortfolioAnalyticsCache();
+    console.log(
+      JSON.stringify({
+        level: "info",
+        message: "portfolio_kpis_backfill",
+        count: backfilled,
+      })
+    );
+  }
+  return records;
+}
+
 analyticsRouter.get("/analytics/portfolio", authRequired, (req, res) => {
   const vertical = req.query.vertical || null;
-  const summaries = repo.listLayouts();
-  const layouts = summaries.map((l) => repo.getLayout(l.id)).filter(Boolean);
+  const cached = getCachedPortfolio(vertical);
+  if (cached) {
+    return res.json({ ...cached, cached: true });
+  }
+
+  const started = performance.now();
+  let records = repo.listLayoutPortfolioSummaries();
+  if (records.some((r) => !r.portfolioKpis)) {
+    records = ensurePortfolioKpis(records);
+  }
   const categories = repo.listCategories();
-  const summary = computePortfolioAnalytics(layouts, categories, vertical);
-  res.json(summary);
+  const summary = computePortfolioAnalytics(records, categories, vertical);
+  const durationMs = Number((performance.now() - started).toFixed(3));
+  if (durationMs > 500) {
+    console.log(
+      JSON.stringify({
+        level: "info",
+        message: "analytics_portfolio",
+        layoutCount: records.length,
+        durationMs,
+        backfill: records.filter((r) => r.portfolioKpis).length,
+      })
+    );
+  }
+  const payload = { ...summary, durationMs, cached: false };
+  setCachedPortfolio(vertical, payload);
+  res.json(payload);
 });
 
 analyticsRouter.get("/analytics/audit-summary", authRequired, (req, res) => {

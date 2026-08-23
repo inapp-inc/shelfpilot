@@ -18,6 +18,7 @@ import LayoutArrangementPanel from "./LayoutArrangementPanel.jsx";
 import EditorPanelShell from "./EditorPanelShell.jsx";
 import PlanogramEditorModal from "./PlanogramEditorModal.jsx";
 import AisleShelfViewModal from "./AisleShelfViewModal.jsx";
+import { focusGroupFor } from "./shelfFocusGroup.js";
 import MissingProductsDialog from "./MissingProductsDialog.jsx";
 import EditorCanvasBar from "./EditorCanvasBar.jsx";
 import { estimateFixtureCapacity } from "./fixtureCapacity.js";
@@ -28,6 +29,7 @@ import {
 import { mixForVertical, buildCategoryMix, storeTypeForVertical } from "../storeTypes.js";
 import { obstacleLabel, obstacleMeta } from "../obstacleTypes.js";
 import { layoutCanvasBounds, layoutContentBounds, pointInPolygon, entityFitsPolygon, entityPlacementValid, layoutStoreEnvelope, layoutFixturePolygon, fixtureZoneDistinctFromEnvelope, polygonDimensions, normalizeFixtureRectangle, shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb, aisleFootprintMeters, defaultAisleRun, fitRectanglePolygonInEnvelope, polygonInsideEnvelope, centeredStoreEnvelope, layoutFixtureZoneRect } from "./polygonCanvas.js";
+import { worldViewportFromStage } from "./viewportCull.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
 /** Columns and blocked areas are much smaller than fixtures — snap them to 5 cm. */
@@ -143,7 +145,14 @@ export default function LayoutEditor({
   const [planogram3dReturn, setPlanogram3dReturn] = useState(null);
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [missingProductsOpen, setMissingProductsOpen] = useState(false);
+  const [findProductsPlanogramsLoading, setFindProductsPlanogramsLoading] = useState(false);
+  const [findProductsLayout, setFindProductsLayout] = useState(null);
   const stageRef = useRef(null);
+  const planogramsLoadedRef = useRef(false);
+  const shelfPatchTimersRef = useRef(new Map());
+  const shelfPatchPendingRef = useRef(new Map());
+  const shelfPatchResolversRef = useRef(new Map());
+  const [viewportWorld, setViewportWorld] = useState(null);
   const editorRootRef = useRef(null);
   const zoomRef = useRef(zoom);
   const lastAutoFitLayoutId = useRef(null);
@@ -152,6 +161,60 @@ export default function LayoutEditor({
   const [editorFullscreen, setEditorFullscreen] = useState(false);
   const [paletteCollapsed, setPaletteCollapsed] = useState(() => readEditorPanelPrefs().palette);
   zoomRef.current = zoom;
+
+  useEffect(() => {
+    planogramsLoadedRef.current = false;
+  }, [layout?.id]);
+
+  const ensurePlanograms = useCallback(
+    async ({ force = false } = {}) => {
+      if (!layout?.id || !token) return null;
+      if (!force && planogramsLoadedRef.current) return null;
+      const full = await api(`/layouts/${layout.id}?include=planograms`, { token });
+      planogramsLoadedRef.current = true;
+      setLayout(full);
+      return full;
+    },
+    [layout?.id, token, setLayout]
+  );
+
+  useEffect(() => {
+    if (!view3d || !layout?.id) return;
+    ensurePlanograms().catch((e) => notifyError(e));
+  }, [view3d, layout?.id, ensurePlanograms]);
+
+  useEffect(() => {
+    if (!planogramEditor?.shelfId || !layout?.id) return;
+    ensurePlanograms().catch((e) => notifyError(e));
+  }, [planogramEditor?.shelfId, layout?.id, ensurePlanograms]);
+
+  useEffect(() => {
+    if (!missingProductsOpen || !layout?.id || !token) {
+      setFindProductsPlanogramsLoading(false);
+      setFindProductsLayout(null);
+      return;
+    }
+    let active = true;
+    setFindProductsPlanogramsLoading(true);
+    setFindProductsLayout(null);
+    api(`/layouts/${layout.id}?include=planograms`, { token })
+      .then((full) => {
+        if (!active) return;
+        planogramsLoadedRef.current = true;
+        setLayout(full);
+        setFindProductsLayout(full);
+        setFindProductsPlanogramsLoading(false);
+      })
+      .catch((e) => {
+        if (active) {
+          notifyError(e);
+          setFindProductsPlanogramsLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [missingProductsOpen, layout?.id, token, setLayout]);
 
   const editDisabled = !["Designer", "Admin"].includes(role);
   const layoutHasShelves = Boolean((layout?.shelves || layout?.fixtures || []).length);
@@ -492,6 +555,45 @@ export default function LayoutEditor({
     () => baseCanvasScale(canvasBounds) * zoom,
     [canvasBounds.width, canvasBounds.height, zoom]
   );
+
+  const updateViewportWorld = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage || view3d) {
+      setViewportWorld(null);
+      return;
+    }
+    setViewportWorld(
+      worldViewportFromStage({
+        scrollLeft: stage.scrollLeft,
+        scrollTop: stage.scrollTop,
+        clientWidth: stage.clientWidth,
+        clientHeight: stage.clientHeight,
+        scale,
+        bounds: canvasBounds,
+      })
+    );
+  }, [scale, canvasBounds, view3d]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || view3d) return undefined;
+    updateViewportWorld();
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        updateViewportWorld();
+      });
+    };
+    stage.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      stage.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [updateViewportWorld, view3d, layout?.id]);
 
   const shelfLabelsVisible = useMemo(() => {
     if (!layout) return false;
@@ -903,7 +1005,15 @@ export default function LayoutEditor({
 
   async function addEntry(x, y) {
     if (!placementAllowed(x, y)) {
-      toast("Place the entry point inside the drawn floor area.");
+      toast("Place the entrance inside the drawn floor area.");
+      return;
+    }
+    const hasEntrance = (layout.entryPoints || []).length > 0;
+    if (
+      hasEntrance &&
+      typeof window !== "undefined" &&
+      !window.confirm("Move the store entrance to this location?")
+    ) {
       return;
     }
     const updated = await api(`/layouts/${layout.id}/entry-points`, {
@@ -913,7 +1023,7 @@ export default function LayoutEditor({
     });
     setLayout(updated);
     setPaletteTool("select");
-    toast("Entry point added");
+    toast(hasEntrance ? "Entrance moved" : "Entrance set");
   }
 
   async function addObstacle(type, x, y) {
@@ -1172,9 +1282,13 @@ export default function LayoutEditor({
     setPlanogramEditor({ shelfId, faceId: faceId || "A" });
   }
 
-  function viewShelfIn3d(shelfId, faceId = "A") {
+  function viewShelfIn3d(shelfId, faceId = "A", levelIndex = null) {
     if (!shelfId) return;
-    setPlanogram3dReturn({ shelfId, faceId: faceId || "A" });
+    setPlanogram3dReturn({
+      shelfId,
+      faceId: faceId || "A",
+      levelIndex: levelIndex != null ? Number(levelIndex) : null,
+    });
     setSelection({ kind: "shelf", id: shelfId, faceId: faceId || "A" });
     setPlanogramEditor(null);
     setView3d(true);
@@ -1189,6 +1303,7 @@ export default function LayoutEditor({
     setPlanogramEditor({
       shelfId: planogram3dReturn.shelfId,
       faceId: planogram3dReturn.faceId || "A",
+      levelIndex: planogram3dReturn.levelIndex,
     });
     setSelection(null);
     setPlanogram3dReturn(null);
@@ -1275,6 +1390,11 @@ export default function LayoutEditor({
         : null,
     };
   }, [layout, planogram3dReturn, highlightShelf3d?.shelfId]);
+
+  const shelf3dFocusGroup = useMemo(() => {
+    if (!planogram3dReturn?.shelfId || !layout) return null;
+    return focusGroupFor(layout, planogram3dReturn.shelfId);
+  }, [layout, planogram3dReturn?.shelfId]);
 
   function focusCanvasTarget(target) {
     const stage = stageRef.current;
@@ -1554,14 +1674,45 @@ export default function LayoutEditor({
     setLayout(updated);
   }
 
-  async function patchShelf(shelfId, body) {
+  async function patchShelfImmediate(shelfId, body) {
     const updated = await api(`/layouts/${layout.id}/shelves/${shelfId}`, {
       token,
       method: "PATCH",
       body,
     });
+    planogramsLoadedRef.current = true;
     setLayout(updated);
     return updated;
+  }
+
+  function patchShelf(shelfId, body) {
+    const prev = shelfPatchPendingRef.current.get(shelfId) || {};
+    shelfPatchPendingRef.current.set(shelfId, { ...prev, ...body });
+    return new Promise((resolve, reject) => {
+      shelfPatchResolversRef.current.set(shelfId, { resolve, reject });
+      const existing = shelfPatchTimersRef.current.get(shelfId);
+      if (existing) clearTimeout(existing);
+      shelfPatchTimersRef.current.set(
+        shelfId,
+        setTimeout(async () => {
+          shelfPatchTimersRef.current.delete(shelfId);
+          const merged = shelfPatchPendingRef.current.get(shelfId);
+          shelfPatchPendingRef.current.delete(shelfId);
+          const waiter = shelfPatchResolversRef.current.get(shelfId);
+          shelfPatchResolversRef.current.delete(shelfId);
+          if (!merged) {
+            waiter?.resolve(null);
+            return;
+          }
+          try {
+            const updated = await patchShelfImmediate(shelfId, merged);
+            waiter?.resolve(updated);
+          } catch (err) {
+            waiter?.reject(err);
+          }
+        }, 350)
+      );
+    });
   }
 
   async function deleteAisle(aisleId) {
@@ -1717,7 +1868,7 @@ export default function LayoutEditor({
     }
     if (kind === "entryPoint") {
       const e = (layout.entryPoints || []).find((x) => x.id === id);
-      return e ? { kind, id, label: e.name || "Entry point", run: () => deleteEntry(id) } : null;
+      return e ? { kind, id, label: e.name || "Entrance", run: () => deleteEntry(id) } : null;
     }
     if (kind === "floorPlan") {
       const fp = layout.floorPlan;
@@ -2241,6 +2392,8 @@ export default function LayoutEditor({
                   highlightFaceId={highlightShelf3d?.faceId || selection?.faceId || "A"}
                   highlightAisleId={highlightShelf3d?.aisleId || null}
                   focusPhysicalShelfId={planogram3dReturn?.shelfId || null}
+                  focusPhysicalShelfIds={shelf3dFocusGroup?.physicalShelfIds || null}
+                  focusLevelIndex={planogram3dReturn?.levelIndex ?? null}
                   shelfFocusMode={Boolean(planogram3dReturn)}
                   focusRequest={focus3dRequest}
                   contentRevision={layout.contentRevision}
@@ -2291,6 +2444,7 @@ export default function LayoutEditor({
                 editDisabled={editDisabled}
                 ctrlHeld={ctrlHeld}
                 dragPos={dragPos}
+                draggingKind={dragging?.kind || null}
                 setDragging={setDragging}
                 onDropTool={onDropTool}
                 onPlaceClick={onPlaceClick}
@@ -2306,6 +2460,7 @@ export default function LayoutEditor({
                 onPolygonChange={(polygon) => savePolygon(polygon)}
                 onPolygonPreviewChange={handlePolygonPreview}
                 onPatchFloorPlan={patchFloorPlan}
+                viewportWorld={viewportWorld}
               />
             )}
             </div>
@@ -2317,6 +2472,7 @@ export default function LayoutEditor({
         open={!!planogramEditor}
         shelfId={planogramEditor?.shelfId}
         initialFaceId={planogramEditor?.faceId || "A"}
+        initialLevelIndex={planogramEditor?.levelIndex ?? 0}
         layout={layout}
         token={token}
         products={products}
@@ -2335,7 +2491,7 @@ export default function LayoutEditor({
           await deleteSelection();
           setPlanogramEditor(null);
         }}
-        onViewIn3d={(id, faceId) => viewShelfIn3d(id, faceId)}
+        onViewIn3d={(id, faceId, levelIndex) => viewShelfIn3d(id, faceId, levelIndex)}
         onOpenAisleShelfView={(id) => openAisleShelfView(id)}
       />
 
@@ -2361,8 +2517,9 @@ export default function LayoutEditor({
         loading={coverageLoading}
         onRefresh={refreshPlanogramCoverage}
         categories={categories}
-        layout={layout}
+        layout={findProductsLayout || layout}
         products={products}
+        planogramsLoading={findProductsPlanogramsLoading}
         onLocateShelf={(shelfId) => {
           selectShelf(shelfId, "A", { openPlanogram: false, layoutSelect: true });
           setFocus3dRequest((n) => n + 1);

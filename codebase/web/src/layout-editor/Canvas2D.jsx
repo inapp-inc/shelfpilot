@@ -30,13 +30,31 @@ import {
   shelfFitsPolygon,
   shelfLocalMeters,
   toStageCoords,
+  aisleFootprintMeters,
 } from "./polygonCanvas.js";
 import { MISSING_PRODUCT_MIME, parseMissingProduct } from "./missingProductDrag.js";
+import {
+  aabbIntersectsViewport,
+  shouldCullCanvasEntities,
+} from "./viewportCull.js";
 
 const snap = (v) => Math.max(0, Math.round(v * 2) / 2);
 const snapFine = (v) => Math.max(0, Math.round(v * 20) / 20);
 
 const EDGE_HIT_PX = 8;
+
+function shelfCullAabb(f) {
+  if (f.pairDisplay && Number(f.canvasAabbW) > 0) {
+    return {
+      x: Number(f.x) || 0,
+      y: Number(f.y) || 0,
+      w: f.canvasAabbW,
+      d: f.canvasAabbD,
+    };
+  }
+  const aabb = shelfCanvasAabb(f);
+  return { x: aabb.x, y: aabb.y, w: aabb.w, d: aabb.d };
+}
 
 function hitTestResizeEdge(e, el) {
   const rect = el.getBoundingClientRect();
@@ -268,6 +286,7 @@ export default function Canvas2D({
   editDisabled,
   ctrlHeld = false,
   dragPos,
+  draggingKind = null,
   setDragging,
   onDropTool,
   onPlaceClick,
@@ -289,6 +308,7 @@ export default function Canvas2D({
   onDropMissingProduct,
   onMissingProductDropMiss,
   onPatchFloorPlan,
+  viewportWorld = null,
 }) {
   const floorRef = useRef(null);
   const editPreviewRef = useRef(null);
@@ -385,8 +405,6 @@ export default function Canvas2D({
     return phys?.aisleId || null;
   }, [selection, shelves]);
 
-  const visibleAisles = layout.aisles || [];
-
   function layoutPointFromEvent(e) {
     const rect = (floorRef.current || e.currentTarget).getBoundingClientRect();
     const sx = snap((e.clientX - rect.left) / scale);
@@ -456,6 +474,60 @@ export default function Canvas2D({
   previewRef.current = resizePreview;
   rotateRef.current = rotate;
   rotatePreviewRef.current = rotatePreview;
+
+  const cullViewport = useMemo(() => {
+    const entityCount = shelves.length + (layout.aisles?.length || 0);
+    return viewportWorld && shouldCullCanvasEntities(entityCount) ? viewportWorld : null;
+  }, [shelves.length, layout.aisles, viewportWorld]);
+
+  const visibleAisles = useMemo(() => {
+    const list = layout.aisles || [];
+    if (!cullViewport) return list;
+    const keepIds = new Set();
+    if (selection?.kind === "aisle" && selection.id) keepIds.add(selection.id);
+    if (dragPos?.id && draggingKind === "aisle") keepIds.add(dragPos.id);
+    if (resizePreview?.id && resize?.kind === "aisle") keepIds.add(resizePreview.id);
+    if (selectedAisleId) keepIds.add(selectedAisleId);
+    return list.filter((a) => {
+      if (keepIds.has(a.id)) return true;
+      const fp = aisleFootprintMeters(a, layout);
+      const minX = fp.x;
+      const minY = fp.y;
+      return aabbIntersectsViewport(
+        { minX, minY, maxX: minX + fp.w, maxY: minY + fp.d },
+        cullViewport
+      );
+    });
+  }, [
+    layout,
+    cullViewport,
+    selection,
+    dragPos,
+    draggingKind,
+    resizePreview,
+    resize,
+    selectedAisleId,
+  ]);
+
+  const renderShelves = useMemo(() => {
+    if (!cullViewport) return visibleShelves;
+    const keepIds = new Set();
+    if (selection?.id && (selection.kind === "shelf" || selection.kind === "fixture")) {
+      keepIds.add(selection.id);
+    }
+    if (dragPos?.id && draggingKind === "shelf") keepIds.add(dragPos.id);
+    if (resizePreview?.id && resize?.kind === "shelf") keepIds.add(resizePreview.id);
+    return visibleShelves.filter((f) => {
+      if (keepIds.has(f.id) || (f.pairShelfIds && Object.values(f.pairShelfIds).some((id) => keepIds.has(id)))) {
+        return true;
+      }
+      const aabb = shelfCullAabb(f);
+      return aabbIntersectsViewport(
+        { minX: aabb.x, minY: aabb.y, maxX: aabb.x + aabb.w, maxY: aabb.y + aabb.d },
+        cullViewport
+      );
+    });
+  }, [visibleShelves, cullViewport, selection, dragPos, draggingKind, resizePreview, resize]);
 
   function rectFits(x, y, w, h) {
     if (poly) {
@@ -719,8 +791,8 @@ export default function Canvas2D({
 
   function findShelfHitFromEvent(e) {
     const pt = layoutPointFromClient(e.clientX, e.clientY);
-    for (let i = visibleShelves.length - 1; i >= 0; i -= 1) {
-      const f = visibleShelves[i];
+    for (let i = renderShelves.length - 1; i >= 0; i -= 1) {
+      const f = renderShelves[i];
       const frontId = f.pairShelfIds?.front ?? f.id;
       const backId = f.pairShelfIds?.back;
       const live = dragPos && dragPos.id === frontId ? dragPos : f;
@@ -1529,7 +1601,7 @@ export default function Canvas2D({
         );
       })}
 
-      {visibleShelves.map((f) => {
+      {renderShelves.map((f) => {
         const frontId = f.pairShelfIds?.front ?? f.id;
         const backId = f.pairShelfIds?.back;
         const pairIds = backId ? [frontId, backId] : [f.id];

@@ -42,6 +42,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage "api") | Out-Null
 Copy-Item (Join-Path $RepoRoot "api/src") (Join-Path $stage "api/src") -Recurse
 Copy-Item (Join-Path $RepoRoot "api/package.json") (Join-Path $stage "api/package.json")
 
+# Shared ESM modules required by the API at runtime
+Copy-Item (Join-Path $RepoRoot "shared") (Join-Path $stage "shared") -Recurse
+
 # Built UI
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "web") | Out-Null
 Copy-Item $webDist (Join-Path $stage "web/dist") -Recurse

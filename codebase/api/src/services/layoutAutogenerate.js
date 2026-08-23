@@ -122,6 +122,17 @@ export function autogenerateLayoutFixtures(layout, body, { getConfig, listCatego
   if (warehouseMode) {
     layout.aisles = pruneOverlappingAisles(layout.aisles, layout);
   }
+  // Drop anything pushed outside the fixture polygon by merge / widen / split.
+  layout.aisles = (layout.aisles || []).filter((a) => {
+    if (entityInsideLayout(a, "aisle", layout)) return true;
+    droppedOutside += 1;
+    return false;
+  });
+  layout.shelves = (layout.shelves || []).filter((s) => {
+    if (entityInsideLayout(s, "shelf", layout)) return true;
+    droppedOutside += 1;
+    return false;
+  });
   ({ shelves: layout.shelves, aisles: layout.aisles } = finalizeAisleShelfBinding(
     layout.shelves,
     layout.aisles,

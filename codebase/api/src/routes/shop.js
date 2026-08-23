@@ -1,51 +1,35 @@
 import { Router } from "express";
+import { authRequired, requireRoles } from "../middleware/auth.js";
 import {
-  publicLayoutPayload,
-  publicProductsForLayout,
-  resolveShopperLayout,
+  resolveCustomerKiosk,
+  permittedStoresFor,
 } from "../services/shopperExperience.js";
 
 export const shopRouter = Router();
 
-function sendExperience(res, layoutId) {
-  const { exp, layout, entry } = resolveShopperLayout(layoutId);
-  if (!exp.enabled || !layout) {
-    return res.json({ enabled: false });
-  }
+function denyPublic(_req, res) {
+  res.status(401).json({ error: "unauthorized" });
+}
+
+/** Permitted stores for the signed-in Customer (FR-KIOSK-01). */
+shopRouter.get("/shopper/stores", authRequired, requireRoles("Customer"), (req, res) => {
+  const stores = permittedStoresFor(req.user);
   res.json({
-    enabled: true,
-    displayName: exp.displayName || layout.name,
-    layoutId: layout.id,
-    entryPoint: entry
-      ? { id: entry.id, label: entry.label || "Entrance", x: entry.x, y: entry.y }
-      : null,
-    layoutSize: {
-      widthMeters: layout.widthMeters,
-      depthMeters: layout.depthMeters,
-    },
+    items: stores,
+    defaultStoreId: req.user?.shopperLayoutId || stores[0]?.id || null,
   });
-}
+});
 
-function sendLayout(res, layoutId) {
-  const { exp, layout } = resolveShopperLayout(layoutId);
-  if (!exp.enabled || !layout) return res.status(404).json({ error: "shopper_disabled" });
-  res.json({ layout: publicLayoutPayload(layout) });
-}
+/** Customer kiosk metadata — login required; scoped to permitted stores. */
+shopRouter.get("/shopper/kiosk", authRequired, requireRoles("Customer"), (req, res) => {
+  const requestedLayoutId = req.query.layoutId ? String(req.query.layoutId) : null;
+  res.json(resolveCustomerKiosk(req.user, requestedLayoutId));
+});
 
-function sendProducts(res, layoutId) {
-  const { exp, layout } = resolveShopperLayout(layoutId);
-  if (!exp.enabled || !layout) return res.status(404).json({ error: "shopper_disabled" });
-  res.json({ items: publicProductsForLayout(layout) });
-}
-
-/** Public kiosk metadata — no auth; only the admin-configured store. */
-shopRouter.get("/shop/experience", (_req, res) => sendExperience(res));
-shopRouter.get("/shop/:layoutId/experience", (req, res) => sendExperience(res, req.params.layoutId));
-
-/** Public read-only floor plan for the configured shopper layout only. */
-shopRouter.get("/shop/layout", (_req, res) => sendLayout(res));
-shopRouter.get("/shop/:layoutId/layout", (req, res) => sendLayout(res, req.params.layoutId));
-
-/** Public product list for search — scoped to the shopper layout vertical. */
-shopRouter.get("/shop/products", (_req, res) => sendProducts(res));
-shopRouter.get("/shop/:layoutId/products", (req, res) => sendProducts(res, req.params.layoutId));
+/** Legacy public shop routes — disabled; kiosk requires Customer login. */
+shopRouter.get("/shop/experience", denyPublic);
+shopRouter.get("/shop/:layoutId/experience", denyPublic);
+shopRouter.get("/shop/layout", denyPublic);
+shopRouter.get("/shop/:layoutId/layout", denyPublic);
+shopRouter.get("/shop/products", denyPublic);
+shopRouter.get("/shop/:layoutId/products", denyPublic);

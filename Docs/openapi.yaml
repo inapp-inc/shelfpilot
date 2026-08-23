@@ -4,7 +4,7 @@ info:
   version: 0.8.0
   description: |
     UI + mock API contract for ShelfPilot store layout design (demo stack).
-    Auth is mock email/password with role selection. Persistence is SQLite.
+    Auth is email/password. Role is stored on the user record (not chosen at login). Persistence is SQLite.
     v0.3 adds shelves, separate aisle/shelf mapping, and dimension-based planogram
     (change: layout-editor-planogram).
     v0.4 adds polygon containment, rules-based autogenerate, and category-gated planogram
@@ -30,6 +30,7 @@ tags:
   - name: Catalog
   - name: Analytics
   - name: Admin
+  - name: Shopper
 paths:
   /health:
     get:
@@ -55,7 +56,7 @@ paths:
     post:
       tags: [Auth]
       operationId: login
-      summary: Mock email/password login with role selection
+      summary: Email/password login (role from user record)
       requestBody:
         required: true
         content:
@@ -105,6 +106,9 @@ paths:
     get:
       tags: [Layouts]
       operationId: listLayouts
+      description: |
+        Portfolio list. Customer role receives layouts in `storeAccess` (explicit grants)
+        plus optional all-approved demo stores when `kioskAllApproved` is set.
       security: [{ bearerAuth: [] }]
       parameters:
         - name: status
@@ -152,9 +156,17 @@ paths:
     get:
       tags: [Layouts]
       operationId: getLayout
+      description: |
+        Layout detail. Customer may only fetch layouts in their permitted store set (403 otherwise).
+        Use `include=planograms` when the caller needs shelf placements (Customer kiosk).
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/LayoutId"
+        - name: include
+          in: query
+          required: false
+          description: Comma-separated extras. `planograms` includes shelf placements.
+          schema: { type: string }
       responses:
         "200":
           description: Layout detail
@@ -162,6 +174,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Layout"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
@@ -401,8 +415,11 @@ paths:
   /layouts/{layoutId}/entry-points:
     post:
       tags: [Layouts]
-      operationId: addEntryPoint
-      description: Roles — Designer, Admin. Mark a store entrance. Position must be inside the polygon.
+      operationId: setEntryPoint
+      description: |
+        Roles — Designer, Admin. Set or replace the single store entrance.
+        First call returns 201; replacing an existing entrance returns 200 and keeps the same entry id.
+        Position must be inside the polygon.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/LayoutId"
@@ -414,7 +431,13 @@ paths:
               $ref: "#/components/schemas/EntryPoint"
       responses:
         "201":
-          description: Entry point created
+          description: Entrance created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Layout"
+        "200":
+          description: Entrance replaced (moved)
           content:
             application/json:
               schema:
@@ -1100,6 +1123,49 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /shopper/stores:
+    get:
+      tags: [Shopper]
+      operationId: listShopperStores
+      description: Permitted kiosk stores for the signed-in Customer.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Store list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ShopperStoreSummary"
+                  defaultStoreId: { type: string, nullable: true }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /shopper/kiosk:
+    get:
+      tags: [Shopper]
+      operationId: getShopperKiosk
+      description: Kiosk bootstrap payload for the signed-in Customer.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: layoutId
+          in: query
+          schema: { type: string }
+          description: Optional store to open; must be in the customer's permitted set.
+      responses:
+        "200":
+          description: Kiosk metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShopperKioskResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /admin/users:
     get:
       tags: [Admin]
@@ -1167,6 +1233,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Admin]
+      operationId: deleteUser
+      description: Roles — Admin or SuperAdmin (scoped). Cannot delete self or SuperAdmin accounts.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -1244,17 +1327,20 @@ components:
         error: { type: string }
     Role:
       type: string
-      enum: [Designer, Approver, Viewer, Admin]
+      enum: [SuperAdmin, Admin, Designer, Approver, Viewer, Customer]
     LayoutStatus:
       type: string
       enum: [draft, in_review, approved, rejected]
     LoginRequest:
       type: object
-      required: [email, password, role]
+      required: [email, password]
       properties:
         email: { type: string, format: email }
         password: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+        role:
+          $ref: "#/components/schemas/Role"
+          deprecated: true
+          description: Ignored when omitted. If sent and it does not match the stored user role, login is rejected.
     LoginResponse:
       type: object
       required: [token, user]
@@ -1269,6 +1355,14 @@ components:
         email: { type: string }
         name: { type: string }
         role: { $ref: "#/components/schemas/Role" }
+        shopperLayoutId: { type: string, nullable: true, description: Default kiosk store }
+        storeAccess:
+          type: array
+          items: { type: string }
+          description: Explicit layout ids the Customer may browse
+        kioskAllApproved:
+          type: boolean
+          description: When true, all approved/demo layouts are also permitted
     CreateUserRequest:
       type: object
       required: [email, name, role, password]
@@ -1277,12 +1371,61 @@ components:
         name: { type: string }
         role: { $ref: "#/components/schemas/Role" }
         password: { type: string }
+        shopperLayoutId: { type: string, nullable: true }
+        storeAccess:
+          type: array
+          items: { type: string }
+        kioskAllApproved: { type: boolean }
     UpdateUserRequest:
       type: object
       properties:
         name: { type: string }
         role: { $ref: "#/components/schemas/Role" }
         password: { type: string }
+        shopperLayoutId: { type: string, nullable: true }
+        storeAccess:
+          type: array
+          items: { type: string }
+        kioskAllApproved: { type: boolean }
+    ShopperStoreSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        vertical: { type: string }
+        status: { $ref: "#/components/schemas/LayoutStatus" }
+    ShopperKioskResponse:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        reason: { type: string }
+        layoutId: { type: string }
+        defaultStoreId: { type: string }
+        displayName: { type: string }
+        stores:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShopperStoreSummary"
+        entryPoint:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string }
+            name: { type: string }
+            label: { type: string }
+            x: { type: number }
+            y: { type: number }
+    NamingConvention:
+      type: object
+      description: FR-NAME-01 token patterns ({n} aisle, {bay} bay letter/number, etc.)
+      properties:
+        aislePattern: { type: string }
+        bayPattern: { type: string }
+        levelPattern: { type: string }
+        positionPattern: { type: string }
+        bayAsNumber: { type: boolean }
+        aislePadding: { type: integer }
+        bayPadding: { type: integer }
     LayoutSummary:
       type: object
       properties:
@@ -1376,10 +1519,14 @@ components:
     EntryPoint:
       type: object
       required: [id, x, y]
-      description: Store entrance marker (traffic-flow metadata; does not affect packing).
+      description: Single store entrance marker (traffic-flow metadata; does not affect packing).
       properties:
         id: { type: string }
         name: { type: string }
+        label:
+          type: string
+          deprecated: true
+          description: Legacy alias for name on read; prefer name when writing.
         x: { type: number }
         y: { type: number }
         widthMeters: { type: number, default: 1.8 }

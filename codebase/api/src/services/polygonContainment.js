@@ -4,8 +4,13 @@
 
 const MAX_VERTICES = 64;
 
+/**
+ * Fixture-zone boundary for packing / containment.
+ * Prefer an explicit polygon whenever present (matches UI fixture zone),
+ * even if layout.shape was left as "rectangle".
+ */
 export function layoutBoundaryPolygon(layout) {
-  if (layout?.shape === "polygon" && Array.isArray(layout.polygon) && layout.polygon.length >= 3) {
+  if (Array.isArray(layout?.polygon) && layout.polygon.length >= 3) {
     return layout.polygon.map((p) => ({ x: Number(p.x), y: Number(p.y) }));
   }
   const raw = layout?.storeEnvelope;

@@ -33,7 +33,7 @@ async function main() {
   await req("/health");
   const { json: login } = await req("/auth/login", {
     method: "POST",
-    body: { email: "designer@shelfpilot.local", password: "password", role: "Designer" },
+    body: { email: "designer@shelfpilot.local", password: "password" },
   });
   const token = login.token;
   const { json: created } = await req("/layouts", {

@@ -31,6 +31,7 @@ echo "==> Staging package files"
 mkdir -p "$STAGE/api" "$STAGE/web"
 cp -r api/src "$STAGE/api/src"
 cp api/package.json "$STAGE/api/package.json"
+cp -r shared "$STAGE/shared"
 cp -r web/dist "$STAGE/web/dist"
 
 # Deploy scripts + env sample + Docker production files

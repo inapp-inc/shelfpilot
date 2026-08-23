@@ -79,6 +79,10 @@ if [ ! -d api/src ]; then
   echo "!! API source missing at api/src — repackage with scripts/package.*"
   exit 1
 fi
+if [ ! -f shared/productBuffer.mjs ]; then
+  echo "!! Shared modules missing at shared/ — repackage with scripts/package.*"
+  exit 1
+fi
 
 # 3) Stop-only path ------------------------------------------------------------
 if [ "$DO_DOWN" -eq 1 ]; then

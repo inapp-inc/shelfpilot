@@ -1,24 +1,21 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { api, apiErrorMessage } from "./api.js";
+import { clearChunkReloadFlag, lazyWithRetry } from "./lazyWithRetry.js";
 import ToastStack from "./components/ToastStack.jsx";
 import AlertBanner from "./components/AlertBanner.jsx";
 import FieldError from "./components/FieldError.jsx";
+import LoadingState from "./components/LoadingState.jsx";
 import {
   friendlyError,
   validateLayoutCreate,
   validateUser,
   validateFixtureTemplates,
 } from "./validationMessages.js";
-import LayoutEditor from "./layout-editor/LayoutEditor.jsx";
-import CatalogPage from "./catalog/CatalogPage.jsx";
 import ProductFormDrawer from "./catalog/ProductFormDrawer.jsx";
 import { inchesInputFromMeters, lbInputFromKg } from "./units.js";
 import { normalizeStorageType, productStorageType, resolveCategoryStorageType } from "./storageType.js";
 import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
-import DashboardPage from "./modules/DashboardPage.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
-import ShopperKioskPage from "./modules/ShopperKioskPage.jsx";
-import AdminShopperPanel from "./modules/AdminShopperPanel.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
 import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
 import { fixtureTemplatesForVertical } from "./fixtureCatalog.js";
@@ -26,9 +23,7 @@ import { NAV_MODULES, STORE_TYPES, mixForStoreType } from "./storeTypes.js";
 import { pathForModule } from "./routes.js";
 import { resolveAssetUrl } from "./assetUrl.js";
 import { useAppRoute } from "./useAppRoute.js";
-import { downloadCatalogImportTemplate, parseCatalogImportWorkbook } from "./catalog/importExcel.js";
 import { catalogVerticalsForLayout, mergeCategoriesForLayout } from "./layout-editor/categoryFilter.js";
-import ImportDialog from "./catalog/ImportDialog.jsx";
 import {
   VERTICALS,
   STATUS_META,
@@ -43,11 +38,23 @@ import {
   canEditCatalog,
   canEditLayouts,
   canManageUsers,
+  canDeleteUser,
+  creatableUserRoles,
   defaultModuleForRole,
   isCustomerRole,
   navModulesForRole,
   shopPathForUser,
 } from "./rolePermissions.js";
+
+const LayoutEditor = lazyWithRetry(() => import("./layout-editor/LayoutEditor.jsx"));
+const DashboardPage = lazyWithRetry(() => import("./modules/DashboardPage.jsx"));
+const CatalogPage = lazyWithRetry(() => import("./catalog/CatalogPage.jsx"));
+const ImportDialog = lazyWithRetry(() => import("./catalog/ImportDialog.jsx"));
+const ShopperKioskPage = lazyWithRetry(() => import("./modules/ShopperKioskPage.jsx"));
+
+function RouteLoading({ label = "Loading…" }) {
+  return <LoadingState label={label} size="lg" className="route-loading" />;
+}
 
 function LogoMark({ size = "lg" }) {
   return (
@@ -63,6 +70,10 @@ function LogoMark({ size = "lg" }) {
 }
 
 export default function App() {
+  useEffect(() => {
+    clearChunkReloadFlag();
+  }, []);
+
   const [session, setSession] = useState(() => {
     const raw = localStorage.getItem("shelfpilot.session");
     return raw ? JSON.parse(raw) : null;
@@ -88,9 +99,11 @@ export default function App() {
   const [newUser, setNewUser] = useState({
     email: "",
     name: "",
-    role: "Designer",
+    role: "Admin",
     password: "",
     shopperLayoutId: "",
+    storeAccess: [],
+    kioskAllApproved: false,
   });
   const [catCategories, setCatCategories] = useState([]);
   const [catProducts, setCatProducts] = useState([]);
@@ -101,14 +114,15 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({
-    email: "designer@shelfpilot.local",
-    password: "password",
-    role: "Designer",
+    email: "",
+    password: "",
   });
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState(() => ({ ...EMPTY_CREATE_DRAFT }));
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [layoutLoading, setLayoutLoading] = useState(false);
+  const [layoutsLoading, setLayoutsLoading] = useState(false);
   const [importProgress, setImportProgress] = useState(null);
   const [importOpen, setImportOpen] = useState(false);
   const [userFormErrors, setUserFormErrors] = useState({});
@@ -116,6 +130,8 @@ export default function App() {
 
   const token = session?.token;
   const role = session?.user?.role;
+  const creatableRoles = creatableUserRoles(role);
+  const defaultUserRole = creatableRoles[0] || "Designer";
   const vMeta = VERTICALS[vertical];
 
   const catalogVertical = page === "layouts" && layout?.vertical ? layout.vertical : vertical;
@@ -133,6 +149,13 @@ export default function App() {
       : token
         ? []
         : (PRODUCTS[catalogVertical] || []).map((p) => ({ ...p, id: p.id || p.sku }));
+
+  useEffect(() => {
+    if (!role) return;
+    const allowed = creatableUserRoles(role);
+    if (!allowed.length) return;
+    setNewUser((prev) => (allowed.includes(prev.role) ? prev : { ...prev, role: allowed[0] }));
+  }, [role]);
 
   useEffect(() => {
     if (!token || (page !== "catalog" && page !== "layouts")) return;
@@ -210,8 +233,23 @@ export default function App() {
 
   useEffect(() => {
     if (!session || !role) return;
-    // Public kiosk URLs are open to everyone — do not RBAC-redirect away from them.
-    if (page === "shop" && route.layoutId) return;
+    if (isCustomerRole(role) && !session.user?.shopperLayoutId && !session.user?.storeAccess?.length) {
+      return;
+    }
+    if (page === "shop" && route.layoutId) {
+      if (isCustomerRole(role)) {
+        const allowed = new Set([
+          session.user?.shopperLayoutId,
+          ...(session.user?.storeAccess || []),
+        ].filter(Boolean));
+        if (allowed.size && !allowed.has(route.layoutId)) {
+          navigate(shopPathForUser(session.user) || pathForModule("shop", [...allowed][0]), {
+            replace: true,
+          });
+        }
+      }
+      return;
+    }
     if (!canAccessModule(role, page)) {
       const target =
         role === "Customer"
@@ -229,8 +267,13 @@ export default function App() {
 
   async function refreshLayouts() {
     const q = statusFilter !== "all" ? `?status=${statusFilter}` : "";
-    const data = await api(`/layouts${q}`, { token });
-    setLayouts(data.items || []);
+    setLayoutsLoading(true);
+    try {
+      const data = await api(`/layouts${q}`, { token });
+      setLayouts(data.items || []);
+    } finally {
+      setLayoutsLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -246,11 +289,25 @@ export default function App() {
   useEffect(() => {
     if (!token || !activeLayoutId) {
       setLayout(null);
+      setLayoutLoading(false);
       return;
     }
+    let cancelled = false;
+    setLayoutLoading(true);
+    setLayout(null);
     api(`/layouts/${activeLayoutId}`, { token })
-      .then(setLayout)
-      .catch((e) => toast(e.message));
+      .then((data) => {
+        if (!cancelled) setLayout(data);
+      })
+      .catch((e) => {
+        if (!cancelled) toast(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLayoutLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [token, activeLayoutId]);
 
   useEffect(() => {
@@ -428,6 +485,18 @@ export default function App() {
     toast("Configuration updated", { type: "success" });
   }
 
+  async function deleteUserAccount(user) {
+    if (!canDeleteUser(role, session?.user?.id, user)) return;
+    if (!window.confirm(`Delete user "${user.name}" (${user.email})? This cannot be undone.`)) return;
+    try {
+      await api(`/admin/users/${user.id}`, { token, method: "DELETE" });
+      setUsers((list) => list.filter((u) => u.id !== user.id));
+      toast(`Deleted ${user.email}`, { type: "success" });
+    } catch (err) {
+      toast(friendlyError(err), { type: "error" });
+    }
+  }
+
   async function createUser(e) {
     e.preventDefault();
     const check = validateUser(newUser);
@@ -443,11 +512,24 @@ export default function App() {
         method: "POST",
         body: {
           ...newUser,
-          shopperLayoutId: newUser.role === "Customer" ? newUser.shopperLayoutId || null : null,
+          shopperLayoutId:
+            newUser.role === "Customer"
+              ? newUser.shopperLayoutId || newUser.storeAccess[0] || null
+              : null,
+          storeAccess: newUser.role === "Customer" ? newUser.storeAccess : [],
+          kioskAllApproved: newUser.role === "Customer" ? newUser.kioskAllApproved : false,
         },
       });
       setUsers((u) => [...u, created]);
-      setNewUser({ email: "", name: "", role: "Designer", password: "", shopperLayoutId: "" });
+      setNewUser({
+        email: "",
+        name: "",
+        role: defaultUserRole,
+        password: "",
+        shopperLayoutId: "",
+        storeAccess: [],
+        kioskAllApproved: false,
+      });
       toast("User created", { type: "success" });
     } catch (err) {
       toast(friendlyError(err), { type: "error" });
@@ -467,28 +549,15 @@ export default function App() {
     const allCategories = mergeCategoriesForLayout(v, listsByVertical);
     const catIds = new Set(allCategories.map((c) => c.id));
 
-    const prodResults = await Promise.all(
-      verticals.map((cv) =>
-        api(`/products?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
-      )
-    );
-    const seen = new Set();
-    const merged = [];
-    for (const r of prodResults) {
-      for (const p of r.items || []) {
-        if (!seen.has(p.id)) {
-          seen.add(p.id);
-          merged.push(p);
-        }
-      }
-    }
-    // Include any product whose category is in the loaded tree (e.g. after manual add/import).
-    const prodAll = await api(`/products`, { token }).catch(() => ({ items: [] }));
-    for (const p of prodAll.items || []) {
-      if (catIds.has(p.categoryId) && !seen.has(p.id)) {
-        seen.add(p.id);
-        merged.push(p);
-      }
+    let merged = [];
+    if (verticals.length === 1) {
+      const prodRes = await api(`/products?vertical=${encodeURIComponent(verticals[0])}`, { token }).catch(
+        () => ({ items: [] })
+      );
+      merged = prodRes.items || [];
+    } else {
+      const prodAll = await api(`/products`, { token }).catch(() => ({ items: [] }));
+      merged = (prodAll.items || []).filter((p) => catIds.has(p.categoryId));
     }
 
     setCatCategories(allCategories);
@@ -673,6 +742,7 @@ export default function App() {
       const buffer = await file.arrayBuffer();
 
       setImportProgress({ phase: "parse", percent: 28, message: "Parsing categories and products…" });
+      const { parseCatalogImportWorkbook } = await import("./catalog/importExcel.js");
       const payload = parseCatalogImportWorkbook(buffer, { defaultVertical });
       const catCount = payload.categories.length;
       const prodCount = payload.products.length;
@@ -755,8 +825,9 @@ export default function App() {
     }
   }
 
-  function handleDownloadImportTemplate() {
+  async function handleDownloadImportTemplate() {
     try {
+      const { downloadCatalogImportTemplate } = await import("./catalog/importExcel.js");
       downloadCatalogImportTemplate();
       toast("Template downloaded");
     } catch (err) {
@@ -764,15 +835,8 @@ export default function App() {
     }
   }
 
-  if (page === "shop" && shopLayoutId) {
-    return (
-      <>
-        <ShopperKioskPage layoutId={shopLayoutId} />
-      </>
-    );
-  }
-
   if (!session) {
+    const kioskLogin = page === "shop";
     return (
       <>
         <div className="login-page fade">
@@ -780,7 +844,9 @@ export default function App() {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
               <LogoMark />
               <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.02em" }}>ShelfPilot</div>
-              <div style={{ fontSize: 16, color: "#6b7280", textAlign: "center" }}>Design store layouts in 2D and 3D</div>
+              <div style={{ fontSize: 16, color: "#6b7280", textAlign: "center" }}>
+                {kioskLogin ? "Sign in with your Customer account to use the store finder." : "Design store layouts in 2D and 3D"}
+              </div>
             </div>
             <form className="login-card" onSubmit={onLogin} data-testid="login-form">
               {loginError ? (
@@ -793,9 +859,10 @@ export default function App() {
                 <input
                   type="email"
                   data-testid="login-email"
+                  autoComplete="username"
                   value={loginForm.email}
                   onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
-                  placeholder="you@shelfpilot.local"
+                  placeholder="you@example.com"
                 />
               </div>
               <div className="field">
@@ -803,21 +870,10 @@ export default function App() {
                 <input
                   type="password"
                   data-testid="login-password"
+                  autoComplete="current-password"
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
                 />
-              </div>
-              <div className="field">
-                <label>Role</label>
-                <select
-                  data-testid="login-role"
-                  value={loginForm.role}
-                  onChange={(e) => setLoginForm({ ...loginForm, role: e.target.value })}
-                >
-                  {["Designer", "Approver", "Viewer", "Admin", "Customer"].map((r) => (
-                    <option key={r}>{r}</option>
-                  ))}
-                </select>
               </div>
               <button
                 className="btn-primary"
@@ -840,6 +896,34 @@ export default function App() {
   function navigateToModule(moduleId) {
     navigate(pathForModule(moduleId));
     if (moduleId === "admin") loadAdmin().catch((e) => toast(e.message));
+  }
+
+  if (page === "shop" && shopLayoutId) {
+    if (!isCustomerRole(role)) {
+      return <RouteLoading label="Redirecting…" />;
+    }
+    if (!session.user?.shopperLayoutId) {
+      return (
+        <>
+          <div className="sp-kiosk sp-kiosk--status">
+            <LogoMark />
+            <h1>No store assigned</h1>
+            <p className="sp-kiosk-muted">
+              Ask a store associate or administrator to assign a layout to this Customer account.
+            </p>
+            <button type="button" className="btn-secondary" onClick={signOut}>
+              Sign out
+            </button>
+          </div>
+          <ToastStack toasts={toasts} onDismiss={dismissToast} />
+        </>
+      );
+    }
+    return (
+      <Suspense fallback={<RouteLoading label="Loading store…" />}>
+        <ShopperKioskPage layoutId={shopLayoutId} session={session} onSignOut={signOut} />
+      </Suspense>
+    );
   }
 
   const statusMeta = (s) => STATUS_META[s] || STATUS_META.draft;
@@ -876,7 +960,14 @@ export default function App() {
             ))}
           </nav>
           ) : (
-            <div className="customer-header-tagline muted">Find products in store</div>
+            <div className="customer-header-store">
+              <span className="customer-header-store-label">Your store</span>
+              <span className="customer-header-store-name">
+                {layouts.find((l) => l.id === session.user?.shopperLayoutId)?.name ||
+                  session.user?.shopperLayoutId ||
+                  "Assigned store"}
+              </span>
+            </div>
           )}
           <div className="header-actions">
             <div className="header-foundry-brand" aria-label="Built by The Foundry">
@@ -910,29 +1001,44 @@ export default function App() {
         <main className="main">
           <div className={`content${editorLayoutId ? " content--editor" : ""}${customerMode ? " content--customer" : ""}`}>
 
+            {customerMode && !session.user?.shopperLayoutId ? (
+              <section className="customer-unassigned fade" data-testid="customer-unassigned">
+                <h1 className="customer-shop-title">No store assigned</h1>
+                <p className="muted customer-shop-subtitle">
+                  Ask a store associate or administrator to assign a layout to this Customer account.
+                  This role can only open that one store — it cannot browse or edit other layouts.
+                </p>
+              </section>
+            ) : null}
+
             {page === "dashboard" && !customerMode && (
-              <DashboardPage
-                layouts={layouts}
-                token={token}
-                role={role}
-                toast={(msg, opts) => toast(msg, opts)}
-                onNewLayout={() => {
-                  navigate(pathForModule("layouts"));
-                  setCreateOpen(true);
-                }}
-                onNavigateLayouts={(status) => {
-                  setStatusFilter(status);
-                  navigate(pathForModule("layouts"));
-                }}
-                onOpenLayout={openLayout}
-                onNavigateAdmin={(tab) => {
-                  setAdminTab(tab);
-                  navigate(pathForModule("admin"));
-                }}
-              />
+              <Suspense fallback={<RouteLoading label="Loading dashboard…" />}>
+                <DashboardPage
+                  layouts={layouts}
+                  token={token}
+                  role={role}
+                  toast={(msg, opts) => toast(msg, opts)}
+                  onNewLayout={() => {
+                    navigate(pathForModule("layouts"));
+                    setCreateOpen(true);
+                  }}
+                  onNavigateLayouts={(status) => {
+                    setStatusFilter(status);
+                    navigate(pathForModule("layouts"));
+                  }}
+                  onOpenLayout={openLayout}
+                  onNavigateAdmin={(tab) => {
+                    setAdminTab(tab);
+                    navigate(pathForModule("admin"));
+                  }}
+                />
+              </Suspense>
             )}
 
             {page === "layouts" && !editorLayoutId && !customerMode && (
+              layoutsLoading && !layouts.length ? (
+                <LoadingState label="Loading layouts…" size="lg" className="route-loading" />
+              ) : (
               <LayoutsPortfolio
                 layouts={layouts}
                 statusFilter={statusFilter}
@@ -943,40 +1049,48 @@ export default function App() {
                 onCloneLayout={cloneLayout}
                 editDisabled={layoutEditDisabled}
               />
+              )
             )}
 
             {page === "layouts" && editorLayoutId && !customerMode && (
-              <LayoutEditor
-                layout={layout}
-                setLayout={setLayout}
-                token={token}
-                role={role}
-                vertical={layout?.vertical || vertical}
-                config={config}
-                categories={cats}
-                products={products}
-                toast={toast}
-                onBack={() => navigate(pathForModule("layouts"))}
-                onRefreshLayouts={refreshLayouts}
-                onDeleteLayout={deleteLayout}
-                statusMeta={statusMeta}
-                onQuickAddProduct={(categoryId) => openProductEditor({ categoryId })}
-                onRefreshCatalog={() => loadCatalog(catalogVertical).catch((e) => toast(e.message))}
-              />
+              layoutLoading || !layout || layout.id !== editorLayoutId ? (
+                <LoadingState label="Loading layout…" size="lg" className="route-loading" />
+              ) : (
+              <Suspense fallback={<RouteLoading label="Loading layout editor…" />}>
+                <LayoutEditor
+                  layout={layout}
+                  setLayout={setLayout}
+                  token={token}
+                  role={role}
+                  vertical={layout?.vertical || vertical}
+                  config={config}
+                  categories={cats}
+                  products={products}
+                  toast={toast}
+                  onBack={() => navigate(pathForModule("layouts"))}
+                  onRefreshLayouts={refreshLayouts}
+                  onDeleteLayout={deleteLayout}
+                  statusMeta={statusMeta}
+                  onQuickAddProduct={(categoryId) => openProductEditor({ categoryId })}
+                  onRefreshCatalog={() => loadCatalog(catalogVertical).catch((e) => toast(e.message))}
+                />
+              </Suspense>
+              )
             )}
 
             {page === "catalog" && !customerMode && (
-              <>
-                <ImportDialog
-                  open={importOpen}
-                  defaultStoreTypeId={STORE_TYPES.find((s) => s.vertical === vertical)?.id}
-                  importing={importing}
-                  onImport={(file, storeTypeId) =>
-                    handleImportFile(file, storeTypeId).catch((err) => toast(friendlyError(err), { type: "error" }))
-                  }
-                  onClose={() => !importing && setImportOpen(false)}
-                />
-                <CatalogPage
+              <Suspense fallback={<RouteLoading label="Loading catalog…" />}>
+                <>
+                  <ImportDialog
+                    open={importOpen}
+                    defaultStoreTypeId={STORE_TYPES.find((s) => s.vertical === vertical)?.id}
+                    importing={importing}
+                    onImport={(file, storeTypeId) =>
+                      handleImportFile(file, storeTypeId).catch((err) => toast(friendlyError(err), { type: "error" }))
+                    }
+                    onClose={() => !importing && setImportOpen(false)}
+                  />
+                  <CatalogPage
                   vertical={vertical}
                   verticalOptions={Object.entries(VERTICALS).map(([key, meta]) => ({ key, label: meta.label }))}
                   onVerticalChange={setVertical}
@@ -1024,7 +1138,8 @@ export default function App() {
                   onDownloadTemplate={handleDownloadImportTemplate}
                   editDisabled={catalogEditDisabled}
                 />
-              </>
+                </>
+              </Suspense>
             )}
 
             {page === "admin" && visibleAdminTabs.length > 0 && !customerMode && (
@@ -1056,6 +1171,7 @@ export default function App() {
                               <th>Email</th>
                               <th>Role</th>
                               <th>Shop layout</th>
+                              {canManageUsers(role) ? <th aria-label="Actions" /> : null}
                             </tr>
                           </thead>
                           <tbody>
@@ -1069,12 +1185,39 @@ export default function App() {
                                     ? layouts.find((l) => l.id === u.shopperLayoutId)?.name || u.shopperLayoutId || "—"
                                     : "—"}
                                 </td>
+                                {canManageUsers(role) ? (
+                                  <td>
+                                    {canDeleteUser(role, session?.user?.id, u) ? (
+                                      <button
+                                        type="button"
+                                        className="btn-danger"
+                                        data-testid={`admin-user-delete-${u.email}`}
+                                        onClick={() => deleteUserAccount(u)}
+                                        style={{ padding: "4px 10px", fontSize: 12 }}
+                                      >
+                                        Delete
+                                      </button>
+                                    ) : (
+                                      <span className="muted">—</span>
+                                    )}
+                                  </td>
+                                ) : null}
                               </tr>
                             ))}
                           </tbody>
                         </table>
                       </div>
                       {canManageUsers(role) ? (
+                        <>
+                          {role === "SuperAdmin" ? (
+                            <p className="muted" style={{ marginBottom: 12 }}>
+                              Create tenant admins here. Each admin can then add their own designers, approvers, viewers, and customer kiosk users.
+                            </p>
+                          ) : (
+                            <p className="muted" style={{ marginBottom: 12 }}>
+                              Add store staff and customer kiosk accounts for your organization.
+                            </p>
+                          )}
                         <form onSubmit={createUser} className="form-grid-2" data-testid="admin-user-create-form">
                           <div className={`field${userFormErrors.name ? " field-invalid" : ""}`}>
                             <label>Name</label>
@@ -1111,36 +1254,94 @@ export default function App() {
                                   ...newUser,
                                   role: e.target.value,
                                   shopperLayoutId: e.target.value === "Customer" ? newUser.shopperLayoutId : "",
+                                  storeAccess: e.target.value === "Customer" ? newUser.storeAccess : [],
+                                  kioskAllApproved: e.target.value === "Customer" ? newUser.kioskAllApproved : false,
                                 })
                               }
                             >
-                              {["Designer", "Approver", "Viewer", "Admin", "Customer"].map((r) => (
+                              {creatableUserRoles(role).map((r) => (
                                 <option key={r}>{r}</option>
                               ))}
                             </select>
                           </div>
                           {newUser.role === "Customer" ? (
-                            <div className={`field${userFormErrors.shopperLayoutId ? " field-invalid" : ""}`}>
-                              <label>Shopper layout</label>
-                              <select
-                                data-testid="admin-user-shopper-layout"
-                                value={newUser.shopperLayoutId}
-                                onChange={(e) => {
-                                  setNewUser({ ...newUser, shopperLayoutId: e.target.value });
-                                  if (userFormErrors.shopperLayoutId) {
-                                    setUserFormErrors((prev) => ({ ...prev, shopperLayoutId: "" }));
-                                  }
-                                }}
-                              >
-                                <option value="">Select layout…</option>
-                                {layouts.map((l) => (
-                                  <option key={l.id} value={l.id}>
-                                    {l.name} ({l.status})
-                                  </option>
-                                ))}
-                              </select>
-                              <FieldError message={userFormErrors.shopperLayoutId} />
-                            </div>
+                            <>
+                              <div className={`field form-grid-span-all${userFormErrors.storeAccess ? " field-invalid" : ""}`}>
+                                <label htmlFor="admin-user-store-access">Store access</label>
+                                <select
+                                  id="admin-user-store-access"
+                                  data-testid="admin-user-store-access"
+                                  className="admin-store-access-select"
+                                  multiple
+                                  size={Math.min(8, Math.max(4, layouts.length || 4))}
+                                  value={newUser.storeAccess}
+                                  onChange={(e) => {
+                                    const selected = [...e.target.selectedOptions].map((o) => o.value);
+                                    setNewUser((prev) => ({
+                                      ...prev,
+                                      storeAccess: selected,
+                                      shopperLayoutId:
+                                        selected.length === 1
+                                          ? selected[0]
+                                          : selected.includes(prev.shopperLayoutId)
+                                            ? prev.shopperLayoutId
+                                            : selected[0] || "",
+                                    }));
+                                    if (userFormErrors.storeAccess) {
+                                      setUserFormErrors((prev) => ({ ...prev, storeAccess: "" }));
+                                    }
+                                  }}
+                                >
+                                  {layouts.map((l) => (
+                                    <option key={l.id} value={l.id}>
+                                      {l.name} ({l.status})
+                                    </option>
+                                  ))}
+                                </select>
+                                <p className="field-hint muted">
+                                  Hold Ctrl (Windows) or ⌘ (Mac) to select multiple stores.
+                                </p>
+                                <FieldError message={userFormErrors.storeAccess} />
+                              </div>
+                              {newUser.storeAccess.length > 1 ? (
+                                <div className={`field${userFormErrors.shopperLayoutId ? " field-invalid" : ""}`}>
+                                  <label htmlFor="admin-user-default-store">Default store</label>
+                                  <select
+                                    id="admin-user-default-store"
+                                    data-testid="admin-user-shopper-layout"
+                                    value={newUser.shopperLayoutId}
+                                    onChange={(e) => {
+                                      setNewUser({ ...newUser, shopperLayoutId: e.target.value });
+                                      if (userFormErrors.shopperLayoutId) {
+                                        setUserFormErrors((prev) => ({ ...prev, shopperLayoutId: "" }));
+                                      }
+                                    }}
+                                  >
+                                    <option value="">Select default…</option>
+                                    {layouts
+                                      .filter((l) => newUser.storeAccess.includes(l.id))
+                                      .map((l) => (
+                                        <option key={l.id} value={l.id}>
+                                          {l.name} ({l.status})
+                                        </option>
+                                      ))}
+                                  </select>
+                                  <FieldError message={userFormErrors.shopperLayoutId} />
+                                </div>
+                              ) : null}
+                              <div className="field form-grid-span-all">
+                                <label className="checkbox-row">
+                                  <input
+                                    type="checkbox"
+                                    checked={newUser.kioskAllApproved}
+                                    onChange={(e) =>
+                                      setNewUser({ ...newUser, kioskAllApproved: e.target.checked })
+                                    }
+                                  />
+                                  Allow all approved demo stores
+                                </label>
+                              </div>
+                            </>
                           ) : null}
                           <div className={`field${userFormErrors.password ? " field-invalid" : ""}`}>
                             <label>Password</label>
@@ -1164,6 +1365,7 @@ export default function App() {
                             Create user
                           </button>
                         </form>
+                        </>
                       ) : (
                         <div className="muted">Only Admin can create users.</div>
                       )}
@@ -1294,9 +1496,6 @@ export default function App() {
                         <div className="muted">Only Admin can save configuration.</div>
                       )}
                     </div>
-                  )}
-                  {adminTab === "shopper" && (
-                    <AdminShopperPanel token={token} layouts={layouts} toast={toast} />
                   )}
                   {adminTab === "audit" && (
                     <ul style={{ margin: 0, paddingLeft: 18 }} data-testid="admin-audit-list">

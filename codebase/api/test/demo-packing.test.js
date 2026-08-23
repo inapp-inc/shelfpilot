@@ -98,3 +98,43 @@ test("mixed perimeter mode does not emit cross-aisle grid", () => {
   );
   assert.ok(shelfArea / area > 0.15, "reasonable fixture coverage on demo rectangle");
 });
+
+test("inset fixture polygon is used even when shape label is rectangle", () => {
+  const layout = {
+    id: "lay-inset",
+    widthMeters: 30,
+    depthMeters: 24,
+    shape: "rectangle",
+    storeEnvelope: { x: 0, y: 0, widthMeters: 30, depthMeters: 24 },
+    // Cream fixture zone is inset — packing must not fill the outer envelope.
+    polygon: [
+      { x: 4, y: 3 },
+      { x: 22, y: 3 },
+      { x: 22, y: 18 },
+      { x: 4, y: 18 },
+    ],
+  };
+
+  const poly = layoutBoundaryPolygon(layout);
+  assert.equal(poly[0].x, 4);
+  assert.equal(poly[2].y, 18);
+
+  const packed = packAislesAndShelves(layout, {
+    orientation: "horizontal",
+    minAisleWidthMeters: 1.0,
+    shelfTemplate: GONDOLA,
+  });
+
+  assert.ok(packed.shelfCount >= 2, "expected shelves inside inset fixture zone");
+  for (const s of packed.shelves) {
+    assert.ok(entityInsideLayout(s, "shelf", layout), "shelf outside fixture polygon");
+  }
+  for (const a of packed.aisles) {
+    assert.ok(entityInsideLayout(a, "aisle", layout), "aisle outside fixture polygon");
+    const fp = a.orientation === "vertical"
+      ? { x: Number(a.x), y: Number(a.y), w: Number(a.widthMeters), d: Number(a.lengthMeters) }
+      : { x: Number(a.x), y: Number(a.y), w: Number(a.lengthMeters), d: Number(a.widthMeters) };
+    assert.ok(fp.x >= 4 - 1e-6 && fp.x + fp.w <= 22 + 1e-6, "aisle X must stay in fixture zone");
+    assert.ok(fp.y >= 3 - 1e-6 && fp.y + fp.d <= 18 + 1e-6, "aisle Y must stay in fixture zone");
+  }
+});

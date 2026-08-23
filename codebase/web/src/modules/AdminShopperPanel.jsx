@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { pathForModule } from "../routes.js";
+import LoadingState from "../components/LoadingState.jsx";
 
 /** Admin — configure the single public shopper / kiosk layout. */
 export default function AdminShopperPanel({ token, layouts = [], toast }) {
@@ -10,9 +10,14 @@ export default function AdminShopperPanel({ token, layouts = [], toast }) {
     displayName: "",
     entryPointId: "",
   });
+  const [saved, setSaved] = useState({
+    enabled: false,
+    layoutId: "",
+  });
   const [entryPoints, setEntryPoints] = useState([]);
   const [layoutName, setLayoutName] = useState("");
   const [loading, setLoading] = useState(true);
+  const [layoutLoading, setLayoutLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -20,12 +25,14 @@ export default function AdminShopperPanel({ token, layouts = [], toast }) {
     setLoading(true);
     api("/admin/shopper-experience", { token })
       .then((data) => {
-        setForm({
+        const next = {
           enabled: Boolean(data.enabled),
           layoutId: data.layoutId || "",
           displayName: data.displayName || "",
           entryPointId: data.entryPointId || "",
-        });
+        };
+        setForm(next);
+        setSaved({ enabled: next.enabled, layoutId: next.layoutId });
         setEntryPoints(data.entryPoints || []);
         setLayoutName(data.layoutName || "");
       })
@@ -34,27 +41,41 @@ export default function AdminShopperPanel({ token, layouts = [], toast }) {
   }, [token, toast]);
 
   async function onLayoutChange(layoutId) {
-    setForm((f) => ({ ...f, layoutId, entryPointId: "" }));
+    setForm((f) => ({
+      ...f,
+      layoutId,
+      entryPointId: "",
+      enabled: layoutId ? true : f.enabled,
+    }));
     if (!layoutId || !token) {
       setEntryPoints([]);
       setLayoutName("");
       return;
     }
+    setLayoutLoading(true);
     try {
       const layout = await api(`/layouts/${layoutId}`, { token });
       setLayoutName(layout.name || layoutId);
-      setEntryPoints(
-        (layout.entryPoints || []).map((e) => ({ id: e.id, label: e.label || "Entrance" }))
-      );
-      if (layout.entryPoints?.length === 1) {
-        setForm((f) => ({ ...f, layoutId, entryPointId: layout.entryPoints[0].id }));
+      const points = (layout.entryPoints || []).map((e) => ({
+        id: e.id,
+        label: e.label || "Entrance",
+      }));
+      setEntryPoints(points);
+      if (points.length === 1) {
+        setForm((f) => ({ ...f, layoutId, entryPointId: points[0].id, enabled: true }));
       }
     } catch (e) {
       toast?.(e.message);
+    } finally {
+      setLayoutLoading(false);
     }
   }
 
   async function save() {
+    if (form.enabled && !form.layoutId) {
+      toast?.("Select a layout before enabling the kiosk", { type: "error" });
+      return;
+    }
     setSaving(true);
     try {
       const data = await api("/admin/shopper-experience", {
@@ -67,46 +88,75 @@ export default function AdminShopperPanel({ token, layouts = [], toast }) {
           entryPointId: form.entryPointId || null,
         },
       });
+      setForm((f) => ({
+        ...f,
+        enabled: Boolean(data.enabled),
+        layoutId: data.layoutId || "",
+        displayName: data.displayName || "",
+        entryPointId: data.entryPointId || "",
+      }));
+      setSaved({
+        enabled: Boolean(data.enabled),
+        layoutId: data.layoutId || "",
+      });
       setEntryPoints(data.entryPoints || []);
       setLayoutName(data.layoutName || "");
-      toast?.("Shopper kiosk updated", { type: "success" });
+      toast?.(
+        data.enabled
+          ? "Shopper kiosk enabled for Customer sign-in"
+          : "Shopper kiosk saved (currently disabled)",
+        { type: "success" }
+      );
     } catch (e) {
-      toast?.(e.message);
+      toast?.(e.message === "shopper_layout_required" ? "Select a layout before enabling" : e.message);
     } finally {
       setSaving(false);
     }
   }
 
-  const publicUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}${pathForModule("shop", form.layoutId || null)}`
-      : pathForModule("shop", form.layoutId || null);
+  const kioskReady =
+    saved.enabled && saved.layoutId && saved.layoutId === form.layoutId && form.enabled;
 
-  if (loading) return <p className="muted">Loading shopper settings…</p>;
+  if (loading) {
+    return (
+      <div className="admin-shopper-panel admin-shopper-panel--loading" data-testid="admin-shopper-panel">
+        <LoadingState label="Loading shopper settings…" />
+      </div>
+    );
+  }
 
   return (
     <div className="admin-shopper-panel" data-testid="admin-shopper-panel">
-      <p className="muted" style={{ fontSize: 13, margin: "0 0 12px" }}>
-        Configure the public kiosk and mobile QR experience. Shoppers only see this layout — no login, no other
-        stores.
-      </p>
+      <header className="admin-shopper-header">
+        <h3 className="admin-shopper-title">Shopper kiosk</h3>
+        <p className="admin-shopper-lead muted">
+          In-store product finder for Customer accounts. Shoppers sign in — no public link or QR code.
+        </p>
+      </header>
 
-      <label className="admin-shopper-check">
+      <label className={`admin-shopper-check${form.enabled ? " is-on" : ""}`}>
         <input
           type="checkbox"
           checked={form.enabled}
           onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
           data-testid="admin-shopper-enabled"
         />
-        Enable shopper wayfinding kiosk
+        <span>
+          <strong>Enable shopper wayfinding kiosk</strong>
+          <span className="admin-shopper-check-hint muted">
+            {form.enabled ? "Customers can use the kiosk after you save" : "Kiosk stays off until enabled"}
+          </span>
+        </span>
       </label>
 
       <div className="field">
-        <label>Shopper layout</label>
+        <label htmlFor="admin-shopper-layout">Shopper layout</label>
         <select
+          id="admin-shopper-layout"
           value={form.layoutId}
           data-testid="admin-shopper-layout"
           onChange={(e) => onLayoutChange(e.target.value)}
+          disabled={layoutLoading || saving}
         >
           <option value="">Select layout…</option>
           {layouts.map((l) => (
@@ -115,59 +165,84 @@ export default function AdminShopperPanel({ token, layouts = [], toast }) {
             </option>
           ))}
         </select>
+        {layoutLoading ? <LoadingState label="Loading layout…" size="sm" variant="inline" /> : null}
+        {layoutName && !layoutLoading ? (
+          <span className="muted" style={{ fontSize: 12 }}>
+            Selected: {layoutName}
+          </span>
+        ) : null}
       </div>
 
       <div className="field">
-        <label>Display name (optional)</label>
+        <label htmlFor="admin-shopper-display-name">Display name (optional)</label>
         <input
+          id="admin-shopper-display-name"
           type="text"
           value={form.displayName}
           placeholder={layoutName || "Store name on kiosk"}
           onChange={(e) => setForm({ ...form, displayName: e.target.value })}
           data-testid="admin-shopper-display-name"
+          disabled={saving}
         />
       </div>
 
       <div className="field">
-        <label>Start location (entry point)</label>
+        <label htmlFor="admin-shopper-entry">Start location (entry point)</label>
         <select
+          id="admin-shopper-entry"
           value={form.entryPointId}
-          disabled={!entryPoints.length}
+          disabled={!entryPoints.length || layoutLoading || saving}
           data-testid="admin-shopper-entry"
           onChange={(e) => setForm({ ...form, entryPointId: e.target.value })}
         >
-          <option value="">Select entrance…</option>
+          <option value="">{entryPoints.length ? "Select entrance…" : "Auto — front of store"}</option>
           {entryPoints.map((e) => (
             <option key={e.id} value={e.id}>
               {e.label}
             </option>
           ))}
         </select>
-        {!entryPoints.length && form.layoutId ? (
+        {!entryPoints.length && form.layoutId && !layoutLoading ? (
           <span className="muted" style={{ fontSize: 11 }}>
-            Add an entry point on the layout (Zones panel) first.
+            No door marked on the layout. The kiosk uses a front-of-store entrance space and still draws the walking line.
           </span>
         ) : null}
       </div>
 
-      <div className="admin-shopper-preview muted mono" style={{ fontSize: 12 }}>
-        Public URL:{" "}
-        {form.layoutId ? (
-          <a href={publicUrl}>{publicUrl}</a>
-        ) : (
-          <span>Select a layout to generate the kiosk URL</span>
-        )}
-      </div>
+      {form.layoutId ? (
+        <div className={`admin-shopper-url-card${kioskReady ? " is-live" : ""}`}>
+          <div className="admin-shopper-url-label">Customer access</div>
+          <p className="admin-shopper-url-hint" style={{ margin: 0 }}>
+            Assign this layout to Customer users under <strong>Users &amp; Roles</strong>. They can sign in
+            immediately — no extra enable step required. Use the settings below to customize the kiosk display
+            name and entrance (optional).
+          </p>
+          {kioskReady ? (
+            <p className="admin-shopper-url-hint is-live">Live — assigned Customer accounts can sign in.</p>
+          ) : form.enabled ? (
+            <p className="admin-shopper-url-hint">Click Save shopper kiosk to activate.</p>
+          ) : null}
+        </div>
+      ) : null}
 
-      <button
-        type="button"
-        className="btn-primary"
-        disabled={saving || (form.enabled && (!form.layoutId || !form.entryPointId))}
-        onClick={() => save().catch(() => {})}
-        data-testid="admin-shopper-save"
-      >
-        {saving ? "Saving…" : "Save shopper kiosk"}
-      </button>
+      <div className="admin-shopper-actions">
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={saving || layoutLoading || (form.enabled && !form.layoutId)}
+          onClick={() => save().catch(() => {})}
+          data-testid="admin-shopper-save"
+        >
+          {saving ? (
+            <>
+              <span className="loading-state-spinner loading-state-spinner--btn" aria-hidden />
+              Saving…
+            </>
+          ) : (
+            "Save shopper kiosk"
+          )}
+        </button>
+      </div>
     </div>
   );
 }

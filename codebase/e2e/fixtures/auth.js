@@ -7,7 +7,7 @@ export async function loginAs(page, role = "Designer") {
   if (!creds) throw new Error(`Unknown role: ${role}`);
   const login = new LoginPage(page);
   await login.goto();
-  await login.login(creds.email, creds.password, creds.role);
+  await login.login(creds.email, creds.password);
   await login.expectLoggedIn(role);
   return login;
 }

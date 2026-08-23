@@ -38,11 +38,20 @@ export function normalizeZone(zone = {}) {
 }
 
 export function normalizeEntryPoint(entry = {}) {
+  const nameRaw = entry.name ?? entry.label;
   return {
     id: entry.id || `entry-${randomUUID().slice(0, 6)}`,
-    name: entry.name != null && String(entry.name).trim() !== "" ? String(entry.name) : "Entrance",
+    name: nameRaw != null && String(nameRaw).trim() !== "" ? String(nameRaw).trim() : "Entrance",
     x: Number(entry.x) || 0,
     y: Number(entry.y) || 0,
     widthMeters: Math.max(0.3, Number(entry.widthMeters) || 1.8),
   };
+}
+
+/** Keep at most one entrance — first array element wins (creation order / primary). */
+export function canonicalizeEntryPoints(layout) {
+  const entries = layout?.entryPoints || [];
+  if (entries.length <= 1) return 0;
+  layout.entryPoints = [entries[0]];
+  return entries.length - 1;
 }

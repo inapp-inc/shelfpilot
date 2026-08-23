@@ -28,6 +28,7 @@ import {
   enforceAisleMinimums,
   extendWarehouseAislesToFloorSpan,
   guaranteeEveryShelfHasAisle,
+  pruneCoincidentAisles,
   pruneOverlappingAisles,
   splitWalkAislesClearOfShelves,
 } from "./aisleCoverage.js";
@@ -1381,12 +1382,57 @@ export function packAislesAndShelves(layout, options = {}) {
     prunedAisles = splitWalkAislesClearOfShelves(postQuantize.aisles, finalShelves, layoutForCheck, {
       minRun: minAisleRun,
     });
+    if (orient === "mixed") {
+      prunedAisles = pruneCoincidentAisles(prunedAisles, layoutForCheck);
+    }
   }
   ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
     finalShelves,
     prunedAisles,
     layoutForCheck
   ));
+  // Final containment pass — merge/widen/split can leave corridors outside the fixture zone.
+  prunedAisles = prunedAisles.filter((a) => entityInsideLayout(a, "aisle", layoutForCheck));
+  finalShelves = finalShelves.filter((s) => entityInsideLayout(s, "shelf", layoutForCheck));
+  ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
+    finalShelves,
+    prunedAisles,
+    layoutForCheck
+  ));
+  if (!warehouseMode) {
+    const recovered = guaranteeEveryShelfHasAisle(finalShelves, prunedAisles, layoutForCheck, {
+      preferredMinAisle: minAisle,
+      strictMinAisle: minAisle >= 0.9,
+    });
+    finalShelves = recovered.shelves;
+    prunedAisles = recovered.aisles.filter((a) => entityInsideLayout(a, "aisle", layoutForCheck));
+    ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
+      finalShelves,
+      prunedAisles,
+      layoutForCheck
+    ));
+    const keepIds = new Set();
+    for (const s of finalShelves) {
+      if (s.pairRole === "back" || s.pairDisplay) continue;
+      if (!s.aisleId) continue;
+      keepIds.add(s.id);
+      if (s.pairId) {
+        for (const other of finalShelves) {
+          if (other.pairId === s.pairId) keepIds.add(other.id);
+        }
+      }
+    }
+    if (keepIds.size) {
+      const dropped = finalShelves.length - keepIds.size;
+      if (dropped > 0) skippedOutsideCount += dropped;
+      finalShelves = finalShelves.filter((s) => keepIds.has(s.id));
+      ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleShelfBinding(
+        finalShelves,
+        prunedAisles,
+        layoutForCheck
+      ));
+    }
+  }
   ({ shelves: finalShelves, aisles: prunedAisles } = finalizeAisleLabeling(
     finalShelves,
     prunedAisles,

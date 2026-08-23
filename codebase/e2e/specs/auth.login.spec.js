@@ -13,10 +13,10 @@ test.describe("Auth login @smoke", () => {
   });
 
   test("@smoke Designer can log in", async ({ page }) => {
-    const { email, password, role } = DEMO_USERS.Designer;
+    const { email, password } = DEMO_USERS.Designer;
     const login = new LoginPage(page);
     await login.goto();
-    await login.login(email, password, role);
+    await login.login(email, password);
     await login.expectLoggedIn("Designer");
     await expect(page.getByTestId("nav-dashboard")).toBeVisible();
     await expect(page.getByTestId("nav-catalog")).toBeVisible();
@@ -25,7 +25,7 @@ test.describe("Auth login @smoke", () => {
   test("@smoke bad password is rejected", async ({ page }) => {
     const login = new LoginPage(page);
     await login.goto();
-    await login.login(DEMO_USERS.Designer.email, "wrong-password", "Designer");
+    await login.login(DEMO_USERS.Designer.email, "wrong-password");
     await login.expectLoginError();
   });
 

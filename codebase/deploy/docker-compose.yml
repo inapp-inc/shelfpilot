@@ -25,6 +25,13 @@ services:
       WEB_DIST: /app/web/dist
       SQLITE_PATH: /data/shelfpilot.db
       CORS_ORIGINS: ${CORS_ORIGINS:-http://foundry.inapp.com}
+      SKIP_DEMO_BOOTSTRAP: ${SKIP_DEMO_BOOTSTRAP:-1}
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 512M
     volumes:
       - shelfpilot_data:/data
     healthcheck:
@@ -35,10 +42,10 @@ services:
           "-e",
           "const p=process.env.PORT||4520;const b=process.env.BASE_PATH||'';fetch('http://127.0.0.1:'+p+b+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
-      interval: 10s
+      interval: 15s
       timeout: 5s
-      retries: 6
-      start_period: 15s
+      retries: 10
+      start_period: 60s
 
 volumes:
   shelfpilot_data:

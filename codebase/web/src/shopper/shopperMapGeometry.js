@@ -65,13 +65,6 @@ function resolveGondolaHalves(unit, allShelves) {
   return { front, back };
 }
 
-function gondolaSpineLine(frontCorners, backCorners) {
-  if (!frontCorners?.length || !backCorners?.length) return null;
-  const a = polygonCentroid(frontCorners);
-  const b = polygonCentroid(backCorners);
-  return [a, b];
-}
-
 /** @returns map render units with one or two labelled faces per fixture. */
 export function shelfMapUnits(layout) {
   const allShelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
@@ -84,23 +77,25 @@ export function shelfMapUnits(layout) {
     if (unit.pairShelfIds?.back) highlightIds.add(unit.pairShelfIds.back);
 
     if (unit.pairDisplay && unit.pairShelfIds?.back) {
-      const { front, back } = resolveGondolaHalves(unit, allShelves);
-      const frontCorners = shelfRotatedCorners(front);
-      const backCorners = back ? shelfRotatedCorners(back) : frontCorners;
+      // A paired gondola is two shelves sharing one footprint, so their own corners coincide.
+      // Split that footprint into a front and a back half, exactly as the 2D editor draws it.
+      const { front } = resolveGondolaHalves(unit, allShelves);
+      const corners = shelfRotatedCorners(front);
+      const { faceA, faceB, spine } = splitDualShelfFaces(corners, front.rotationDeg);
       const labelA = shelfCanvasFaceLabel(unit, "A", aisles, allShelves);
       const labelB = shelfCanvasFaceLabel(unit, "B", aisles, allShelves);
       return {
         id: unit.id,
         kind: "gondola",
         pairShelfIds: unit.pairShelfIds,
-        corners: [...frontCorners, ...backCorners],
+        corners,
         faces: [
-          { id: "A", shelfId: unit.pairShelfIds.front, corners: frontCorners, label: labelA, at: polygonCentroid(frontCorners) },
-          { id: "B", shelfId: unit.pairShelfIds.back, corners: backCorners, label: labelB, at: polygonCentroid(backCorners) },
+          { id: "A", shelfId: unit.pairShelfIds.front, corners: faceA, label: labelA, at: polygonCentroid(faceA) },
+          { id: "B", shelfId: unit.pairShelfIds.back, corners: faceB, label: labelB, at: polygonCentroid(faceB) },
         ],
-        spine: gondolaSpineLine(frontCorners, backCorners),
+        spine,
         label: `${labelA} · ${labelB}`,
-        labelAt: polygonCentroid([...frontCorners, ...backCorners]),
+        labelAt: polygonCentroid(corners),
         highlightIds,
         rotationDeg: unit.rotationDeg,
       };

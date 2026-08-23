@@ -1,8 +1,25 @@
 # ShelfPilot — Pending Work & Status Gaps
 
-_Last updated: 2026-08-11_
+_Last updated: 2026-08-21_
 
 Consolidated view of what is still **pending**, **partial**, or **documented as planned but already implemented**. Use this alongside [project.md](../project.md), [BRD_ADDENDUM_DEMO_AUG_2026.md](./BRD_ADDENDUM_DEMO_AUG_2026.md), and [DEMO_CHANGES_SUMMARY.md](./DEMO_CHANGES_SUMMARY.md).
+
+---
+
+## 0. Client feedback (2026-08) — **delivered (core)**
+
+| ID | Ask | Status |
+|----|-----|--------|
+| FR-KIOSK-01 | Select retail store / warehouse at the top of the kiosk | **Done** — explicit grants, store picker/switcher, `GET /shopper/stores` |
+| FR-KIOSK-02 | Single-entrance store model | **Done** — set-entrance API + editor |
+| FR-KIOSK-03 | Bigger guided route view; line drawn entrance → target shelf | **Done** — map-first kiosk, route lands on shelf face |
+| FR-KIOSK-04 | Read-only 2D store-plan view inside the kiosk | **Done** — `ShopperLayoutPlanMap` + Simple/Plan toggle |
+| FR-VIEW-02 | Three adjacent shelves in the planogram 3D view | **Done (core)** — `focusGroupFor` + group camera |
+| FR-NAME-01 | Configurable aisle / bay / shelf nomenclature | **Done (core)** — shared `labelFormat.mjs`, API delegate, config field |
+
+Spec: [CLIENT_FEEDBACK_AUG_2026_SPEC.md](./CLIENT_FEEDBACK_AUG_2026_SPEC.md) · Tasks: [tasks.md](../openspec/changes/client-feedback-aug-2026/tasks.md)
+
+**Optional follow-ups:** Playwright E2E for store picker + plan toggle; admin per-layout naming UI; 3D perf evidence on demo hypermarket.
 
 ---
 
@@ -31,16 +48,20 @@ These docs still list Aug 2026 demo items as **Planned** even though code exists
 
 ## 2. Product features — still pending or partial
 
-### FR-CUST-01 — Customer role & wayfinding (partial)
+### FR-CUST-01 — Customer role & wayfinding (done)
 
-| Done | Pending |
-|------|---------|
-| Customer role in RBAC (API + web) | Wire **CustomerShopPage** (store picker by store type) into `App.jsx` |
-| `shopperLayoutId` on user create | Multi-layout browse for Customer (today: one assigned layout only) |
-| Public shop API (`/shop/*`) | Clarify visibility rules: approved-only vs demo layouts (BRD open question) |
-| `ShopperKioskPage` — find product + wayfinding | End-to-end Playwright coverage |
+| Done | Deferred |
+|------|----------|
+| Customer role in RBAC (API + web) | Multi-store picker (`CustomerShopPage`) — **out of scope** (1.B: assigned store only) |
+| `shopperLayoutId` required on Customer create | End-to-end Playwright coverage |
+| Public shop API (`/shop/*`) | |
+| Assigned Customer loads their store even if public kiosk is off | |
+| Walking line from assumed/configured entrance to the product shelf | |
+| **2D map UX polish** — aisle labels on shelves, route visibility, schematic readability | **Phase 1 done** · **Customer lane diagram shipped** — see [SHOPPER_KIOSK_2D_MAP_UX_SPEC.md](./SHOPPER_KIOSK_2D_MAP_UX_SPEC.md) |
 
-**Note:** `CustomerShopPage.jsx` exists but is not imported or routed. Customers login → redirect to assigned layout kiosk.
+**Note:** Customer login opens only the assigned layout. Store picker is intentionally not wired. If the layout has no door, the kiosk assumes a front-of-store entrance space.
+
+**UX follow-up (Aug 2026):** Functional wayfinding ships, but the customer 2D map needs a separate label profile (aisle numbers in corridors only), screen-relative route styling, and browse vs guided modes. Spec: [SHOPPER_KIOSK_2D_MAP_UX_SPEC.md](./SHOPPER_KIOSK_2D_MAP_UX_SPEC.md).
 
 ### Open product questions (BRD addendum §6)
 
@@ -178,12 +199,11 @@ Workstreams: WS-1 … WS-8 / SEED-P01 … in production handover.
 ## 9. Suggested priority order
 
 1. **Doc refresh** — Align `project.md`, BRD addendum, and demo summary with implemented FR-* items.  
-2. **FR-CUST-01 completion** — Route `CustomerShopPage` or document single-layout assignment as intentional.  
-3. **Resolve BRD §6 open questions** — Especially Customer layout visibility and warehouse editor UX.  
-4. **Demo hardening** — Warehouse bootstrap layout; verify Docker rebuild path.  
-5. **SEED-00c-openapi-align** — Contract drift risk.  
-6. **SEED-12-e2e-smoke** — Critical path Playwright scenarios.  
-7. **Production migration** — When moving off local demo stack.
+2. **Resolve BRD §6 open questions** — Warehouse editor UX remains open; Customer visibility is assigned-store only.  
+3. **Demo hardening** — Warehouse bootstrap layout; verify Docker rebuild path.  
+4. **SEED-00c-openapi-align** — Contract drift risk.  
+5. **SEED-12-e2e-smoke** — Critical path Playwright scenarios.  
+6. **Production migration** — When moving off local demo stack.
 
 ---
 
@@ -196,7 +216,7 @@ Workstreams: WS-1 … WS-8 / SEED-P01 … in production handover.
 | FR-TEMP-01 | Temporary storage fixtures | **Done** |
 | FR-VIEW-01 | Flat aisle shelf viewer | **Done** |
 | FR-WH-01 | Warehouse store type | **Done** (design questions remain) |
-| FR-CUST-01 | Customer find + wayfinding | **Partial** — kiosk yes, store picker not wired |
+| FR-CUST-01 | Customer find + wayfinding | **Done** (core) — **2D map UX spec drafted** → [SHOPPER_KIOSK_2D_MAP_UX_SPEC.md](./SHOPPER_KIOSK_2D_MAP_UX_SPEC.md) |
 
 ---
 

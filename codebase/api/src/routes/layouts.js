@@ -2,6 +2,8 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { repo, audit, getConfig, now } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
+import { permittedStoresFor } from "../services/storeAccess.js";
+import { customerMayAccessLayout as userMayAccessLayout } from "../services/storeAccess.js";
 import { computeAutoCalc, validateAisles } from "../services/layoutMath.js";
 import { fixtureToShelf, normalizeLayout, nextDisplayNumber, shelfToFixture } from "../services/layoutNormalize.js";
 import { clampFacings, clampDepthFacings, clampStackLayers, previewFacings } from "../services/planogramMath.js";
@@ -51,6 +53,10 @@ import {
 } from "../services/shelfSegments.js";
 import { isTemporaryStorageShelf, isTemporaryStorageType, temporaryStorageLabel } from "../services/temporaryStorage.js";
 import { isSingleSidedPlacementType, warehouseFixtureLabel } from "../services/warehouseLayout.js";
+import { invalidatePortfolioAnalyticsCache } from "../services/portfolioAnalyticsCache.js";
+import { computePortfolioKpis } from "../services/analyticsReports.js";
+import { tryAcquireAutogenerate, releaseAutogenerate } from "../services/autogenerateGuard.js";
+import { layoutIncludesPlanograms, stripPlanogramsFromLayout } from "../services/layoutPayload.js";
 
 export const layoutsRouter = Router();
 
@@ -106,6 +112,8 @@ function refreshValidation(layout) {
   layout.validation = { aisleViolations, containmentViolations, overlapViolations };
   layout.autoCalc = computeAutoCalc(layout, config);
   layout.autoCalc.durationMs = Date.now() - started;
+  const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
+  layout.portfolioKpis = computePortfolioKpis(layout, categories, config);
   layout.updatedAt = now();
   console.log(
     JSON.stringify({
@@ -120,11 +128,16 @@ function refreshValidation(layout) {
 
 function saveNormalized(layout, options = {}) {
   normalizeLayout(layout);
+  if (layout._entranceTrimmed > 0 && options.auditUser) {
+    audit(options.auditUser, "layout.entrance.trimmed", `${layout.id}:${layout._entranceTrimmed}`);
+  }
+  delete layout._entranceTrimmed;
   if (!options.skipRevisionBump) {
     layout.contentRevision = (Number(layout.contentRevision) || 0) + 1;
   }
   refreshValidation(layout);
   repo.saveLayout(layout);
+  invalidatePortfolioAnalyticsCache();
   return layout;
 }
 
@@ -141,8 +154,21 @@ function containmentError(res, err) {
   throw err;
 }
 
+function customerAssignedLayoutId(req) {
+  return req.user?.role === "Customer" ? req.user.shopperLayoutId || null : null;
+}
+
+function customerMayAccessLayout(req, layoutId) {
+  if (req.user?.role !== "Customer") return true;
+  return userMayAccessLayout(req.user, layoutId);
+}
+
 layoutsRouter.get("/layouts", authRequired, (req, res) => {
-  const items = repo.listLayouts(req.query.status || null);
+  let items = repo.listLayouts(req.query.status || null);
+  if (req.user?.role === "Customer") {
+    const browsableIds = new Set(permittedStoresFor(req.user).map((s) => s.id));
+    items = items.filter((l) => browsableIds.has(l.id));
+  }
   res.json({ items });
 });
 
@@ -341,10 +367,16 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
 });
 
 layoutsRouter.get("/layouts/:layoutId", authRequired, (req, res) => {
+  if (!customerMayAccessLayout(req, req.params.layoutId)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
   const layout = repo.getLayout(req.params.layoutId);
   if (!layout) return res.status(404).json({ error: "not_found" });
   normalizeLayout(layout);
-  res.json(layout);
+  const payload = layoutIncludesPlanograms(req.query)
+    ? layout
+    : stripPlanogramsFromLayout(layout);
+  res.json(payload);
 });
 
 layoutsRouter.post(
@@ -383,6 +415,7 @@ layoutsRouter.delete(
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
     repo.deleteLayout(req.params.layoutId);
+    invalidatePortfolioAnalyticsCache();
     audit(req.user.email, "layout.delete", req.params.layoutId);
     res.json({ ok: true, id: req.params.layoutId });
   }
@@ -898,7 +931,7 @@ layoutsRouter.delete(
   }
 );
 
-// ---- Store entry points ----
+// ---- Store entrance (single entry point) ----
 layoutsRouter.post(
   "/layouts/:layoutId/entry-points",
   authRequired,
@@ -906,17 +939,25 @@ layoutsRouter.post(
   (req, res) => {
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
-    const entry = normalizeEntryPoint(req.body || {});
+    layout.entryPoints = layout.entryPoints || [];
+    const replacing = layout.entryPoints.length > 0;
+    const entry = normalizeEntryPoint({
+      ...(req.body || {}),
+      id: replacing ? layout.entryPoints[0].id : undefined,
+    });
     try {
       assertInsideOrThrow(entry, "entryPoint", layout);
     } catch (err) {
       return containmentError(res, err);
     }
-    layout.entryPoints = layout.entryPoints || [];
-    layout.entryPoints.push(entry);
-    saveNormalized(layout);
-    audit(req.user.email, "layout.entry.add", `${layout.id}:${entry.id}`);
-    res.status(201).json(layout);
+    layout.entryPoints = [entry];
+    saveNormalized(layout, { auditUser: req.user.email });
+    audit(
+      req.user.email,
+      replacing ? "layout.entrance.set" : "layout.entry.add",
+      `${layout.id}:${entry.id}`
+    );
+    res.status(replacing ? 200 : 201).json(layout);
   }
 );
 
@@ -930,7 +971,10 @@ layoutsRouter.patch(
     const entry = (layout.entryPoints || []).find((e) => e.id === req.params.entryId);
     if (!entry) return res.status(404).json({ error: "entry_not_found" });
     const patch = req.body || {};
-    if (patch.name !== undefined) entry.name = patch.name || entry.name;
+    if (patch.name !== undefined) entry.name = String(patch.name || "").trim() || entry.name;
+    if (patch.label !== undefined && patch.name === undefined) {
+      entry.name = String(patch.label || "").trim() || entry.name;
+    }
     for (const key of ["x", "y", "widthMeters"]) {
       if (patch[key] != null) entry[key] = Number(patch[key]);
     }
@@ -939,7 +983,7 @@ layoutsRouter.patch(
     } catch (err) {
       return containmentError(res, err);
     }
-    saveNormalized(layout);
+    saveNormalized(layout, { auditUser: req.user.email });
     audit(req.user.email, "layout.entry.patch", `${layout.id}:${entry.id}`);
     res.json(layout);
   }
@@ -955,7 +999,7 @@ layoutsRouter.delete(
     const before = (layout.entryPoints || []).length;
     layout.entryPoints = (layout.entryPoints || []).filter((e) => e.id !== req.params.entryId);
     if (layout.entryPoints.length === before) return res.status(404).json({ error: "entry_not_found" });
-    saveNormalized(layout);
+    saveNormalized(layout, { auditUser: req.user.email });
     audit(req.user.email, "layout.entry.delete", `${layout.id}:${req.params.entryId}`);
     res.json(layout);
   }
@@ -1344,7 +1388,7 @@ layoutsRouter.post(
     if (segmentId && !getShelfSegment(shelf, segmentId, faceId, levelIndex)) {
       return res.status(404).json({ error: "segment_not_found" });
     }
-    const product = repo.listProducts().find((p) => p.id === productId);
+    const product = repo.getProduct(productId);
     if (!product) return res.status(404).json({ error: "product_not_found" });
     const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
     const shelfForGate = {
@@ -1483,7 +1527,7 @@ layoutsRouter.post("/layouts/:layoutId/planogram/preview", authRequired, (req, r
   if (segmentId && !getShelfSegment(shelf, segmentId, faceId, levelIndex)) {
     return res.status(404).json({ error: "segment_not_found" });
   }
-  const product = repo.listProducts().find((p) => p.id === req.body?.productId);
+  const product = repo.getProduct(req.body?.productId);
   if (!product) return res.status(404).json({ error: "product_not_found" });
   res.json(
     previewFacings({
@@ -1502,6 +1546,15 @@ layoutsRouter.post(
   requireRoles("Designer", "Admin"),
   (req, res) => {
     if (!autogenerateEnabled()) return res.status(403).json({ error: "autogenerate_disabled" });
+    const slot = tryAcquireAutogenerate();
+    if (!slot.ok) {
+      return res.status(503).json({
+        error: "autogenerate_busy",
+        retryAfterMs: slot.retryAfterMs,
+      });
+    }
+
+    try {
     const layout = repo.getLayout(req.params.layoutId);
     if (!layout) return res.status(404).json({ error: "not_found" });
     const body = req.body || {};
@@ -1567,6 +1620,9 @@ layoutsRouter.post(
       },
       replaced: replaceExisting && hasContent,
     });
+    } finally {
+      releaseAutogenerate();
+    }
   }
 );
 

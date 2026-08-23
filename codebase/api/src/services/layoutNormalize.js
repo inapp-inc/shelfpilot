@@ -8,13 +8,13 @@ import {
   normalizeShelf,
   syncLegacyFromFaces,
 } from "./shelfFaces.js";
-import { normalizeEntryPoint, normalizeZone } from "./zones.js";
+import { canonicalizeEntryPoints, normalizeEntryPoint, normalizeZone } from "./zones.js";
 import { normalizeObstacle } from "./obstacles.js";
 import { normalizeFloorPlan } from "./floorPlan.js";
 import { finalizeAisleLabeling } from "./aisleLabeling.js";
 import { finalizeAisleShelfBinding } from "./aisleBinding.js";
 import { guaranteeEveryShelfHasAisle } from "./aisleCoverage.js";
-import { alignLayoutGeometry } from "./polygonContainment.js";
+import { alignLayoutGeometry, entityInsideLayout } from "./polygonContainment.js";
 import { isTemporaryStorageShelf, isTemporaryStorageType } from "./temporaryStorage.js";
 
 export function fixtureToShelf(f) {
@@ -151,8 +151,11 @@ export function normalizeLayout(layout) {
   if (layout.shelves?.length && layout.aisles?.length) {
     let bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
     const covered = guaranteeEveryShelfHasAisle(bound.shelves, bound.aisles, layout);
-    layout.shelves = covered.shelves;
-    layout.aisles = covered.aisles;
+    layout.shelves = covered.shelves.filter((s) => entityInsideLayout(s, "shelf", layout));
+    layout.aisles = covered.aisles.filter((a) => entityInsideLayout(a, "aisle", layout));
+    bound = finalizeAisleShelfBinding(layout.shelves, layout.aisles, layout);
+    layout.shelves = bound.shelves;
+    layout.aisles = bound.aisles;
     const labeled = finalizeAisleLabeling(layout.shelves, layout.aisles, layout);
     layout.shelves = labeled.shelves;
     layout.aisles = labeled.aisles;
@@ -163,6 +166,8 @@ export function normalizeLayout(layout) {
   }
   layout.zones = (layout.zones || []).map(normalizeZone);
   layout.entryPoints = (layout.entryPoints || []).map(normalizeEntryPoint);
+  const trimmedEntrances = canonicalizeEntryPoints(layout);
+  if (trimmedEntrances > 0) layout._entranceTrimmed = trimmedEntrances;
   layout.obstacles = (layout.obstacles || []).map(normalizeObstacle);
   if (layout.floorPlan?.url && (!Array.isArray(layout.polygon) || layout.polygon.length < 3)) {
     const w = Number(layout.widthMeters) || 10;

@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ShelfPilot · Store Finder</title>
+<style>
+  :root{
+    --teal:#0E9A8A; --teal-d:#0B7A6E; --ink:#0F2A31; --amber:#F4A81D; --amber-d:#D98E00;
+    --bg:#EAF1F2; --surface:#FFFFFF; --line:#E2E9EA; --muted:#5C7178; --soft:#F4F8F8;
+    --shadow:0 10px 30px rgba(15,42,49,.10); --shadow-s:0 4px 14px rgba(15,42,49,.08);
+    --r:20px;
+    --c-veg:#2E7D32; --c-fruit:#C62828; --c-rice:#8D6E63; --c-cook:#E65100;
+    --c-bev:#0277BD; --c-nuts:#6A4C93; --c-frozen:#00ACC1;
+    --mono:"SFMono-Regular",ui-monospace,"Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;
+    --ui:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:var(--ui); color:var(--ink);
+    background:radial-gradient(1200px 600px at 80% -10%, #F6FBFB 0%, transparent 60%), var(--bg);
+    -webkit-font-smoothing:antialiased; overflow:hidden;}
+  .app{height:100vh; display:flex; flex-direction:column; padding:18px; gap:16px;}
+
+  .topbar{display:flex; align-items:center; gap:18px; background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r); padding:14px 22px; box-shadow:var(--shadow-s);}
+  .brand{display:flex; align-items:center; gap:14px;}
+  .logo{width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,var(--teal),var(--teal-d));
+    display:grid;place-items:center;box-shadow:0 6px 16px rgba(14,154,138,.35);}
+  .logo svg{width:26px;height:26px}
+  .brand h1{font-size:24px;letter-spacing:-.4px;line-height:1}
+  .brand h1 b{color:var(--teal-d)}
+  .brand .sub{font-size:13.5px;color:var(--muted);margin-top:3px}
+  .topbar .spacer{flex:1}
+  .branch{text-align:right}
+  .branch .name{font-weight:700;font-size:15px}
+  .branch .meta{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .clock{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:15px;
+    background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-weight:600}
+
+  .main{flex:1; display:grid; grid-template-columns:minmax(380px,42fr) 58fr; gap:16px; min-height:0;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);
+    display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .card > .head{padding:18px 20px 14px;display:flex;align-items:center;gap:12px}
+  .card > .head h2{font-size:16px;letter-spacing:.2px}
+  .card > .head .hint{font-size:12.5px;color:var(--muted);margin-left:auto}
+
+  .finder .search{margin:0 20px 12px;position:relative}
+  .finder .search input{width:100%;font-size:19px;font-family:var(--ui);padding:16px 18px 16px 52px;
+    border:2px solid var(--line);border-radius:16px;background:var(--soft);outline:none;color:var(--ink)}
+  .finder .search input::placeholder{color:#9fb2b7}
+  .finder .search input:focus{border-color:var(--teal);background:#fff;box-shadow:0 0 0 4px rgba(14,154,138,.12)}
+  .finder .search svg{position:absolute;left:18px;top:50%;transform:translateY(-50%);width:22px;height:22px;color:#9fb2b7}
+  .finder .search .clr{position:absolute;right:10px;top:50%;transform:translateY(-50%);border:none;background:#dfe8e9;
+    color:var(--ink);width:34px;height:34px;border-radius:10px;font-size:18px;cursor:pointer;display:none}
+  .finder .search .clr.on{display:block}
+
+  .chips{display:flex;gap:9px;overflow-x:auto;padding:2px 20px 14px;scrollbar-width:none}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{flex:0 0 auto;border:2px solid var(--line);background:#fff;border-radius:999px;padding:9px 16px;
+    font-size:14px;font-weight:600;color:var(--ink);cursor:pointer;display:flex;align-items:center;gap:8px;white-space:nowrap;
+    transition:transform .08s ease}
+  .chip .dot{width:11px;height:11px;border-radius:50%}
+  .chip[aria-pressed="true"]{color:#fff;border-color:transparent}
+  .chip:active{transform:scale(.96)}
+
+  .results{flex:1;overflow-y:auto;padding:4px 20px 20px;display:grid;grid-template-columns:1fr 1fr;gap:12px;align-content:start}
+  .results::-webkit-scrollbar{width:10px}
+  .results::-webkit-scrollbar-thumb{background:#cdd9da;border-radius:20px}
+  .tile{border:2px solid var(--line);background:#fff;border-radius:16px;padding:14px;cursor:pointer;text-align:left;
+    display:flex;gap:13px;align-items:center;transition:transform .08s ease,border-color .12s ease,box-shadow .12s ease}
+  .tile:hover{border-color:#cfe0dd}
+  .tile:active{transform:scale(.98)}
+  .tile[aria-selected="true"]{border-color:var(--teal);box-shadow:0 0 0 4px rgba(14,154,138,.12)}
+  .tile .emj{width:52px;height:52px;flex:0 0 auto;border-radius:13px;display:grid;place-items:center;font-size:30px;background:var(--soft)}
+  .tile .info{min-width:0;flex:1}
+  .tile .nm{font-size:16px;font-weight:700;line-height:1.15;letter-spacing:-.2px}
+  .tile .row{display:flex;align-items:center;gap:8px;margin-top:6px}
+  .tile .aisle{font-size:12px;font-weight:700;color:#fff;border-radius:7px;padding:3px 8px;display:flex;align-items:center;gap:5px}
+  .tile .price{font-family:var(--mono);font-size:13px;color:var(--muted);font-weight:600;margin-left:auto}
+  .empty-res{grid-column:1/-1;text-align:center;color:var(--muted);padding:50px 20px;font-size:15px}
+
+  .map .head .legend{margin-left:auto;display:flex;gap:16px;align-items:center}
+  .lg{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);font-weight:600}
+  .lg .sw{width:16px;height:16px;border-radius:5px}
+  .lg .here{width:14px;height:14px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 4px rgba(14,154,138,.25)}
+  .lg .rt{width:20px;height:0;border-top:4px dashed var(--amber);border-radius:4px}
+
+  .mapwrap{flex:1;min-height:0;padding:6px 18px 0;display:flex}
+  svg.store{width:100%;height:100%;display:block}
+  .floor{fill:#F7FBFB}
+  .gnum{font:800 15px var(--ui);fill:#fff}
+  .gname{font:700 11px var(--ui);letter-spacing:.2px}
+  .zlabel{font:800 12px var(--ui);letter-spacing:1px;fill:#0E7C8C}
+  .amb{font:600 11px var(--ui);fill:#7C949A}
+  .route-path{fill:none;stroke:var(--amber);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;
+    stroke-dasharray:2 14;filter:drop-shadow(0 2px 3px rgba(244,168,29,.4))}
+  .route-glow{fill:none;stroke:var(--amber);stroke-width:14;stroke-linecap:round;stroke-linejoin:round;opacity:.16}
+  .pin-ring{fill:none;stroke:var(--amber);stroke-width:3;opacity:.55}
+  @keyframes flow{to{stroke-dashoffset:-160}}
+  @keyframes pulse{0%{r:9;opacity:.6}70%{r:26;opacity:0}100%{opacity:0}}
+  .animate .route-path{animation:flow 3s linear infinite}
+  .animate .pin-ring{animation:pulse 1.8s ease-out infinite}
+
+  .dock{margin:12px 18px 18px;border:2px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fff,#FBFDFD);
+    padding:16px 18px;min-height:118px;display:flex;align-items:center;gap:18px}
+  .dock.empty{justify-content:center;color:var(--muted);font-size:15.5px;text-align:center;border-style:dashed}
+  .dock .demj{width:66px;height:66px;flex:0 0 auto;border-radius:16px;display:grid;place-items:center;font-size:38px;background:var(--soft)}
+  .dock .body{flex:1;min-width:0}
+  .dock .dnm{font-size:20px;font-weight:800;letter-spacing:-.3px}
+  .dock .steps{font-size:15px;color:var(--ink);margin-top:5px;line-height:1.35}
+  .dock .steps b{color:var(--teal-d)}
+  .dock .tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .tag{font-size:12.5px;font-weight:700;border-radius:9px;padding:5px 10px;display:flex;align-items:center;gap:6px;
+    background:var(--soft);border:1px solid var(--line);color:var(--ink)}
+  .tag.code{font-family:var(--mono);letter-spacing:.5px}
+  .tag.temp-Chilled{background:#E4F7F9;border-color:#Bfeef2;color:#0A6E7A}
+  .tag.temp-Frozen{background:#E1F0FF;border-color:#C3E0FA;color:#0A63A8}
+  .tag.walk{background:#FFF4DD;border-color:#F6DFA6;color:#9A6B00}
+  .dock .go{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;
+    background:linear-gradient(135deg,var(--teal),var(--teal-d));color:#fff;border-radius:16px;padding:12px 18px;min-width:120px;border:none}
+  .dock .go .big{font-size:12px;font-weight:700;opacity:.9;letter-spacing:.5px;text-transform:uppercase}
+  .dock .go .aisle{font-size:26px;font-weight:800;line-height:1.05;margin-top:2px}
+  .reset{margin-left:6px;border:2px solid var(--line);background:#fff;border-radius:12px;padding:12px 16px;font-weight:700;
+    font-size:14px;color:var(--ink);cursor:pointer}
+  .reset:active{transform:scale(.97)}
+
+  /* ---------- Guide overlay ---------- */
+  .overlay{position:fixed;inset:0;background:rgba(9,28,33,.55);backdrop-filter:blur(3px);display:none;
+    align-items:center;justify-content:center;padding:26px;z-index:50}
+  .overlay.on{display:flex;animation:fade .18s ease}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .guide{width:min(1180px,96vw);max-height:94vh;background:var(--surface);border-radius:24px;box-shadow:0 30px 80px rgba(0,0,0,.4);
+    display:flex;flex-direction:column;overflow:hidden}
+  .guide-head{display:flex;align-items:center;gap:16px;padding:18px 22px;border-bottom:1px solid var(--line)}
+  .guide-head .demj{width:60px;height:60px;border-radius:15px;display:grid;place-items:center;font-size:34px;background:var(--soft);flex:0 0 auto}
+  .guide-head .t .nm{font-size:22px;font-weight:800;letter-spacing:-.3px}
+  .guide-head .t .pr{font-size:14px;color:var(--muted);font-weight:600;margin-top:2px}
+  .guide-head .close{margin-left:auto;border:2px solid var(--line);background:#fff;width:52px;height:52px;border-radius:14px;
+    font-size:26px;cursor:pointer;color:var(--ink);line-height:1}
+  .guide-body{display:grid;grid-template-columns:1fr 1fr;gap:0;min-height:0}
+  .gcol{padding:16px 20px;min-height:0;display:flex;flex-direction:column}
+  .gcol.mapcol{border-right:1px solid var(--line);background:#FAFDFD}
+  .gstep{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .gstep .n{width:26px;height:26px;border-radius:50%;background:var(--teal);color:#fff;font-weight:800;font-size:14px;display:grid;place-items:center}
+  .gstep .lbl{font-weight:800;font-size:15px}
+  .gstep .lbl span{color:var(--muted);font-weight:600;font-size:13px}
+  .gcanvas{flex:1;min-height:0;display:flex;background:#fff;border:1px solid var(--line);border-radius:16px;padding:8px}
+  .gcanvas svg{width:100%;height:100%;max-height:46vh;display:block}
+  .shelf-frame{fill:#fff;stroke-width:3}
+  .board{fill:#E7EDEE}
+  .board-edge{fill:#D4DEDF}
+  .facing{stroke:#E2E9EA;stroke-width:1.5}
+  .facing-emj{font-size:24px;text-anchor:middle}
+  .lvl{font:700 12px var(--ui);fill:#7C949A}
+  .lvl.on{fill:var(--ink);font-weight:800}
+  .here-flag{font:800 12px var(--ui);fill:#fff;letter-spacing:.5px}
+  .shelf-cap{font:700 12.5px var(--ui);fill:var(--muted)}
+  .guide-foot{padding:14px 22px 18px;border-top:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .guide-foot .steps{font-size:15.5px;flex:1;min-width:240px;line-height:1.4}
+  .guide-foot .steps b{color:var(--teal-d)}
+  .guide-foot .tags{display:flex;gap:8px;flex-wrap:wrap}
+  .guide-foot .again{border:none;background:linear-gradient(135deg,var(--teal),var(--teal-d));color:#fff;font-weight:800;
+    font-size:15px;border-radius:14px;padding:14px 22px;cursor:pointer}
+
+  @media (max-width:1080px){
+    body{overflow:auto}.app{height:auto;min-height:100vh}
+    .main{grid-template-columns:1fr}.mapwrap{height:420px}
+    .guide-body{grid-template-columns:1fr}.gcol.mapcol{border-right:none;border-bottom:1px solid var(--line)}
+    .gcanvas svg{max-height:36vh}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .animate .route-path,.animate .pin-ring{animation:none}.route-path{stroke-dasharray:8 10}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.6" fill="#fff"/><rect x="14" y="3" width="7" height="7" rx="1.6" fill="#fff" opacity=".85"/><rect x="3" y="14" width="7" height="7" rx="1.6" fill="#fff" opacity=".85"/><rect x="14" y="14" width="7" height="7" rx="1.6" fill="#fff"/></svg>
+      </div>
+      <div>
+        <h1>Shelf<b>Pilot</b> · Store Finder</h1>
+        <div class="sub">Pick a product — we'll light up the shelf and walk you there.</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="branch">
+      <div class="name">ShelfPilot Market — Kochi</div>
+      <div class="meta">Ground floor · You are at the main entrance</div>
+    </div>
+    <div class="clock" id="clock">--:--</div>
+  </header>
+
+  <div class="main">
+    <section class="card finder" aria-label="Product finder">
+      <div class="head"><h2>Find a product</h2><span class="hint" id="count"></span></div>
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>
+        <input id="q" type="text" inputmode="search" placeholder="Search e.g. rice, apple, shampoo…" autocomplete="off" aria-label="Search products">
+        <button class="clr" id="clr" aria-label="Clear search">×</button>
+      </div>
+      <div class="chips" id="chips" role="group" aria-label="Filter by category"></div>
+      <div class="results" id="results"></div>
+    </section>
+
+    <section class="card map" aria-label="Store map">
+      <div class="head">
+        <h2>Store map</h2>
+        <div class="legend">
+          <span class="lg"><span class="here"></span>You are here</span>
+          <span class="lg"><span class="rt"></span>Your route</span>
+          <span class="lg"><span class="sw" style="background:var(--amber)"></span>Product</span>
+        </div>
+      </div>
+      <div class="mapwrap"><svg id="store" class="store" viewBox="0 0 680 520" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Top-down store floor plan"></svg></div>
+      <div class="dock empty" id="dock" aria-live="polite">Tap any product on the left to see its aisle, shelf and walking route.</div>
+    </section>
+  </div>
+</div>
+
+<!-- Guide overlay -->
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-label="Directions to product">
+  <div class="guide">
+    <div class="guide-head">
+      <span class="demj" id="gEmj">🛒</span>
+      <div class="t"><div class="nm" id="gName">Product</div><div class="pr" id="gPrice"></div></div>
+      <button class="close" id="gClose" aria-label="Close">×</button>
+    </div>
+    <div class="guide-body">
+      <div class="gcol mapcol">
+        <div class="gstep"><span class="n">1</span><span class="lbl">Walk here <span>— follow the route</span></span></div>
+        <div class="gcanvas"><svg id="gmap" class="store" viewBox="0 0 680 520" preserveAspectRatio="xMidYMid meet" aria-label="Route to the shelf"></svg></div>
+      </div>
+      <div class="gcol">
+        <div class="gstep"><span class="n">2</span><span class="lbl">Find it on the shelf <span>— 2D shelf view</span></span></div>
+        <div class="gcanvas"><svg id="gshelf" viewBox="0 0 460 380" preserveAspectRatio="xMidYMid meet" aria-label="2D shelf elevation with product location"></svg></div>
+      </div>
+    </div>
+    <div class="guide-foot">
+      <div class="steps" id="gSteps"></div>
+      <div class="tags" id="gTags"></div>
+      <button class="again" id="gAgain">Search again</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------------- helpers ---------------- */
+function getVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+const NS="http://www.w3.org/2000/svg";
+function el(t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
+/* ---------------- Data ---------------- */
+const CATS = {
+  veg:{name:"Vegetables",color:getVar("--c-veg"),aisle:1},
+  fruit:{name:"Fruits",color:getVar("--c-fruit"),aisle:2},
+  rice:{name:"Rice & Pulses",color:getVar("--c-rice"),aisle:3},
+  cook:{name:"Cooking & Baking",color:getVar("--c-cook"),aisle:4},
+  bev:{name:"Beverages & Bakery",color:getVar("--c-bev"),aisle:5},
+  nuts:{name:"Nuts · Health · Stationery",color:getVar("--c-nuts"),aisle:6},
+  frozen:{name:"Frozen & Chilled",color:getVar("--c-frozen"),aisle:"F"},
+};
+const RAW = [
+  ["🍅","Tomatoes","veg","Ambient",40],["🥕","Carrots","veg","Ambient",35],["🥦","Broccoli","veg","Ambient",90],
+  ["🥔","Potatoes","veg","Ambient",30],["🧅","Onions","veg","Ambient",45],["🥬","Spinach","veg","Chilled",25],
+  ["🍎","Apples","fruit","Ambient",160],["🍌","Bananas","fruit","Ambient",50],["🍊","Oranges","fruit","Ambient",90],
+  ["🍇","Grapes","fruit","Chilled",120],["🍓","Strawberries","fruit","Chilled",180],["🥭","Mangoes","fruit","Ambient",110],
+  ["🍚","Basmati Rice","rice","Ambient",220],["🍚","Brown Rice","rice","Ambient",140],["🫘","Toor Dal","rice","Ambient",150],
+  ["🫘","Chana Dal","rice","Ambient",120],["🫘","Rajma","rice","Ambient",160],["🥣","Rolled Oats","rice","Ambient",180],
+  ["🧴","Sunflower Oil","cook","Ambient",210],["🫒","Olive Oil","cook","Ambient",550],["🧈","Pure Ghee","cook","Ambient",640],
+  ["🌶️","Chilli Powder","cook","Ambient",95],["🧂","Turmeric","cook","Ambient",80],["🌾","Wheat Flour","cook","Ambient",240],["🍬","Sugar","cook","Ambient",50],
+  ["🥤","Cola","bev","Chilled",65],["🧃","Mango Juice","bev","Chilled",40],["💧","Bottled Water","bev","Ambient",20],
+  ["🍞","White Bread","bev","Ambient",45],["🥐","Croissant","bev","Ambient",60],["🍪","Cookies","bev","Ambient",70],
+  ["🌰","Almonds","nuts","Ambient",380],["🥜","Cashews","nuts","Ambient",420],["🍯","Honey","nuts","Ambient",260],
+  ["💊","Multivitamins","nuts","Ambient",550],["🍵","Green Tea","nuts","Ambient",240],["📓","Notebook","nuts","Ambient",90],["✏️","Pencils","nuts","Ambient",30],
+  ["🫛","Frozen Peas","frozen","Frozen",95],["🍟","French Fries","frozen","Frozen",160],["🍨","Ice Cream","frozen","Frozen",210],
+  ["🍗","Chicken Nuggets","frozen","Frozen",280],["🫐","Frozen Berries","frozen","Frozen",240],
+];
+
+/* ---------------- Geometry ---------------- */
+const GXS=[70,168,266,364,462,560], GW=48, GTOP=88, GBOT=384;
+const HERE=[120,450], WALK_Y=450, LEFT_LANE=52, FROZ_Y=58;
+
+const PRODUCTS = RAW.map((r,i)=>({id:i,emoji:r[0],name:r[1],cat:r[2],temp:r[3],price:r[4]}));
+const byAisle={};
+PRODUCTS.forEach(p=>{(byAisle[p.cat]=byAisle[p.cat]||[]).push(p);});
+Object.keys(byAisle).forEach(cat=>{
+  const list=byAisle[cat], n=list.length;
+  if(cat==="frozen"){
+    list.forEach((p,j)=>{p.pinX=120+j*(440/Math.max(n-1,1));p.pinY=FROZ_Y;p.laneX=LEFT_LANE;
+      p.aisle="F";p.bay="FZ·"+(j+1);p.level="Freezer wall";p.slot=j%5;p.board=1;});
+  }else{
+    const a=CATS[cat].aisle-1;
+    list.forEach((p,j)=>{
+      p.pinX=GXS[a]+GW+3;p.pinY=350-j*(250/Math.max(n-1,1));p.laneX=GXS[a]+GW+(98-GW)/2;
+      p.aisle=CATS[cat].aisle;p.bay="A"+CATS[cat].aisle+"·"+(j+1);
+      p.level=["Eye-level shelf","Top shelf","Lower shelf"][j%3];
+      p.slot=j%5; p.board=p.level.indexOf("Top")>-1?0:p.level.indexOf("Eye")>-1?1:3;
+    });
+  }
+});
+
+/* ---------------- Store map (works on any svg) ---------------- */
+const CCOL=[getVar("--c-veg"),getVar("--c-fruit"),getVar("--c-rice"),getVar("--c-cook"),getVar("--c-bev"),getVar("--c-nuts")];
+const CNAME=["Vegetables","Fruits","Rice & Pulses","Cooking & Baking","Beverages & Bakery","Nuts · Health"];
+function buildStore(S){
+  S.innerHTML="";
+  S.appendChild(el("rect",{x:14,y:14,width:652,height:492,rx:18,class:"floor"}));
+  S.appendChild(el("rect",{x:14,y:14,width:652,height:492,rx:18,fill:"#fff",stroke:"#D3DEDF","stroke-width":2}));
+  S.appendChild(el("rect",{x:40,y:40,width:600,height:34,rx:10,fill:"#E4F7F9",stroke:"#Bfeef2","stroke-width":1.5}));
+  const fz=el("text",{x:52,y:62,class:"zlabel"});fz.textContent="❄  FROZEN & CHILLED WALL";S.appendChild(fz);
+  GXS.forEach((gx,i)=>{
+    S.appendChild(el("rect",{x:gx,y:GTOP,width:GW,height:GBOT-GTOP,rx:8,fill:CCOL[i],opacity:.9}));
+    S.appendChild(el("rect",{x:gx+6,y:GTOP+6,width:GW-12,height:GBOT-GTOP-12,rx:5,fill:"#fff",opacity:.5}));
+    S.appendChild(el("circle",{cx:gx+GW/2,cy:GBOT+18,r:14,fill:CCOL[i]}));
+    const num=el("text",{x:gx+GW/2,y:GBOT+23,"text-anchor":"middle",class:"gnum"});num.textContent=i+1;S.appendChild(num);
+    const nm=el("text",{x:gx+GW/2,y:(GTOP+GBOT)/2,"text-anchor":"middle",class:"gname",fill:"#fff",
+      transform:`rotate(-90 ${gx+GW/2} ${(GTOP+GBOT)/2})`});nm.textContent=CNAME[i];S.appendChild(nm);
+  });
+  const tx=el("text",{x:498,y:432,class:"amb"});tx.textContent="Checkouts";S.appendChild(tx);
+  [430,478,526].forEach(x=>{S.appendChild(el("rect",{x,y:438,width:34,height:16,rx:4,fill:"#DCE6E7"}));
+    S.appendChild(el("rect",{x:x+4,y:454,width:26,height:6,rx:3,fill:"#C9D6D7"}));});
+  const en=el("text",{x:120,y:492,"text-anchor":"middle",class:"amb"});en.textContent="▲ Entrance";S.appendChild(en);
+  S.appendChild(el("circle",{cx:HERE[0],cy:HERE[1],r:16,fill:"none",stroke:getVar("--teal"),"stroke-width":2.5,opacity:.5}));
+  S.appendChild(el("circle",{cx:HERE[0],cy:HERE[1],r:9,fill:getVar("--teal")}));
+  S.appendChild(el("circle",{cx:HERE[0],cy:HERE[1],r:3.4,fill:"#fff"}));
+  const ht=el("text",{x:HERE[0],y:HERE[1]-24,"text-anchor":"middle",fill:getVar("--teal-d"),style:"font:800 12px system-ui"});
+  ht.textContent="YOU ARE HERE";S.appendChild(ht);
+  S.appendChild(el("g",{class:"routeLayer"}));
+}
+function drawRoute(S,p){
+  const layer=S.querySelector(".routeLayer");layer.innerHTML="";
+  let pts = p.aisle==="F" ? [HERE,[LEFT_LANE,WALK_Y],[LEFT_LANE,80],[p.pinX,80],[p.pinX,FROZ_Y+8]]
+                          : [HERE,[p.laneX,WALK_Y],[p.laneX,p.pinY],[p.pinX,p.pinY]];
+  const d=pts.map((pt,i)=>(i?"L":"M")+pt[0]+" "+pt[1]).join(" ");
+  layer.appendChild(el("path",{d,class:"route-glow"}));
+  layer.appendChild(el("path",{d,class:"route-path"}));
+  const g=el("g",{});
+  g.appendChild(el("circle",{cx:p.pinX,cy:p.pinY,r:9,class:"pin-ring"}));
+  g.appendChild(el("path",{d:`M ${p.pinX} ${p.pinY-2} C ${p.pinX-9} ${p.pinY-13}, ${p.pinX-9} ${p.pinY-26}, ${p.pinX} ${p.pinY-26} C ${p.pinX+9} ${p.pinY-26}, ${p.pinX+9} ${p.pinY-13}, ${p.pinX} ${p.pinY-2} Z`,fill:getVar("--amber")}));
+  g.appendChild(el("circle",{cx:p.pinX,cy:p.pinY-13,r:4.2,fill:"#fff"}));
+  layer.appendChild(g);
+  S.classList.add("animate");
+  let L=0;for(let i=1;i<pts.length;i++)L+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+  return L;
+}
+
+/* ---------------- 2D shelf elevation ---------------- */
+function buildShelf(S,p){
+  S.innerHTML="";
+  const c=CATS[p.cat], frozen=p.aisle==="F";
+  const X0=30,Y0=54,W=400,H=298;
+  const boardsY=[146,210,274,338];
+  const labels=frozen?["Top basket","Upper basket","Mid basket","Base basket"]:["Top shelf","Eye level","Waist","Lower shelf"];
+  // unit background
+  S.appendChild(el("rect",{x:X0,y:Y0,width:W,height:H,rx:12,fill:frozen?"#EAF7FA":"#fff",class:"shelf-frame",stroke:c.color}));
+  // header ribbon
+  S.appendChild(el("rect",{x:X0,y:Y0,width:W,height:30,rx:12,fill:c.color}));
+  S.appendChild(el("rect",{x:X0,y:Y0+18,width:W,height:12,fill:c.color}));
+  const hd=el("text",{x:X0+14,y:Y0+20,fill:"#fff",style:"font:800 13px system-ui;letter-spacing:.5px"});
+  hd.textContent=(frozen?"❄ FREEZER  ·  ":"AISLE "+p.aisle+"  ·  ")+p.bay;S.appendChild(hd);
+  const mates=byAisle[p.cat];
+  // shelves + facings
+  const slotW=60,gap=10,startX=X0+22;
+  boardsY.forEach((by,bi)=>{
+    S.appendChild(el("rect",{x:X0+10,y:by,width:W-20,height:9,rx:3,class:"board"}));
+    S.appendChild(el("rect",{x:X0+10,y:by+9,width:W-20,height:4,rx:2,class:"board-edge"}));
+    // level label
+    const lv=el("text",{x:X0-6,y:by-2,"text-anchor":"end",class:"lvl"+(bi===p.board?" on":"")});
+    lv.textContent=labels[bi];S.appendChild(lv);
+    for(let k=0;k<5;k++){
+      const x=startX+k*(slotW+gap), y=by-46;
+      const isTarget = bi===p.board && k===p.slot;
+      const mate = mates[(bi*5+k)%mates.length];
+      const emj = isTarget?p.emoji:mate.emoji;
+      const fill = isTarget?tint(c.color,.18):"#F3F6F7";
+      if(isTarget){
+        const px=x-4,py=y-12,pw=slotW+8,ph=58;
+        S.appendChild(el("rect",{x:px,y:py,width:pw,height:ph,rx:9,fill,stroke:c.color,"stroke-width":3,filter:"drop-shadow(0 5px 10px rgba(0,0,0,.22))"}));
+        S.appendChild(el("rect",{x:px,y:py,width:pw,height:18,rx:9,fill:c.color}));
+        S.appendChild(el("rect",{x:px,y:py+9,width:pw,height:9,fill:c.color}));
+        const ft=el("text",{x:px+pw/2,y:py+13.5,"text-anchor":"middle",class:"here-flag"});ft.textContent="HERE";S.appendChild(ft);
+        const t=el("text",{x:px+pw/2,y:py+46,class:"facing-emj"});t.textContent=emj;S.appendChild(t);
+      }else{
+        S.appendChild(el("rect",{x,y,width:slotW,height:46,rx:8,class:"facing",fill,opacity:.55}));
+        const t=el("text",{x:x+slotW/2,y:y+31,class:"facing-emj",opacity:.5});t.textContent=emj;S.appendChild(t);
+      }
+    }
+  });
+  const cap=el("text",{x:X0,y:Y0+H+24,class:"shelf-cap"});
+  cap.textContent=`${p.name} — ${frozen?"freezer "+p.bay:p.level+", bay "+p.bay}`;S.appendChild(cap);
+}
+function tint(hex,f){ // hex mix with white, f=colour fraction
+  const h=hex.replace("#","");const r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);
+  const m=v=>Math.round(v*f+255*(1-f));return `rgb(${m(r)},${m(g)},${m(b)})`;
+}
+
+/* ---------------- Finder render ---------------- */
+const store=document.getElementById("store");
+const results=document.getElementById("results"),chipsBox=document.getElementById("chips"),countEl=document.getElementById("count");
+let activeCat="all",query="",selectedId=null;
+buildStore(store);
+
+function buildChips(){
+  chipsBox.appendChild(chip("all","All products",null));
+  Object.keys(CATS).forEach(k=>chipsBox.appendChild(chip(k,CATS[k].name,CATS[k].color)));
+  updateChips();
+}
+function chip(key,label,color){
+  const b=document.createElement("button");b.className="chip";b.dataset.key=key;b.setAttribute("aria-pressed","false");
+  b.innerHTML=(color?`<span class="dot" style="background:${color}"></span>`:"")+label;
+  b.onclick=()=>{activeCat=key;updateChips();render();};return b;
+}
+function updateChips(){[...chipsBox.children].forEach(c=>{
+  const on=c.dataset.key===activeCat;c.setAttribute("aria-pressed",on);
+  c.style.background=on?(c.dataset.key==="all"?getVar("--teal"):CATS[c.dataset.key].color):"#fff";});}
+function render(){
+  const list=PRODUCTS.filter(p=>(activeCat==="all"||p.cat===activeCat)&&
+    (!query||p.name.toLowerCase().includes(query)||CATS[p.cat].name.toLowerCase().includes(query)));
+  countEl.textContent=list.length+" item"+(list.length!==1?"s":"");
+  results.innerHTML="";
+  if(!list.length){results.innerHTML=`<div class="empty-res">No products match “${escapeHtml(query)}”.<br>Try another word, or tap a category above.</div>`;return;}
+  list.forEach(p=>{const c=CATS[p.cat];
+    const t=document.createElement("button");t.className="tile";t.setAttribute("aria-selected",p.id===selectedId);
+    t.innerHTML=`<span class="emj">${p.emoji}</span><span class="info"><span class="nm">${p.name}</span>
+      <span class="row"><span class="aisle" style="background:${c.color}">${p.aisle==="F"?"❄ Frozen":"Aisle "+p.aisle}</span>
+      <span class="price">₹${p.price}</span></span></span>`;
+    t.onclick=()=>select(p.id);results.appendChild(t);});
+}
+
+/* ---------------- directions helper ---------------- */
+function tempIcon(t){return t==="Frozen"?"❄":t==="Chilled"?"🧊":"🌡";}
+function directions(p){
+  const c=CATS[p.cat];
+  const len = drawRoute(store,p);
+  const meters=Math.max(3,Math.round(len*0.05)), steps=Math.round(meters/0.68);
+  const lead = p.aisle==="F"
+    ? `Walk up the left side to the <b>Frozen & Chilled wall</b>.`
+    : `Head straight in, then turn into <b>Aisle ${p.aisle} — ${c.name}</b>.`;
+  const where = p.aisle==="F" ? `It's along the freezer wall — freezer <b>${p.bay}</b>.`
+                              : `It's on your <b>left</b>, ${p.level.toLowerCase()} — bay <b>${p.bay}</b>.`;
+  const tags = `<span class="tag code">📍 ${p.bay}</span>
+    <span class="tag">${p.aisle==="F"?"❄ Freezer wall":p.level}</span>
+    <span class="tag temp-${p.temp}">${tempIcon(p.temp)} ${p.temp}</span>
+    <span class="tag walk">🚶 ~${meters} m · ~${steps} steps</span>`;
+  return {lead,where,tags,meters,steps,c};
+}
+
+/* ---------------- select + guide ---------------- */
+const dock=document.getElementById("dock");
+const overlay=document.getElementById("overlay");
+let gmapBuilt=false;
+function select(id){
+  selectedId=id;const p=PRODUCTS.find(x=>x.id===id);render();
+  const d=directions(p);
+  dock.className="dock";
+  dock.innerHTML=`<span class="demj">${p.emoji}</span>
+    <div class="body"><div class="dnm">${p.name} <span style="color:var(--muted);font-weight:600;font-size:15px">· ₹${p.price}</span></div>
+      <div class="steps">${d.lead} ${d.where}</div><div class="tags">${d.tags}</div></div>
+    <button class="go" id="goBtn"><span class="big">Guide me</span><span class="aisle">${p.aisle==="F"?"❄ Frozen":"Aisle "+p.aisle}</span></button>
+    <button class="reset" id="reset">Clear</button>`;
+  document.getElementById("reset").onclick=reset;
+  document.getElementById("goBtn").onclick=()=>openGuide(p);
+  openGuide(p);
+}
+function openGuide(p){
+  const d=directions(p);
+  document.getElementById("gEmj").textContent=p.emoji;
+  document.getElementById("gName").textContent=p.name;
+  document.getElementById("gPrice").textContent="₹"+p.price+" · "+CATS[p.cat].name;
+  const gmap=document.getElementById("gmap");
+  if(!gmapBuilt){buildStore(gmap);gmapBuilt=true;}
+  drawRoute(gmap,p);
+  buildShelf(document.getElementById("gshelf"),p);
+  document.getElementById("gSteps").innerHTML=`${d.lead} ${d.where}`;
+  document.getElementById("gTags").innerHTML=d.tags;
+  overlay.classList.add("on");
+}
+function closeGuide(){overlay.classList.remove("on");}
+document.getElementById("gClose").onclick=closeGuide;
+document.getElementById("gAgain").onclick=()=>{closeGuide();document.getElementById("q").focus();};
+overlay.addEventListener("click",e=>{if(e.target===overlay)closeGuide();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeGuide();});
+
+function reset(){
+  selectedId=null;store.querySelector(".routeLayer").innerHTML="";store.classList.remove("animate");
+  dock.className="dock empty";dock.textContent="Tap any product on the left to see its aisle, shelf and walking route.";
+  render();
+}
+
+/* ---------------- search + clock ---------------- */
+const q=document.getElementById("q"),clr=document.getElementById("clr");
+q.addEventListener("input",()=>{query=q.value.trim().toLowerCase();clr.classList.toggle("on",!!q.value);render();});
+clr.onclick=()=>{q.value="";query="";clr.classList.remove("on");render();q.focus();};
+function tick(){document.getElementById("clock").textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+tick();setInterval(tick,10000);
+
+buildChips();render();
+</script>
+</body>
+</html>

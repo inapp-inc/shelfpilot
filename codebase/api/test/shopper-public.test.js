@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resetDbForTests } from "../src/store/sqlite.js";
 import app from "../src/index.js";
+import { login } from "./helpers/auth.js";
 
 async function withServer(fn) {
   resetDbForTests();
@@ -19,27 +20,26 @@ async function withServer(fn) {
   }
 }
 
-async function login(port, role = "Designer") {
-  const res = await fetch(`http://127.0.0.1:${port}/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "designer@shelfpilot.local", password: "password", role }),
-  });
-  const body = await res.json();
-  assert.equal(res.status, 200);
-  return body.token;
-}
-
-test("public shop endpoints only expose admin-configured layout", async () => {
+test("legacy public shop endpoints require login", async () => {
   await withServer(async (port) => {
     const disabled = await fetch(`http://127.0.0.1:${port}/shop/experience`);
-    assert.equal(disabled.status, 200);
-    assert.equal((await disabled.json()).enabled, false);
+    assert.equal(disabled.status, 401);
+    assert.equal((await disabled.json()).error, "unauthorized");
 
-    const token = await login(port, "Admin");
+    const layoutGet = await fetch(`http://127.0.0.1:${port}/shop/lay-any/layout`);
+    assert.equal(layoutGet.status, 401);
+
+    const products = await fetch(`http://127.0.0.1:${port}/shop/products`);
+    assert.equal(products.status, 401);
+  });
+});
+
+test("customer kiosk config requires Customer login and assigned layout", async () => {
+  await withServer(async (port) => {
+    const adminToken = await login(port, "Admin");
     const create = await fetch(`http://127.0.0.1:${port}/layouts`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
       body: JSON.stringify({
         name: "Shopper test store",
         vertical: "retail",
@@ -51,9 +51,41 @@ test("public shop endpoints only expose admin-configured layout", async () => {
     assert.equal(create.status, 201);
     const layoutId = (await create.json()).id;
 
+    const anon = await fetch(`http://127.0.0.1:${port}/shopper/kiosk`);
+    assert.equal(anon.status, 401);
+
+    const designer = await fetch(`http://127.0.0.1:${port}/shopper/kiosk`, {
+      headers: { authorization: `Bearer ${await login(port, "Designer")}` },
+    });
+    assert.equal(designer.status, 403);
+
+    await fetch(`http://127.0.0.1:${port}/admin/users`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "shopper-kiosk@test.local",
+        name: "Kiosk shopper",
+        role: "Customer",
+        password: "password",
+        shopperLayoutId: layoutId,
+      }),
+    });
+
+    const customerToken = await login(port, "Customer", "shopper-kiosk@test.local");
+    const assigned = await fetch(`http://127.0.0.1:${port}/shopper/kiosk`, {
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    assert.equal(assigned.status, 200);
+    const assignedBody = await assigned.json();
+    assert.equal(assignedBody.enabled, true);
+    assert.equal(assignedBody.layoutId, layoutId);
+    assert.equal(assignedBody.displayName, "Shopper test store");
+    assert.ok(Array.isArray(assignedBody.stores));
+    assert.equal(assignedBody.stores.some((s) => s.id === layoutId), true);
+
     await fetch(`http://127.0.0.1:${port}/admin/shopper-experience`, {
       method: "PUT",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
       body: JSON.stringify({
         enabled: true,
         layoutId,
@@ -62,29 +94,13 @@ test("public shop endpoints only expose admin-configured layout", async () => {
       }),
     });
 
-    const exp = await fetch(`http://127.0.0.1:${port}/shop/${layoutId}/experience`);
-    const expBody = await exp.json();
-    assert.equal(expBody.enabled, true);
-    assert.equal(expBody.displayName, "Kiosk Store");
-    assert.equal(expBody.layoutId, layoutId);
-
-    const wrongLayout = await fetch(`http://127.0.0.1:${port}/shop/lay-wrong/experience`);
-    assert.equal((await wrongLayout.json()).enabled, false);
-
-    const layoutGet = await fetch(`http://127.0.0.1:${port}/shop/${layoutId}/layout`);
-    assert.equal(layoutGet.status, 200);
-    const layoutBody = await layoutGet.json();
-    assert.equal(layoutBody.layout.id, layoutId);
-
-    const products = await fetch(`http://127.0.0.1:${port}/shop/products`);
-    assert.equal(products.status, 200);
-    assert.ok(Array.isArray((await products.json()).items));
-
-    const mutate = await fetch(`http://127.0.0.1:${port}/layouts`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Hacker", vertical: "retail", widthMeters: 10, depthMeters: 10 }),
+    const withAdminLabel = await fetch(`http://127.0.0.1:${port}/shopper/kiosk`, {
+      headers: { authorization: `Bearer ${customerToken}` },
     });
-    assert.equal(mutate.status, 401);
+    const body = await withAdminLabel.json();
+    assert.equal(withAdminLabel.status, 200);
+    assert.equal(body.enabled, true);
+    assert.equal(body.displayName, "Kiosk Store");
+    assert.equal(body.layoutId, layoutId);
   });
 });

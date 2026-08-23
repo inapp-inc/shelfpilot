@@ -761,12 +761,16 @@ export function computeRolloutProgress(layouts) {
   };
 }
 
-/** §6.3 Vertical / format comparison. */
-export function computeVerticalComparison(layouts, categories) {
+/** §6.3 Vertical / format comparison — lightweight (no planogram / product reports). */
+export function computeVerticalComparison(layouts, categories, configByVertical = null) {
   const byVertical = new Map();
   for (const layout of layouts) {
     const v = layout.vertical || "unknown";
-    const report = buildLayoutAnalyticsReport(layout, categories, {}, null);
+    const config =
+      typeof configByVertical === "function"
+        ? configByVertical(v)
+        : configByVertical?.[v] || {};
+    const kpis = layout.portfolioKpis || summarizeLayoutForPortfolio(layout, categories, config);
     const prev = byVertical.get(v) || {
       vertical: v,
       layoutCount: 0,
@@ -776,10 +780,10 @@ export function computeVerticalComparison(layouts, categories) {
       complianceSum: 0,
     };
     prev.layoutCount += 1;
-    prev.utilizationSum += report.utilizationPercent || 0;
-    prev.coverageSum += report.productCoverage?.coveragePercent || 0;
-    prev.densitySum += report.fixtureDensity?.fixturesPer100Sqm || 0;
-    prev.complianceSum += report.aisleCompliance?.compliancePercent || 100;
+    prev.utilizationSum += kpis.utilizationPercent || 0;
+    prev.coverageSum += kpis.categoryCoveragePercent || 0;
+    prev.densitySum += kpis.fixturesPer100Sqm || 0;
+    prev.complianceSum += kpis.aisleCompliancePercent ?? 100;
     byVertical.set(v, prev);
   }
   return [...byVertical.values()].map((row) => ({
@@ -790,6 +794,161 @@ export function computeVerticalComparison(layouts, categories) {
     avgFixtureDensity: Number((row.densitySum / row.layoutCount).toFixed(1)),
     avgAisleCompliancePercent: Number((row.complianceSum / row.layoutCount).toFixed(1)),
   }));
+}
+
+/** Compute storable portfolio KPIs on layout save (no product/planogram analytics). */
+export function computePortfolioKpis(layout, categories = [], config = {}) {
+  const space = computeSpaceUtilization(layout);
+  const density = computeFixtureDensity(layout);
+  const compliance = computeAisleCompliance(layout, config);
+  const catAlloc = computeCategorySpaceAllocation(layout, categories);
+  const categoryAreaShares = Object.fromEntries(
+    catAlloc.rows.map((r) => [r.categoryId, r.areaSharePercent])
+  );
+  const unmapped = computeUnmappedShelves(layout);
+  const categoryCoveragePercent =
+    unmapped.totalShelfAreaSqm > 0
+      ? Number((100 - unmapped.emptyShelfPercent).toFixed(1))
+      : 100;
+
+  return {
+    utilizationPercent: space.utilizationPercent,
+    usableStoreAreaSqm: space.usableStoreAreaSqm,
+    totalStoreAreaSqm: space.totalStoreAreaSqm,
+    fixtureCount: density.fixtureCount,
+    fixturesPer100SqFt: density.fixturesPer100SqFt,
+    fixturesPer100Sqm: density.fixturesPer100Sqm,
+    aisleCompliancePercent: compliance.compliancePercent,
+    categoryCoveragePercent,
+    categoryAreaShares,
+    computedAt: new Date().toISOString(),
+  };
+}
+
+/** Inline KPI summary when portfolioKpis not yet persisted. */
+export function summarizeLayoutForPortfolio(layout, categories = [], config = {}) {
+  return computePortfolioKpis(layout, categories, config);
+}
+
+function computeStoreBenchmarkingFromSummaries(records) {
+  const rows = records.map((r) => {
+    const k = r.portfolioKpis || {};
+    const per1000 = fixturesPer1000SqFt(k.fixtureCount ?? 0, k.usableStoreAreaSqm ?? 0);
+    const usable = Number(k.usableStoreAreaSqm) || 0;
+    return {
+      layoutId: r.id,
+      name: r.name || r.id,
+      vertical: r.vertical,
+      fixtureCount: k.fixtureCount ?? 0,
+      areaSqm: usable,
+      totalAreaSqm: Number(k.totalStoreAreaSqm) || 0,
+      fixturesPer1000SqFt: per1000,
+      fixturesPer1000Sqm: usable > 0 ? Number(((k.fixtureCount ?? 0) / (usable / 1000)).toFixed(1)) : 0,
+    };
+  });
+  rows.sort((a, b) => b.fixturesPer1000SqFt - a.fixturesPer1000SqFt);
+  const values = rows.map((r) => r.fixturesPer1000SqFt);
+  const peerAverage =
+    values.length > 0 ? Number((values.reduce((s, v) => s + v, 0) / values.length).toFixed(2)) : 0;
+  return {
+    rows: rows.map((r) => ({
+      ...r,
+      capacityIndex: peerAverage > 0 ? Number((r.fixturesPer1000SqFt / peerAverage).toFixed(2)) : 1,
+    })),
+    peerAverageFixturesPer1000SqFt: peerAverage,
+    peerAverageFixturesPer1000Sqm: peerAverage,
+    formula: "fixtureCount ÷ (usableStoreAreaSqm × 10.7639 / 1000); capacityIndex = store ÷ peer average",
+  };
+}
+
+function computeVerticalComparisonFromSummaries(records) {
+  const byVertical = new Map();
+  for (const r of records) {
+    const v = r.vertical || "unknown";
+    const k = r.portfolioKpis || {};
+    const prev = byVertical.get(v) || {
+      vertical: v,
+      layoutCount: 0,
+      utilizationSum: 0,
+      coverageSum: 0,
+      densitySum: 0,
+      complianceSum: 0,
+    };
+    prev.layoutCount += 1;
+    prev.utilizationSum += k.utilizationPercent || 0;
+    prev.coverageSum += k.categoryCoveragePercent || 0;
+    prev.densitySum += k.fixturesPer100Sqm || 0;
+    prev.complianceSum += k.aisleCompliancePercent ?? 100;
+    byVertical.set(v, prev);
+  }
+  return [...byVertical.values()].map((row) => ({
+    vertical: row.vertical,
+    layoutCount: row.layoutCount,
+    avgUtilizationPercent: Number((row.utilizationSum / row.layoutCount).toFixed(1)),
+    avgCoveragePercent: Number((row.coverageSum / row.layoutCount).toFixed(1)),
+    avgFixtureDensity: Number((row.densitySum / row.layoutCount).toFixed(1)),
+    avgAisleCompliancePercent: Number((row.complianceSum / row.layoutCount).toFixed(1)),
+  }));
+}
+
+function computeLayoutStandardizationFromSummaries(records) {
+  const withShares = records.filter((r) => r.portfolioKpis?.categoryAreaShares);
+  if (withShares.length < 2) {
+    return { rows: [], portfolioMix: [] };
+  }
+  const mixByLayout = withShares.map((r) => ({
+    layoutId: r.id,
+    name: r.name,
+    shares: r.portfolioKpis.categoryAreaShares,
+  }));
+  const allCats = new Set();
+  mixByLayout.forEach((m) => Object.keys(m.shares).forEach((c) => allCats.add(c)));
+  const portfolioMix = [...allCats].map((catId) => {
+    const vals = mixByLayout.map((m) => m.shares[catId] || 0);
+    const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+    return { categoryId: catId, avgSharePercent: Number(avg.toFixed(1)) };
+  });
+  const rows = mixByLayout.map((m) => {
+    let deviation = 0;
+    for (const pm of portfolioMix) {
+      deviation += Math.abs((m.shares[pm.categoryId] || 0) - pm.avgSharePercent);
+    }
+    return {
+      layoutId: m.layoutId,
+      name: m.name,
+      deviationScore: Number(deviation.toFixed(1)),
+    };
+  });
+  rows.sort((a, b) => b.deviationScore - a.deviationScore);
+  return { rows, portfolioMix };
+}
+
+/** Portfolio bundle from precomputed layout summaries (no full layout load). */
+export function buildPortfolioAnalyticsFromSummaries(records, categories, verticalFilter = null) {
+  const filtered = verticalFilter ? records.filter((r) => r.vertical === verticalFilter) : records;
+  const layoutLike = filtered.map((r) => ({
+    id: r.id,
+    name: r.name,
+    vertical: r.vertical,
+    status: r.status,
+  }));
+
+  const utilValues = filtered
+    .map((r) => r.portfolioKpis?.utilizationPercent)
+    .filter((v) => v != null);
+
+  return {
+    layoutCount: filtered.length,
+    approvalStatus: computeApprovalStatus(layoutLike),
+    storeBenchmarking: computeStoreBenchmarkingFromSummaries(filtered),
+    rolloutProgress: computeRolloutProgress(layoutLike),
+    verticalComparison: computeVerticalComparisonFromSummaries(filtered),
+    layoutStandardization: computeLayoutStandardizationFromSummaries(filtered),
+    avgUtilizationPercent:
+      utilValues.length > 0
+        ? Number((utilValues.reduce((s, v) => s + v, 0) / utilValues.length).toFixed(1))
+        : 0,
+  };
 }
 
 /** §6.1 Layout standardization (deviation from portfolio category mix). */
@@ -831,23 +990,14 @@ export function buildPortfolioAnalyticsReport(layouts, categories, verticalFilte
   const filtered = verticalFilter
     ? layouts.filter((l) => l.vertical === verticalFilter)
     : layouts;
-  return {
-    layoutCount: filtered.length,
-    approvalStatus: computeApprovalStatus(filtered),
-    storeBenchmarking: computeStoreBenchmarking(filtered, categories),
-    rolloutProgress: computeRolloutProgress(filtered),
-    verticalComparison: computeVerticalComparison(filtered, categories),
-    layoutStandardization: computeLayoutStandardization(filtered, categories),
-    avgUtilizationPercent:
-      filtered.length > 0
-        ? Number(
-            (
-              filtered.reduce((s, l) => s + computeSpaceUtilization(l).utilizationPercent, 0) /
-              filtered.length
-            ).toFixed(1)
-          )
-        : 0,
-  };
+  const records = filtered.map((l) => ({
+    id: l.id,
+    name: l.name,
+    vertical: l.vertical,
+    status: l.status,
+    portfolioKpis: l.portfolioKpis || summarizeLayoutForPortfolio(l, categories),
+  }));
+  return buildPortfolioAnalyticsFromSummaries(records, categories, null);
 }
 
 /** §4.1 Aisle compliance. */

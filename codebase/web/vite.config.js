@@ -15,6 +15,17 @@ const apiPrefix = `${base.replace(/\/+$/, "")}/api`;
 export default defineConfig({
   base,
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/three")) return "vendor-three";
+          if (id.includes("node_modules/xlsx")) return "vendor-xlsx";
+          if (id.includes("node_modules/pdfjs-dist")) return "vendor-pdf";
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

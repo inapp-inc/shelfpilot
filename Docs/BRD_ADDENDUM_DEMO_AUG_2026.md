@@ -116,7 +116,7 @@ Selection and highlight are **aisle-scoped**:
 | | 3. Optional **flat shelves viewing** menu: adjacent / opposite shelves along the aisle on a 2D/flat screen — **not** requiring 3D orbit skill. |
 | | 4. **No edit** of layouts, planograms, catalog, admin, or Smart Generate. |
 | **Acceptance** | Customer login never exposes Designer controls; given a placed product, Customer is shown aisle id/label and shelf label; “View nearby shelves” lists aisle-bound neighbours. |
-| **Status** | **Planned** (new RBAC + UI surface). |
+| **Status** | **Done** — Customer login opens the assigned store only; kiosk draws a walking line from a configured or assumed front-of-store entrance to the product shelf. Store picker is out of scope. |
 
 ### FR-WH-01 — Warehouse layout type (DF-04)
 

@@ -9,7 +9,23 @@ import {
   effectiveSegmentsForLevel,
   resolveSegmentId,
 } from "./planogramSegments.js";
-import { aisleDisplayLabel, normalizeShelfUI, planogramRowsOnPhysicalShelf, shelfDisplayLabel, segmentFaceIdForShelf } from "./shelfFaces.js";
+import {
+  aisleDisplayLabel,
+  isPairedShelf,
+  normalizeShelfUI,
+  planogramRowsOnPhysicalShelf,
+  shelfDisplayLabel,
+  segmentFaceIdForShelf,
+} from "./shelfFaces.js";
+
+function placementRowId(shelfId, faceKey, placement, segmentId) {
+  return `${shelfId}:${faceKey}:${placement.productId}:${placement.levelIndex}:${segmentId}:${placement.id || ""}`;
+}
+
+function placementSlotKey(placement, shelf, faceId) {
+  const pos = positionForPlacement(shelf, faceId, placement);
+  return `${placement.productId}:${Number(placement.levelIndex) || 0}:${pos.segmentId || ""}`;
+}
 
 function positionForPlacement(shelf, faceId, placement) {
   const levelIndex = Number(placement?.levelIndex) || 0;
@@ -25,6 +41,56 @@ function positionForPlacement(shelf, faceId, placement) {
     positionLabel: positionDisplayLabel(idx, seg?.label),
     segmentId: seg?.id || segId || null,
   };
+}
+
+/** Map duplicate catalog SKUs (same display name) to one canonical product id. */
+export function buildProductAliasMap(products = [], categories = [], vertical = null) {
+  const groups = new Map();
+  for (const p of products || []) {
+    const key = String(p.name || "")
+      .trim()
+      .toLowerCase();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  }
+  const alias = new Map();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const canonical = pickCanonicalCatalogProduct(group, categories, vertical);
+    for (const p of group) {
+      if (p.id !== canonical.id) alias.set(p.id, canonical.id);
+    }
+  }
+  return alias;
+}
+
+function pickCanonicalCatalogProduct(group, categories, vertical) {
+  let candidates = group;
+  if (vertical) {
+    const inVertical = group.filter((p) => {
+      const cat = (categories || []).find((c) => c.id === p.categoryId);
+      return !cat?.vertical || cat.vertical === vertical;
+    });
+    if (inVertical.length) candidates = inVertical;
+  }
+  return [...candidates].sort((a, b) => {
+    const aHm = a.id.startsWith("hm-") ? 0 : 1;
+    const bHm = b.id.startsWith("hm-") ? 0 : 1;
+    if (aHm !== bHm) return aHm - bHm;
+    return a.id.localeCompare(b.id);
+  })[0];
+}
+
+export function canonicalProductId(productId, aliasMap) {
+  if (!productId || !aliasMap?.size) return productId;
+  let id = productId;
+  const seen = new Set();
+  while (aliasMap.has(id) && !seen.has(id)) {
+    seen.add(id);
+    id = aliasMap.get(id);
+  }
+  return id;
 }
 
 function placementSpace(product, placement) {
@@ -46,56 +112,129 @@ function placementSpace(product, placement) {
   };
 }
 
+/** Storage faces to read on one physical shelf record. */
+function storageFaceIdsForShelf(raw, shelf) {
+  if (isPairedShelf(raw) && !raw.pairDisplay) {
+    return [segmentFaceIdForShelf(shelf, "A")];
+  }
+  const hasFaceB =
+    shelf.faces?.some((f) => f.id === "B" && (f.planogram?.length || f.segments?.length)) ||
+    (raw.faces || []).some((f) => f.id === "B" && (f.planogram || []).length);
+  return hasFaceB ? ["A", "B"] : [segmentFaceIdForShelf(shelf, "A")];
+}
+
+function merchandisingFaceForRecord(raw, storageFaceId) {
+  if (isPairedShelf(raw) && !raw.pairDisplay) {
+    return raw.pairRole === "back" ? "B" : "A";
+  }
+  return storageFaceId === "B" ? "B" : "A";
+}
+
+function appendPlacementRow({
+  raw,
+  shelf,
+  storageFaceId,
+  merchandisingFaceId,
+  multiFace,
+  placement,
+  aisles,
+  productById,
+  categories,
+  rows,
+  seen,
+  aliasMap = null,
+}) {
+  if (!placement?.productId) return;
+  const sourceProductId = placement.productId;
+  const productId = canonicalProductId(sourceProductId, aliasMap);
+  const pos = positionForPlacement(shelf, storageFaceId, placement);
+  const faceKey = `${merchandisingFaceId}:${storageFaceId}`;
+  const rowId = placementRowId(shelf.id, faceKey, { ...placement, productId }, pos.segmentId);
+  if (seen.has(rowId)) return;
+  seen.add(rowId);
+
+  const product = productById.get(productId) || productById.get(sourceProductId) || null;
+  const space = placementSpace(product, placement);
+  const categoryId = product?.categoryId || shelf?.categoryId || null;
+  const shelfLabel = shelfDisplayLabel(shelf, aisles);
+  const aisle = (aisles || []).find((a) => a.id === shelf?.aisleId);
+  const aisleLabel = aisle ? aisleDisplayLabel(aisle) : null;
+  const faceSuffix =
+    multiFace && merchandisingFaceId !== "A" && !isPairedShelf(raw)
+      ? ` · Face ${merchandisingFaceId}`
+      : "";
+
+  rows.push({
+    id: rowId,
+    productId,
+    sourceProductId: sourceProductId !== productId ? sourceProductId : null,
+    productName: product?.name || placement.productId,
+    sku: product?.sku || product?.barcode || "",
+    categoryId,
+    categoryName: categoryId ? categoryLabel(categories, categoryId) : "Uncategorized",
+    shelfId: shelf.id,
+    shelfLabel: `${shelfLabel || shelf.label || shelf.id}${faceSuffix}`,
+    aisleId: aisle?.id || shelf?.aisleId || null,
+    aisleLabel,
+    levelIndex: Number(placement.levelIndex) || 0,
+    levelLabel: levelDisplayLabel(placement.levelIndex),
+    positionIndex: pos.positionIndex,
+    positionLabel: pos.positionLabel,
+    faceId: merchandisingFaceId,
+    facings: space.facings || null,
+    depthFacings: space.depthFacings,
+    linearMeters: space.linearMeters,
+    footprintSqm: space.footprintSqm,
+    volumeM3: space.volumeM3,
+    locationText: `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
+    directionsText: aisleLabel
+      ? `Aisle ${aisleLabel} · Shelf ${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`
+      : `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
+  });
+}
+
 /** Flatten every product placement on the layout with shelf # / level / position. */
-export function collectLayoutPlacements(layout, products = [], categories = []) {
+export function collectLayoutPlacements(layout, products = [], categories = [], options = {}) {
+  const dedupeGondolaMirrors = options.dedupeGondolaMirrors !== false;
   const shelves = layout?.shelves?.length ? layout.shelves : layout?.fixtures || [];
   const aisles = layout?.aisles || [];
   const productById = new Map((products || []).map((p) => [p.id, p]));
+  const aliasMap = buildProductAliasMap(products, categories, layout?.vertical);
   const rows = [];
+  const seen = new Set();
+  const pairSlots = dedupeGondolaMirrors ? new Map() : null;
 
   for (const raw of shelves) {
     if (!raw || raw.pairDisplay) continue;
     const shelf = normalizeShelfUI(raw);
-    const shelfLabel = shelfDisplayLabel(shelf, aisles);
-    const aisle = (aisles || []).find((a) => a.id === shelf?.aisleId);
-    const aisleLabel = aisle ? aisleDisplayLabel(aisle) : null;
-    const faceIds =
-      shelf.faces?.some((f) => f.id === "B" && (f.planogram?.length || f.segments?.length))
-        ? ["A", "B"]
-        : [segmentFaceIdForShelf(shelf, "A")];
+    const storageFaceIds = storageFaceIdsForShelf(raw, shelf);
 
-    for (const faceId of faceIds) {
-      const planogram = planogramRowsOnPhysicalShelf(shelf, faceId);
+    for (const storageFaceId of storageFaceIds) {
+      const planogram = planogramRowsOnPhysicalShelf(raw, storageFaceId);
+      if (!planogram.length) continue;
+      const merchandisingFaceId = merchandisingFaceForRecord(raw, storageFaceId);
+
       for (const placement of planogram) {
-        const product = productById.get(placement.productId) || null;
-        const pos = positionForPlacement(shelf, faceId, placement);
-        const space = placementSpace(product, placement);
-        const categoryId = product?.categoryId || shelf?.categoryId || null;
-        const faceSuffix = faceIds.length > 1 ? ` · Face ${faceId}` : "";
-        rows.push({
-          id: `${shelf.id}:${faceId}:${placement.id || placement.productId}:${placement.levelIndex}:${pos.segmentId}`,
-          productId: placement.productId,
-          productName: product?.name || placement.productId,
-          sku: product?.sku || product?.barcode || "",
-          categoryId,
-          categoryName: categoryId ? categoryLabel(categories, categoryId) : "Uncategorized",
-          shelfId: shelf.id,
-          shelfLabel: `${shelfLabel || shelf.label || shelf.id}${faceSuffix}`,
-          aisleId: aisle?.id || shelf?.aisleId || null,
-          aisleLabel,
-          levelIndex: Number(placement.levelIndex) || 0,
-          levelLabel: levelDisplayLabel(placement.levelIndex),
-          positionIndex: pos.positionIndex,
-          positionLabel: pos.positionLabel,
-          facings: space.facings || null,
-          depthFacings: space.depthFacings,
-          linearMeters: space.linearMeters,
-          footprintSqm: space.footprintSqm,
-          volumeM3: space.volumeM3,
-          locationText: `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
-          directionsText: aisleLabel
-            ? `Aisle ${aisleLabel} · Shelf ${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`
-            : `${shelfLabel || "—"} · ${levelDisplayLabel(placement.levelIndex)} · ${pos.positionLabel}${faceSuffix}`,
+        if (dedupeGondolaMirrors && raw.pairId) {
+          const slot = `${raw.pairId}:${placementSlotKey(placement, shelf, storageFaceId)}`;
+          const slots = pairSlots.get(raw.pairId) || new Set();
+          if (slots.has(slot)) continue;
+          slots.add(slot);
+          pairSlots.set(raw.pairId, slots);
+        }
+        appendPlacementRow({
+          raw,
+          shelf,
+          storageFaceId,
+          merchandisingFaceId,
+          multiFace: storageFaceIds.length > 1,
+          placement,
+          aisles,
+          productById,
+          categories,
+          rows,
+          seen,
+          aliasMap,
         });
       }
     }
@@ -190,4 +329,24 @@ export function placementsGroupedByCategory(placements) {
       volumeM3: Number(g.volumeM3.toFixed(4)),
     }))
     .sort((a, b) => b.placements.length - a.placements.length);
+}
+
+/** Cheap signature so UI recomputes when planogram payloads arrive. */
+export function layoutPlanogramSignature(layout) {
+  let count = 0;
+  let bytes = 0;
+  for (const raw of layout?.shelves || layout?.fixtures || []) {
+    if (!raw || raw.pairDisplay) continue;
+    for (const p of raw.planogram || []) {
+      count += 1;
+      bytes += String(p?.productId || "").length;
+    }
+    for (const face of raw.faces || []) {
+      for (const p of face.planogram || []) {
+        count += 1;
+        bytes += String(p?.productId || "").length;
+      }
+    }
+  }
+  return `${count}:${bytes}`;
 }

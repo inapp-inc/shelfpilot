@@ -1,4 +1,5 @@
 /** Client-side shelf face normalization (mirrors API shelfFaces). */
+import { formatShelfCode } from "../../../shared/labelFormat.mjs";
 import { gondolaCanvasAabb } from "./polygonCanvas.js";
 
 const SHELF_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -21,10 +22,8 @@ export function labelIndexToSuffix(labelIndex) {
 }
 
 /** Aisle-centric label, e.g. aisle 4, index 0 → "4A"; index 1 → "4B" */
-export function aisleShelfLabel(aisleNumber, labelIndex) {
-  const n = Number(aisleNumber);
-  if (!Number.isFinite(n) || n < 1) return "—";
-  return `${n}${shelfLetter(labelIndex)}`;
+export function aisleShelfLabel(aisleNumber, labelIndex, convention = null) {
+  return formatShelfCode(aisleNumber, labelIndex, convention || undefined);
 }
 
 export function shelfFaceDisplayLabel(shelf, aisles) {

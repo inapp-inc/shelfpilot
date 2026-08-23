@@ -39,6 +39,7 @@ The zip contains:
 
 ```
 api/                 # API source + package.json + package-lock.json
+shared/              # ESM modules imported by the API (productBuffer, etc.)
 web/dist/            # prebuilt UI (base /shelfpilot/)
 Dockerfile           # production image (UI + API)
 docker-compose.yml   # single-service compose
@@ -87,9 +88,15 @@ and run `bash deploy.sh` again. SQLite persists in the `shelfpilot_data` volume.
 
 ## 3. nginx (your side, not shipped)
 
-Proxy `/shelfpilot/` to the published host port **without stripping** the prefix:
+Proxy `/shelfpilot/` to the published host port **without stripping** the prefix.
+Enable **gzip** for JS/CSS/JSON (see `nginx-host.conf.example` in this folder).
 
 ```nginx
+gzip on;
+gzip_vary on;
+gzip_min_length 256;
+gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
 location = /shelfpilot {
     return 301 /shelfpilot/;
 }
@@ -119,12 +126,14 @@ run the same single-port Node process (requires Node >= 22.5 on the host). Prefe
 - Data: Docker volume `shelfpilot_data` → `/data/shelfpilot.db` inside the container.
   Backup with `docker run --rm -v shelfpilot_data:/data -v "$PWD":/backup alpine \
   tar czf /backup/shelfpilot-data.tgz -C /data .`
-- Env: `HOST_PORT`, `BASE_PATH`, `CORS_ORIGINS`, `SHELFPILOT_VERSION` (see `.env.example`).
+- Env: `HOST_PORT`, `BASE_PATH`, `CORS_ORIGINS`, `SKIP_DEMO_BOOTSTRAP`, `SHELFPILOT_VERSION` (see `.env.example`).
 - Public URL: **`http://foundry.inapp.com/shelfpilot`**.
 
 ## Production readiness checklist
 - [ ] Package built with `scripts/package.bat` (or `.ps1` / `.sh`) so UI base is `/shelfpilot/`.
 - [ ] Server `.env` has `BASE_PATH=/shelfpilot` matching the UI build.
+- [ ] `SKIP_DEMO_BOOTSTRAP=1` after first deploy (demo data persists in volume).
+- [ ] Host nginx gzip enabled (`nginx-host.conf.example`).
 - [ ] Docker Engine + Compose V2 installed on the server.
 - [ ] `bash deploy.sh` reports healthy.
 - [ ] nginx proxies `/shelfpilot/` to `127.0.0.1:4520` without stripping the prefix.

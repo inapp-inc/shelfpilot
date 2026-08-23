@@ -15,12 +15,57 @@ import {
   saveProductImage,
   saveProductImageForName,
 } from "../services/productImages.js";
+import {
+  getCachedCatalog,
+  invalidateCatalogCache,
+  setCachedCatalog,
+} from "../services/productCatalogCache.js";
+import { getDb } from "../store/sqlite.js";
 
 export const catalogRouter = Router();
 
+const MAX_INLINE_IMAGE_BYTES = 512_000;
+
+function upsertProductSafe(product, options = {}) {
+  try {
+    return { ok: true, product: repo.upsertProduct(product, options) };
+  } catch (err) {
+    if (err.code === "image_data_url_too_large") {
+      return { ok: false, error: "image_data_url_too_large", maxBytes: MAX_INLINE_IMAGE_BYTES };
+    }
+    throw err;
+  }
+}
+
+function loadProductsForQuery({ vertical, categoryId }) {
+  if (categoryId) {
+    return repo.listProducts(categoryId);
+  }
+  if (vertical) {
+    const categories = listCategoriesForLayout(vertical, (v) => repo.listCategories(v));
+    const catIds = categories.map((c) => c.id);
+    let items = repo.listProductsInCategories(catIds);
+    const catIdSet = new Set(catIds);
+    items = items.filter((p) => {
+      const resolved = resolveCategoryId(p.categoryId, categories);
+      return catIdSet.has(resolved) || catIdSet.has(p.categoryId);
+    });
+    return items;
+  }
+  return repo.listProducts();
+}
+
 catalogRouter.get("/categories", authRequired, (req, res) => {
-  const items = repo.listCategories(req.query.vertical || null);
-  res.json({ items });
+  const vertical = req.query.vertical || null;
+  const cached = getCachedCatalog("categories", vertical, null);
+  if (cached) {
+    return res.json({ items: cached, cached: true });
+  }
+  const started = performance.now();
+  const items = repo.listCategories(vertical);
+  setCachedCatalog("categories", vertical, null, items);
+  const durationMs = Number((performance.now() - started).toFixed(3));
+  res.json({ items, durationMs, cached: false });
 });
 
 catalogRouter.post("/categories", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
@@ -42,7 +87,7 @@ catalogRouter.patch(
   authRequired,
   requireRoles("Designer", "Admin"),
   (req, res) => {
-    const existing = repo.listCategories().find((c) => c.id === req.params.categoryId);
+    const existing = repo.getCategory(req.params.categoryId);
     if (!existing) return res.status(404).json({ error: "not_found" });
     const patch = req.body || {};
     if (patch.name != null) existing.name = String(patch.name);
@@ -79,16 +124,30 @@ catalogRouter.delete(
 );
 
 catalogRouter.get("/products", authRequired, (req, res) => {
-  let items = repo.listProducts(req.query.categoryId || null);
-  if (req.query.vertical) {
-    const categories = listCategoriesForLayout(req.query.vertical, (v) => repo.listCategories(v));
-    const catIds = new Set(categories.map((c) => c.id));
-    items = items.filter((p) => {
-      const resolved = resolveCategoryId(p.categoryId, categories);
-      return catIds.has(resolved) || catIds.has(p.categoryId);
-    });
+  const vertical = req.query.vertical || null;
+  const categoryId = req.query.categoryId || null;
+  const cached = getCachedCatalog("products", vertical, categoryId);
+  if (cached) {
+    return res.json({ items: cached, cached: true });
   }
-  res.json({ items });
+
+  const started = performance.now();
+  const items = loadProductsForQuery({ vertical, categoryId });
+  setCachedCatalog("products", vertical, categoryId, items);
+  const durationMs = Number((performance.now() - started).toFixed(3));
+  if (durationMs > 200) {
+    console.log(
+      JSON.stringify({
+        level: "info",
+        message: "catalog_products",
+        vertical,
+        categoryId,
+        count: items.length,
+        durationMs,
+      })
+    );
+  }
+  res.json({ items, durationMs, cached: false });
 });
 
 catalogRouter.post("/products", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
@@ -110,9 +169,13 @@ catalogRouter.post("/products", authRequired, requireRoles("Designer", "Admin"),
     categoryId: req.body.categoryId,
     attributes: attrs,
   };
-  repo.upsertProduct(product);
+  const savedResult = upsertProductSafe(product);
+  if (!savedResult.ok) {
+    return res.status(413).json({ error: savedResult.error, maxBytes: savedResult.maxBytes });
+  }
+  const saved = savedResult.product;
   audit(req.user.email, "product.create", product.id);
-  res.status(201).json(product);
+  res.status(201).json(saved);
 });
 
 catalogRouter.patch(
@@ -120,7 +183,7 @@ catalogRouter.patch(
   authRequired,
   requireRoles("Designer", "Admin"),
   (req, res) => {
-    const existing = repo.listProducts().find((p) => p.id === req.params.productId);
+    const existing = repo.getProduct(req.params.productId);
     if (!existing) return res.status(404).json({ error: "not_found" });
     const patch = req.body || {};
     if (patch.name != null) existing.name = String(patch.name);
@@ -154,9 +217,13 @@ catalogRouter.patch(
       };
     }
     if (!existing.categoryId) return res.status(400).json({ error: "missing_fields" });
-    repo.upsertProduct(existing);
+    const savedResult = upsertProductSafe(existing);
+    if (!savedResult.ok) {
+      return res.status(413).json({ error: savedResult.error, maxBytes: savedResult.maxBytes });
+    }
+    const saved = savedResult.product;
     audit(req.user.email, "product.update", existing.id);
-    res.json(existing);
+    res.json(saved);
   }
 );
 
@@ -176,50 +243,68 @@ catalogRouter.post("/catalog/import", authRequired, requireRoles("Admin", "Desig
   const categories = Array.isArray(req.body?.categories) ? req.body.categories : [];
   const products = Array.isArray(req.body?.products) ? req.body.products : [];
   const categoryIds = new Set();
-
-  for (const c of categories) {
-    if (!c.name && !c.id) continue;
-    const cat = {
-      id: c.id || `cat-${randomUUID().slice(0, 6)}`,
-      name: c.name || c.id,
-      vertical: String(c.vertical || "retail").toLowerCase(),
-      parentId: c.parentId || null,
-      color: c.color || "#A30A2A",
-      storageType: normalizeStorageType(c.storageType || "ambient"),
-    };
-    repo.upsertCategory(cat);
-    categoryIds.add(cat.id);
-  }
-
-  const allCategories = repo.listCategories();
-  const existingCatIds = new Set(allCategories.map((c) => c.id));
-
+  const db = getDb();
   let importedProducts = 0;
-  for (const p of products) {
-    if (!p.categoryId) continue;
-    if (!existingCatIds.has(p.categoryId) && !categoryIds.has(p.categoryId)) {
-      const stub = {
-        id: p.categoryId,
-        name: p.categoryName || p.categoryId,
-        vertical: String(p.vertical || categories[0]?.vertical || "retail").toLowerCase(),
-        parentId: null,
-        color: "#A30A2A",
-        storageType: "ambient",
+
+  db.exec("BEGIN");
+  try {
+    for (const c of categories) {
+      if (!c.name && !c.id) continue;
+      const cat = {
+        id: c.id || `cat-${randomUUID().slice(0, 6)}`,
+        name: c.name || c.id,
+        vertical: String(c.vertical || "retail").toLowerCase(),
+        parentId: c.parentId || null,
+        color: c.color || "#A30A2A",
+        storageType: normalizeStorageType(c.storageType || "ambient"),
       };
-      repo.upsertCategory(stub);
-      categoryIds.add(stub.id);
-      existingCatIds.add(stub.id);
+      repo.upsertCategory(cat, { skipCacheInvalidate: true });
+      categoryIds.add(cat.id);
     }
-    if (!p.name && !p.sku) continue;
-    repo.upsertProduct({
-      id: p.id || `prd-${randomUUID().slice(0, 6)}`,
-      name: p.name || p.sku,
-      sku: p.sku || "",
-      categoryId: p.categoryId,
-      attributes: p.attributes || {},
-    });
-    importedProducts += 1;
+
+    const allCategories = repo.listCategories();
+    const existingCatIds = new Set(allCategories.map((c) => c.id));
+
+    for (const p of products) {
+      if (!p.categoryId) continue;
+      if (!existingCatIds.has(p.categoryId) && !categoryIds.has(p.categoryId)) {
+        const stub = {
+          id: p.categoryId,
+          name: p.categoryName || p.categoryId,
+          vertical: String(p.vertical || categories[0]?.vertical || "retail").toLowerCase(),
+          parentId: null,
+          color: "#A30A2A",
+          storageType: "ambient",
+        };
+        repo.upsertCategory(stub, { skipCacheInvalidate: true });
+        categoryIds.add(stub.id);
+        existingCatIds.add(stub.id);
+      }
+      if (!p.name && !p.sku) continue;
+      const savedResult = upsertProductSafe(
+        {
+          id: p.id || `prd-${randomUUID().slice(0, 6)}`,
+          name: p.name || p.sku,
+          sku: p.sku || "",
+          categoryId: p.categoryId,
+          attributes: p.attributes || {},
+        },
+        { skipCacheInvalidate: true }
+      );
+      if (!savedResult.ok) {
+        throw Object.assign(new Error(savedResult.error), { code: savedResult.error, status: 413 });
+      }
+      importedProducts += 1;
+    }
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    if (err.code === "image_data_url_too_large") {
+      return res.status(413).json({ error: err.code, maxBytes: MAX_INLINE_IMAGE_BYTES });
+    }
+    throw err;
   }
+  invalidateCatalogCache();
 
   const verticals = [
     ...new Set([
@@ -240,7 +325,9 @@ catalogRouter.get("/catalog/export", authRequired, (req, res) => {
   const vertical = req.query.vertical || null;
   const categories = repo.listCategories(vertical);
   const catIds = new Set(categories.map((c) => c.id));
-  const products = repo.listProducts().filter((p) => !vertical || catIds.has(p.categoryId));
+  const products = vertical
+    ? repo.listProductsInCategories([...catIds])
+    : repo.listProducts();
   res.json({ categories, products });
 });
 
@@ -285,7 +372,7 @@ catalogRouter.post(
         : saveProductImage(buffer, targetName);
 
       if (productName) {
-        const product = repo.listProducts().find((p) => p.name === productName);
+        const product = repo.getProductByName(productName);
         if (product) {
           repo.upsertProduct({
             ...product,

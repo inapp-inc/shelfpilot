@@ -1,196 +1,165 @@
-import { useMemo } from "react";
-import { layoutStoreEnvelope, polygonAabb, rectanglePolygon } from "../layout-editor/polygonCanvas.js";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Canvas2D from "../layout-editor/Canvas2D.jsx";
+import { layoutCanvasBounds, toStageCoords } from "../layout-editor/polygonCanvas.js";
+import { routeDashPatternUserUnits, routeStrokeUserUnits } from "./shopperSchematicMap.js";
+import { fitLayoutScale } from "./shopperMapFraming.js";
+import { routePolylineForMap, shelfMarkerFootprint } from "./shopperWayfinding.js";
 import {
-  runwayBandsForMap,
-  schematicAisleFontSize,
-  schematicFontSize,
-  shelfTilesForMap,
-} from "./shopperSchematicMap.js";
+  EntryMarker,
+  RouteLayer,
+  ShelfTargetMarker,
+  pathFromPoints,
+} from "./mapLayers.jsx";
 
-function pathFromPoints(points) {
-  if (!points?.length) return "";
-  return points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-}
+const noop = () => {};
 
-function MapPin({ x, y, scale }) {
-  const s = scale || 1;
-  return (
-    <g className="shopper-floor-map-pin" transform={`translate(${x} ${y}) scale(${s})`}>
-      <ellipse cx={0} cy={1.05} rx={0.32} ry={0.11} className="shopper-floor-map-pin-shadow" />
-      <path
-        d="M0,-0.82 C0.44,-0.82 0.76,-0.5 0.76,-0.06 C0.76,0.42 0,1.12 0,1.12 C0,1.12 -0.76,0.42 -0.76,-0.06 C-0.76,-0.5 -0.44,-0.82 0,-0.82 Z"
-        className="shopper-floor-map-pin-body"
-      />
-      <circle cx={0} cy={-0.1} r={0.24} className="shopper-floor-map-pin-dot" />
-    </g>
-  );
-}
-
-function EntryMarker({ entryPoint, route, label, fontSize }) {
-  if (!entryPoint) return null;
-  const next = route?.length >= 2 ? route[1] : null;
-  let tipX = entryPoint.x;
-  let tipY = entryPoint.y - 0.6;
-  if (next) {
-    const dx = next.x - entryPoint.x;
-    const dy = next.y - entryPoint.y;
-    const len = Math.hypot(dx, dy) || 1;
-    tipX = entryPoint.x + (dx / len) * 0.65;
-    tipY = entryPoint.y + (dy / len) * 0.65;
-  }
-  const fs = fontSize * 0.85;
-  return (
-    <g className="shopper-floor-map-entry">
-      <polygon
-        points={`${entryPoint.x},${entryPoint.y + 0.42} ${tipX},${tipY} ${entryPoint.x - 0.38},${entryPoint.y + 0.62} ${entryPoint.x + 0.38},${entryPoint.y + 0.62}`}
-        className="shopper-floor-map-entry-arrow"
-      />
-      <circle cx={entryPoint.x} cy={entryPoint.y} r={0.52} />
-      <text
-        x={entryPoint.x}
-        y={entryPoint.y - 0.95}
-        textAnchor="middle"
-        fontSize={fs}
-        className="shopper-floor-map-entry-label"
-      >
-        {label}
-      </text>
-    </g>
-  );
-}
-
-/** Schematic kiosk map — runway bands + shelf tiles + walk path (mockup style). */
+/**
+ * Read-only layout-editor 2D view, fitted to the kiosk host, with the walking route overlaid.
+ * Labels stay at editor sizes (pixels) so they never explode when the store is shown in full.
+ */
 export default function ShopperFloorMap({
   layout,
   entryPoint,
   route = [],
-  markerPoint = null,
   highlightShelfId = null,
+  highlightMapUnitId = null,
   highlightAisleId = null,
+  categories = [],
+  products = [],
   className = "",
 }) {
-  const scene = useMemo(() => {
-    if (!layout) return null;
-    const envelope = layoutStoreEnvelope(layout);
-    const poly =
-      layout.polygon?.length >= 3
-        ? layout.polygon
-        : rectanglePolygon(envelope.x, envelope.y, envelope.widthMeters, envelope.depthMeters);
-    const aabb = polygonAabb(poly) || {
-      minX: 0,
-      minY: 0,
-      width: envelope.widthMeters,
-      height: envelope.depthMeters,
-    };
-    const pad = 1;
-    const vb = {
-      minX: aabb.minX - pad,
-      minY: aabb.minY - pad,
-      width: aabb.width + pad * 2,
-      height: aabb.height + pad * 2,
-    };
-    return {
-      poly,
-      vb,
-      runways: runwayBandsForMap(layout),
-      tiles: shelfTilesForMap(layout),
-      labelFs: schematicFontSize(vb.width, vb.height),
-      aisleFs: schematicAisleFontSize(vb.width, vb.height),
-    };
-  }, [layout]);
+  const hostRef = useRef(null);
+  const [hostBox, setHostBox] = useState(null);
 
-  if (!layout || !scene) {
-    return <div className={`shopper-floor-map shopper-floor-map--empty ${className}`.trim()} />;
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const update = () => {
+      const { width, height } = el.getBoundingClientRect();
+      if (width > 0 && height > 0) {
+        setHostBox((prev) =>
+          prev && Math.abs(prev.width - width) < 1 && Math.abs(prev.height - height) < 1
+            ? prev
+            : { width, height }
+        );
+      }
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [layout?.id]);
+
+  const bounds = useMemo(() => (layout ? layoutCanvasBounds(layout) : null), [layout]);
+  const scale = hostBox && bounds ? fitLayoutScale(bounds, hostBox.width, hostBox.height) : 0;
+  const hostWidth = hostBox?.width || 0;
+
+  const overlay = useMemo(() => {
+    if (!layout || !bounds) return null;
+    const walked = routePolylineForMap(layout, route, highlightShelfId);
+    const aisleNear = walked.length >= 2 ? walked[walked.length - 2] : walked[walked.length - 1];
+    const footprint = highlightShelfId ? shelfMarkerFootprint(layout, highlightShelfId, aisleNear) : null;
+    const pinWorld = footprint?.badge || null;
+    const toStage = (p) => {
+      if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.y))) return null;
+      return toStageCoords(Number(p.x), Number(p.y), bounds);
+    };
+    const path = walked.map(toStage).filter(Boolean);
+    const shelfOutline = footprint?.corners?.map(toStage).filter(Boolean) || [];
+    const badgeAt = pinWorld ? toStage(pinWorld) : null;
+    const entry = entryPoint ? { ...entryPoint, ...toStage(entryPoint) } : null;
+    if (entry && entryPoint?.plaza) {
+      const p0 = toStage({ x: entryPoint.plaza.x, y: entryPoint.plaza.y });
+      entry.plaza = p0
+        ? { ...entryPoint.plaza, x: p0.x, y: p0.y }
+        : entryPoint.plaza;
+    }
+    const boardW = bounds.width * Math.max(scale, 1);
+    const strokeOpts = { minPx: path.length >= 2 ? 5 : 4, renderWidthPx: Math.max(boardW, hostWidth, 560) };
+    return {
+      path,
+      shelfOutline,
+      badgeAt,
+      entry,
+      wayW: routeStrokeUserUnits(bounds.width, strokeOpts),
+      wayDash: routeDashPatternUserUnits(bounds.width, {
+        dashPx: 11,
+        gapPx: 8,
+        renderWidthPx: strokeOpts.renderWidthPx,
+      }),
+      labelFs: 11 / Math.max(scale, 1),
+      markR: Math.min(0.11, Math.max(0.055, 2.8 / Math.max(scale, 1))),
+    };
+  }, [layout, bounds, entryPoint, route, highlightShelfId, scale, hostWidth]);
+
+  // Keep the shelf visible — kiosk uses a thin SVG outline instead of editor selection chrome.
+  const selection = null;
+
+  if (!layout) {
+    return <div className={`shopper-floor-map-host shopper-floor-map--empty ${className}`.trim()} />;
   }
 
-  const { poly, vb, runways, tiles, labelFs, aisleFs } = scene;
-  const viewBox = `${vb.minX} ${vb.minY} ${vb.width} ${vb.height}`;
-  const hasRoute = route.length >= 2;
-  const routeD = pathFromPoints(route);
-  const pinAt = markerPoint || (hasRoute ? route[route.length - 1] : null);
-  const entryLabel = entryPoint?.label || "Entrance";
-  const pinScale = Math.max(0.85, Math.min(1.35, vb.width / 28));
+  const boardW = bounds && scale ? bounds.width * scale : 0;
+  const boardH = bounds && scale ? bounds.height * scale : 0;
+  const hasRoute = overlay?.path?.length >= 2;
+  const viewBox = bounds ? `0 0 ${bounds.width} ${bounds.height}` : "0 0 1 1";
 
   return (
-    <svg
-      className={`shopper-floor-map shopper-floor-map--schematic${hasRoute ? " shopper-floor-map--routed" : ""} ${className}`.trim()}
-      viewBox={viewBox}
-      preserveAspectRatio="xMidYMid meet"
-      role="img"
-      aria-label="Store map with walking route to product"
+    <div
+      ref={hostRef}
+      className={`shopper-floor-map-host shopper-floor-map-host--layout ${className}`.trim()}
+      data-aisle={highlightAisleId || undefined}
     >
-      <rect x={vb.minX} y={vb.minY} width={vb.width} height={vb.height} className="shopper-floor-map-bg" />
-      <polygon points={poly.map((p) => `${p.x},${p.y}`).join(" ")} className="shopper-floor-map-store" />
-
-      {runways.map((band) => {
-        const isTarget = highlightAisleId && band.id === highlightAisleId;
-        return (
-          <g key={band.id} className="shopper-floor-map-runway">
-            <rect
-              x={band.x}
-              y={band.y}
-              width={band.w}
-              height={band.h}
-              rx={0.1}
-              className={`shopper-floor-map-runway-fill${isTarget ? " is-target-aisle" : ""}`}
-            />
-            {band.label ? (
-              <text
-                x={band.cx}
-                y={band.cy}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize={aisleFs}
-                fontWeight={900}
-                className={`shopper-floor-map-aisle-num mono${isTarget ? " is-target-aisle" : ""}`}
-              >
-                {band.label}
-              </text>
+      {scale > 0 && bounds ? (
+        <div className="shopper-layout-map-board" style={{ width: boardW, height: boardH }}>
+          <Canvas2D
+            layout={layout}
+            scale={scale}
+            canvasBounds={bounds}
+            selection={selection}
+            setSelection={noop}
+            onSelectShelf={noop}
+            paletteTool="select"
+            editDisabled
+            dragPos={null}
+            setDragging={noop}
+            onDropTool={noop}
+            onPlaceClick={noop}
+            onPlaceZoneRect={noop}
+            onResize={noop}
+            onRotateShelf={noop}
+            categories={categories}
+            products={products}
+            draftPolygon={null}
+          />
+          <svg
+            className={`shopper-layout-map-route${hasRoute ? " shopper-floor-map--routed" : ""}${
+              highlightShelfId ? " shopper-floor-map--guided" : ""
+            }`}
+            viewBox={viewBox}
+            preserveAspectRatio="none"
+            style={overlay ? { "--way-dash-period": `${overlay.wayDash.period}` } : undefined}
+            aria-hidden
+          >
+            {hasRoute ? (
+              <RouteLayer
+                route={overlay.path}
+                routeD={pathFromPoints(overlay.path)}
+                wayW={overlay.wayW}
+                wayDash={overlay.wayDash}
+              />
             ) : null}
-          </g>
-        );
-      })}
-
-      {routeD ? (
-        <>
-          <path d={routeD} className="shopper-floor-map-way-shadow" />
-          <path d={routeD} className="shopper-floor-map-way" />
-        </>
+            <EntryMarker entryPoint={overlay.entry} fontSize={overlay.labelFs} />
+            {overlay.badgeAt && overlay.shelfOutline?.length >= 3 ? (
+              <ShelfTargetMarker
+                outline={overlay.shelfOutline}
+                badge={overlay.badgeAt}
+                markR={overlay.markR}
+              />
+            ) : null}
+          </svg>
+        </div>
       ) : null}
-
-      {tiles.map((tile) => {
-        const active = highlightShelfId && tile.id === highlightShelfId;
-        const dimmed = Boolean(highlightShelfId && !active);
-        return (
-          <g key={tile.id} className={`shopper-floor-map-tile${active ? " is-target" : ""}${dimmed ? " is-dimmed" : ""}`}>
-            <rect
-              x={tile.aabb.x}
-              y={tile.aabb.y}
-              width={tile.aabb.w}
-              height={tile.aabb.h}
-              className={`shopper-floor-map-shelf${active ? " is-target" : ""}${dimmed ? " is-dimmed" : ""}`}
-              rx={0.04}
-            />
-            {tile.label && tile.label !== "—" ? (
-              <text
-                x={tile.at.x}
-                y={tile.at.y}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize={labelFs}
-                fontWeight={800}
-                className={`shopper-floor-map-shelf-label mono${active ? " is-target" : ""}${dimmed ? " is-dimmed" : ""}`}
-              >
-                {tile.label}
-              </text>
-            ) : null}
-          </g>
-        );
-      })}
-
-      <EntryMarker entryPoint={entryPoint} route={route} label={entryLabel} fontSize={labelFs} />
-
-      {pinAt && highlightShelfId ? <MapPin x={pinAt.x} y={pinAt.y} scale={pinScale} /> : null}
-    </svg>
+    </div>
   );
 }

@@ -32,7 +32,9 @@ npm run dev:api
 npm run dev:web
 ```
 
-Demo login: `*@shelfpilot.local` / `password` (pick role on login).
+Demo login (fresh DB): **SuperAdmin** only — `superadmin@shelfpilot.local` / `changeme` (override with `SUPERADMIN_EMAIL` / `SUPERADMIN_PASSWORD`). Sign in with email and password; your role comes from the account. SuperAdmin creates tenant **Admin** users; each Admin adds designers, approvers, viewers, and customer kiosk users.
+
+In test mode the API also seeds demo users (`designer@shelfpilot.local`, etc.) with password `password`.
 
 ## Local Docker
 

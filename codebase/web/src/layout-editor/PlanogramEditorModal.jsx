@@ -76,6 +76,7 @@ export default function PlanogramEditorModal({
   onDeleteShelf,
   onViewIn3d,
   onOpenAisleShelfView,
+  initialLevelIndex = 0,
 }) {
   const [faceId, setFaceId] = useState(initialFaceId);
   const [addCell, setAddCell] = useState(null);
@@ -87,7 +88,7 @@ export default function PlanogramEditorModal({
   const [preview, setPreview] = useState(null);
   const [dragDivider, setDragDivider] = useState(null);
   const [draftSegmentsByLevel, setDraftSegmentsByLevel] = useState({});
-  const [selectedLevelIndex, setSelectedLevelIndex] = useState(0);
+  const [selectedLevelIndex, setSelectedLevelIndex] = useState(initialLevelIndex ?? 0);
   const [dismissedFillWarning, setDismissedFillWarning] = useState(false);
   const [cellDropTarget, setCellDropTarget] = useState(null);
   const [sidebarTab, setSidebarTab] = useState("missing");
@@ -96,6 +97,11 @@ export default function PlanogramEditorModal({
   const addPanelRef = useRef(null);
   const draftRef = useRef(null);
   const dragLevelRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedLevelIndex(Number.isFinite(initialLevelIndex) ? initialLevelIndex : 0);
+  }, [open, shelfId, initialLevelIndex]);
 
   const gondolaCtx = useMemo(
     () => (open && shelfId && layout ? resolveGondolaForEditor(layout, shelfId) : null),
@@ -583,7 +589,9 @@ export default function PlanogramEditorModal({
               <button
                 type="button"
                 className="btn-primary planogram-view-3d-btn"
-                onClick={() => onViewIn3d(activePhysicalId, merchandisingFaceId(shelfRaw, faceId))}
+                onClick={() =>
+                  onViewIn3d(activePhysicalId, merchandisingFaceId(shelfRaw, faceId), selectedLevelIndex)
+                }
               >
                 View in 3D
               </button>

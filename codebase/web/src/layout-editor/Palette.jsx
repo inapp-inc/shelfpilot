@@ -275,7 +275,7 @@ export default function Palette({
       </div>
 
       <div className="palette-nav-group">
-        <div className="section-label palette-section-label">Entry</div>
+        <div className="section-label palette-section-label">Entrance</div>
         <button
           type="button"
           className={`tool-btn tool-btn--nav ${paletteTool === "entry" ? "active" : ""}`}
@@ -292,8 +292,8 @@ export default function Palette({
             {"\uD83D\uDEAA"}
           </span>
           <span className="tool-btn-copy">
-            <span className="tool-btn-title">Entry point</span>
-            {!compact ? <span className="tool-btn-sub">Store entrance</span> : null}
+            <span className="tool-btn-title">Set entrance</span>
+            {!compact ? <span className="tool-btn-sub">One door per store</span> : null}
           </span>
         </button>
       </div>

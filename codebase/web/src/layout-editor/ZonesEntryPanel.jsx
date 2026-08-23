@@ -1,6 +1,6 @@
 import { ZONE_TYPES } from "../referenceCatalog.js";
 
-/** Manage special zones (hot/offer/special) and store entry points. */
+/** Manage special zones and the single store entrance. */
 export default function ZonesEntryPanel({
   layout,
   editDisabled,
@@ -12,7 +12,7 @@ export default function ZonesEntryPanel({
   onSelectZone,
 }) {
   const zones = layout?.zones || [];
-  const entries = layout?.entryPoints || [];
+  const entrance = layout?.entryPoints?.[0] || null;
 
   return (
     <div className="zones-panel">
@@ -110,54 +110,55 @@ export default function ZonesEntryPanel({
       )}
 
       <div className="section-label" style={{ marginTop: 16 }}>
-        Entry points
+        Store entrance
       </div>
-      {entries.length === 0 ? (
+      {!entrance ? (
         <div className="muted" style={{ fontSize: 12 }}>
-          Use the <strong>Entry</strong> tool, then click near an edge to mark the store entrance.
+          Use <strong>Set entrance</strong> in the palette, then click on the floor plan. Placing again moves the
+          entrance — each store has one door for shopper routing.
         </div>
       ) : (
-        entries.map((ep) => {
-          const selected = selection?.kind === "entryPoint" && selection.id === ep.id;
-          return (
-            <div key={ep.id} className={`zone-card ${selected ? "selected" : ""}`}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className="entry-glyph" style={{ color: "#0369a1" }}>⇥</span>
-                <input
-                  className="zone-input"
-                  disabled={editDisabled}
-                  value={ep.name || ""}
-                  placeholder="Entrance"
-                  onChange={(e) => onPatchEntry(ep.id, { name: e.target.value })}
-                  style={{ flex: 1 }}
-                />
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-                <label className="zone-dim-label">Width</label>
-                <input
-                  className="zone-input mono"
-                  type="number"
-                  min="0.5"
-                  step="0.1"
-                  disabled={editDisabled}
-                  value={ep.widthMeters}
-                  onChange={(e) => onPatchEntry(ep.id, { widthMeters: Number(e.target.value) })}
-                  style={{ width: 70 }}
-                />
-                {!editDisabled ? (
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ padding: "4px 8px", fontSize: 11, marginLeft: "auto", color: "#A30A2A" }}
-                    onClick={() => onDeleteEntry(ep.id)}
-                  >
-                    Delete
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          );
-        })
+        <div className={`zone-card${selection?.kind === "entryPoint" && selection.id === entrance.id ? " selected" : ""}`}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="entry-glyph" style={{ color: "#0369a1" }}>
+              ⇥
+            </span>
+            <input
+              className="zone-input"
+              disabled={editDisabled}
+              value={entrance.name || ""}
+              placeholder="Entrance"
+              onChange={(e) => onPatchEntry(entrance.id, { name: e.target.value })}
+              style={{ flex: 1 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+            <label className="zone-dim-label">Width</label>
+            <input
+              className="zone-input mono"
+              type="number"
+              min="0.5"
+              step="0.1"
+              disabled={editDisabled}
+              value={entrance.widthMeters}
+              onChange={(e) => onPatchEntry(entrance.id, { widthMeters: Number(e.target.value) })}
+              style={{ width: 70 }}
+            />
+            {!editDisabled ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "4px 8px", fontSize: 11, marginLeft: "auto", color: "#A30A2A" }}
+                onClick={() => onDeleteEntry(entrance.id)}
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          <p className="muted" style={{ fontSize: 11, margin: "8px 0 0" }}>
+            Use <strong>Set entrance</strong> on the canvas to move this marker.
+          </p>
+        </div>
       )}
     </div>
   );

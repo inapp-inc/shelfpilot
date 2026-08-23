@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { resetDbForTests } from "../src/store/sqlite.js";
 import app from "../src/index.js";
 import { acceptArrangement } from "./helpers.js";
+import { login } from "./helpers/auth.js";
 
 async function withServer(fn) {
   resetDbForTests();
@@ -18,17 +19,6 @@ async function withServer(fn) {
   } finally {
     server.close();
   }
-}
-
-async function login(port, role = "Designer", email = "designer@shelfpilot.local") {
-  const res = await fetch(`http://127.0.0.1:${port}/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password: "password", role }),
-  });
-  const body = await res.json();
-  assert.equal(res.status, 200, JSON.stringify(body));
-  return body.token;
 }
 
 test("GET /health returns ok", async () => {

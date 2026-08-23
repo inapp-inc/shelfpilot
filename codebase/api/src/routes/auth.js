@@ -6,19 +6,18 @@ import { authRequired } from "../middleware/auth.js";
 export const authRouter = Router();
 
 authRouter.post("/auth/login", (req, res) => {
-  const { email, password, role } = req.body || {};
+  const { email, password, role: requestedRole } = req.body || {};
   const user = repo.findUserByEmail(email);
   if (!user || user.password !== password) {
     return res.status(401).json({ error: "invalid_credentials" });
   }
-  const allowed = ["Designer", "Approver", "Viewer", "Admin", "Customer"];
-  if (!allowed.includes(role)) {
-    return res.status(400).json({ error: "invalid_role" });
+  if (requestedRole && requestedRole !== user.role) {
+    return res.status(403).json({ error: "role_mismatch" });
   }
-  const sessionUser = { ...publicUser(user), role };
+  const sessionUser = publicUser(user);
   const token = randomUUID();
-  repo.createSession(token, user.id, role);
-  audit(email, "login", `role=${role}`);
+  repo.createSession(token, user.id, user.role);
+  audit(email, "login", `role=${user.role}`);
   res.json({ token, user: sessionUser });
 });
 

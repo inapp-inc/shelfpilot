@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { normalizeLayout } from "../services/layoutNormalize.js";
+import { invalidateCatalogCache } from "../services/productCatalogCache.js";
+import { normalizeProductAttributes, productFromRow } from "../services/productStorage.js";
 
 let dbInstance = null;
 
@@ -119,7 +121,33 @@ function migrate(db) {
   } catch {
     /* already present */
   }
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN kiosk_all_approved INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    /* already present */
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_store_access (
+      user_id TEXT NOT NULL,
+      layout_id TEXT NOT NULL,
+      PRIMARY KEY (user_id, layout_id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (layout_id) REFERENCES layouts(id)
+    );
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_user_store_access_user ON user_store_access(user_id);");
+  const backfillAccess = db.prepare(
+    "INSERT OR IGNORE INTO user_store_access (user_id, layout_id) VALUES (?, ?)"
+  );
+  for (const row of db
+    .prepare("SELECT id, shopper_layout_id FROM users WHERE shopper_layout_id IS NOT NULL")
+    .all()) {
+    backfillAccess.run(row.id, row.shopper_layout_id);
+  }
   upsertMissingConfigs(db);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_categories_vertical ON categories(vertical);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);");
 }
 
 function upsertMissingConfigs(db) {
@@ -263,13 +291,31 @@ const DEFAULT_CONFIGS = {
   },
 };
 
-const DEFAULT_USERS = [
+const DEMO_USERS = [
   { id: "u-admin", email: "admin@shelfpilot.local", name: "Alex Admin", role: "Admin", password: "password" },
   { id: "u-designer", email: "designer@shelfpilot.local", name: "Dana Designer", role: "Designer", password: "password" },
   { id: "u-approver", email: "approver@shelfpilot.local", name: "Pat Approver", role: "Approver", password: "password" },
   { id: "u-viewer", email: "viewer@shelfpilot.local", name: "Vera Viewer", role: "Viewer", password: "password" },
   { id: "u-customer", email: "customer@shelfpilot.local", name: "Casey Customer", role: "Customer", password: "password" },
 ];
+
+function bootstrapSuperAdmin() {
+  return {
+    id: "u-superadmin",
+    email: process.env.SUPERADMIN_EMAIL || "superadmin@shelfpilot.local",
+    name: process.env.SUPERADMIN_NAME || "Platform Super Admin",
+    role: "SuperAdmin",
+    password: process.env.SUPERADMIN_PASSWORD || "changeme",
+  };
+}
+
+function defaultSeedUsers() {
+  const users = [bootstrapSuperAdmin()];
+  if (process.env.NODE_ENV === "test") {
+    users.push(...DEMO_USERS);
+  }
+  return users;
+}
 
 const DEFAULT_CATEGORIES = [
   { id: "otc", name: "OTC Medicines", vertical: "pharmacy", parentId: null, color: "#0ea5e9", storageType: "ambient" },
@@ -323,7 +369,7 @@ function seedIfEmpty(db) {
 
   db.exec("BEGIN");
   try {
-    for (const u of DEFAULT_USERS) {
+    for (const u of defaultSeedUsers()) {
       insertUser.run(u.id, u.email, u.name, u.role, u.password);
     }
     for (const [vertical, payload] of Object.entries(DEFAULT_CONFIGS)) {
@@ -347,12 +393,16 @@ export function now() {
 }
 
 export function publicUser(u) {
+  const storeAccess =
+    u.role === "Customer" && u.id ? repo.listStoreAccess(u.id) : undefined;
   return {
     id: u.id,
     email: u.email,
     name: u.name,
     role: u.role,
     shopperLayoutId: u.shopper_layout_id || u.shopperLayoutId || null,
+    storeAccess,
+    kioskAllApproved: Boolean(u.kiosk_all_approved || u.kioskAllApproved),
   };
 }
 
@@ -398,6 +448,8 @@ function layoutToPayload(layout) {
     contentRevision: n.contentRevision ?? 0,
     submittedRevision: n.submittedRevision ?? null,
     lastSubmittedAt: n.lastSubmittedAt ?? null,
+    portfolioKpis: n.portfolioKpis ?? null,
+    namingConvention: n.namingConvention ?? null,
   });
 }
 
@@ -411,14 +463,18 @@ export const repo = {
   listUsers() {
     return getDb()
       .prepare(
-        "SELECT id, email, name, role, shopper_layout_id AS shopperLayoutId FROM users"
+        `SELECT id, email, name, role, shopper_layout_id AS shopperLayoutId,
+                kiosk_all_approved AS kioskAllApproved
+         FROM users`
       )
-      .all();
+      .all()
+      .map((u) => ({ ...u, kioskAllApproved: Boolean(u.kioskAllApproved) }));
   },
   createUser(user) {
     getDb()
       .prepare(
-        "INSERT INTO users (id, email, name, role, password, shopper_layout_id) VALUES (?, ?, ?, ?, ?, ?)"
+        `INSERT INTO users (id, email, name, role, password, shopper_layout_id, kiosk_all_approved)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         user.id,
@@ -426,9 +482,15 @@ export const repo = {
         user.name,
         user.role,
         user.password,
-        user.shopperLayoutId || null
+        user.shopperLayoutId || null,
+        user.kioskAllApproved ? 1 : 0
       );
-    return publicUser(user);
+    if (user.role === "Customer" && Array.isArray(user.storeAccess)) {
+      this.setStoreAccess(user.id, user.storeAccess, user.shopperLayoutId || null);
+    } else if (user.role === "Customer" && user.shopperLayoutId) {
+      this.setStoreAccess(user.id, [user.shopperLayoutId], user.shopperLayoutId);
+    }
+    return publicUser({ ...user, kiosk_all_approved: user.kioskAllApproved ? 1 : 0 });
   },
   updateUser(id, patch) {
     const existing = this.findUserById(id);
@@ -440,12 +502,52 @@ export const repo = {
       patch.shopperLayoutId !== undefined
         ? patch.shopperLayoutId || null
         : existing.shopper_layout_id || null;
+    const kioskAllApproved =
+      patch.kioskAllApproved !== undefined
+        ? patch.kioskAllApproved
+        : Boolean(existing.kiosk_all_approved);
     getDb()
       .prepare(
-        "UPDATE users SET name = ?, role = ?, password = ?, shopper_layout_id = ? WHERE id = ?"
+        `UPDATE users SET name = ?, role = ?, password = ?, shopper_layout_id = ?, kiosk_all_approved = ?
+         WHERE id = ?`
       )
-      .run(name, role, password, shopperLayoutId, id);
-    return publicUser({ ...existing, name, role, shopper_layout_id: shopperLayoutId });
+      .run(name, role, password, shopperLayoutId, kioskAllApproved ? 1 : 0, id);
+    if (patch.storeAccess !== undefined && role === "Customer") {
+      this.setStoreAccess(id, patch.storeAccess, shopperLayoutId);
+    } else if (patch.shopperLayoutId !== undefined && role === "Customer" && shopperLayoutId) {
+      const current = this.listStoreAccess(id);
+      if (!current.length) this.setStoreAccess(id, [shopperLayoutId], shopperLayoutId);
+    }
+    return publicUser({
+      ...existing,
+      name,
+      role,
+      shopper_layout_id: shopperLayoutId,
+      kiosk_all_approved: kioskAllApproved ? 1 : 0,
+    });
+  },
+  listStoreAccess(userId) {
+    return getDb()
+      .prepare("SELECT layout_id FROM user_store_access WHERE user_id = ? ORDER BY layout_id")
+      .all(userId)
+      .map((r) => r.layout_id);
+  },
+  setStoreAccess(userId, layoutIds = [], defaultLayoutId = null) {
+    const db = getDb();
+    const ids = [...new Set((layoutIds || []).filter(Boolean))];
+    if (defaultLayoutId && !ids.includes(defaultLayoutId)) ids.unshift(defaultLayoutId);
+    db.prepare("DELETE FROM user_store_access WHERE user_id = ?").run(userId);
+    const insert = db.prepare(
+      "INSERT INTO user_store_access (user_id, layout_id) VALUES (?, ?)"
+    );
+    for (const layoutId of ids) insert.run(userId, layoutId);
+    return ids;
+  },
+  deleteUser(id) {
+    const db = getDb();
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+    const info = db.prepare("DELETE FROM users WHERE id = ?").run(id);
+    return info.changes > 0;
   },
   /**
    * AUTH_SESSION_TTL — seconds. 0 or unset = long-lived demo sessions (no expiry).
@@ -578,6 +680,16 @@ export const repo = {
       .prepare("SELECT id, name, vertical, parent_id AS parentId, color, storage_type AS storageType FROM categories")
       .all();
   },
+  getCategory(id) {
+    if (!id) return null;
+    return (
+      getDb()
+        .prepare(
+          "SELECT id, name, vertical, parent_id AS parentId, color, storage_type AS storageType FROM categories WHERE id = ?"
+        )
+        .get(id) || null
+    );
+  },
   insertCategory(cat) {
     getDb()
       .prepare(
@@ -596,10 +708,32 @@ export const repo = {
       : getDb()
           .prepare("SELECT id, name, sku, category_id AS categoryId, attributes FROM products")
           .all();
-    return rows.map((p) => {
-      const attributes = JSON.parse(p.attributes || "{}");
-      return { ...p, attributes, imageUrl: attributes.imageUrl || null };
-    });
+    return rows.map((row) => productFromRow(row));
+  },
+  getProduct(id) {
+    if (!id) return null;
+    const row = getDb()
+      .prepare("SELECT id, name, sku, category_id AS categoryId, attributes FROM products WHERE id = ?")
+      .get(id);
+    return productFromRow(row);
+  },
+  getProductByName(name) {
+    if (!name) return null;
+    const row = getDb()
+      .prepare("SELECT id, name, sku, category_id AS categoryId, attributes FROM products WHERE name = ? LIMIT 1")
+      .get(String(name));
+    return productFromRow(row);
+  },
+  listProductsInCategories(categoryIds) {
+    const ids = [...new Set((categoryIds || []).filter(Boolean))];
+    if (!ids.length) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = getDb()
+      .prepare(
+        `SELECT id, name, sku, category_id AS categoryId, attributes FROM products WHERE category_id IN (${placeholders})`
+      )
+      .all(...ids);
+    return rows.map((row) => productFromRow(row));
   },
   insertProduct(product) {
     getDb()
@@ -627,6 +761,47 @@ export const repo = {
          FROM layouts ORDER BY updated_at DESC`;
     return status ? getDb().prepare(sql).all(status) : getDb().prepare(sql).all();
   },
+  /** Portfolio analytics — metadata + stored KPIs only (no shelves/planograms). */
+  listLayoutPortfolioSummaries(status) {
+    const sql = status
+      ? `SELECT id, name, vertical, status, width_meters AS widthMeters, depth_meters AS depthMeters,
+                updated_at AS updatedAt, json_extract(payload, '$.portfolioKpis') AS portfolioKpisJson
+         FROM layouts WHERE status = ? ORDER BY updated_at DESC`
+      : `SELECT id, name, vertical, status, width_meters AS widthMeters, depth_meters AS depthMeters,
+                updated_at AS updatedAt, json_extract(payload, '$.portfolioKpis') AS portfolioKpisJson
+         FROM layouts ORDER BY updated_at DESC`;
+    const rows = status ? getDb().prepare(sql).all(status) : getDb().prepare(sql).all();
+    return rows.map((row) => {
+      let portfolioKpis = null;
+      if (row.portfolioKpisJson) {
+        try {
+          portfolioKpis = JSON.parse(row.portfolioKpisJson);
+        } catch {
+          portfolioKpis = null;
+        }
+      }
+      return {
+        id: row.id,
+        name: row.name,
+        vertical: row.vertical,
+        status: row.status,
+        widthMeters: row.widthMeters,
+        depthMeters: row.depthMeters,
+        updatedAt: row.updatedAt,
+        portfolioKpis,
+      };
+    });
+  },
+  patchPortfolioKpis(layoutId, portfolioKpis) {
+    const row = getDb().prepare("SELECT payload FROM layouts WHERE id = ?").get(layoutId);
+    if (!row) return false;
+    const payload = JSON.parse(row.payload);
+    payload.portfolioKpis = portfolioKpis;
+    getDb()
+      .prepare("UPDATE layouts SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(payload), layoutId);
+    return true;
+  },
   clearCatalog() {
     const db = getDb();
     db.exec("BEGIN");
@@ -634,12 +809,13 @@ export const repo = {
       db.exec("DELETE FROM products");
       db.exec("DELETE FROM categories");
       db.exec("COMMIT");
+      invalidateCatalogCache();
     } catch (err) {
       db.exec("ROLLBACK");
       throw err;
     }
   },
-  upsertCategory(cat) {
+  upsertCategory(cat, options = {}) {
     getDb()
       .prepare(
         `INSERT INTO categories (id, name, vertical, parent_id, color, storage_type) VALUES (?, ?, ?, ?, ?, ?)
@@ -651,9 +827,20 @@ export const repo = {
            storage_type=excluded.storage_type`
       )
       .run(cat.id, cat.name, cat.vertical, cat.parentId || null, cat.color || "#A30A2A", cat.storageType || "ambient");
+    if (!options.skipCacheInvalidate) invalidateCatalogCache();
     return cat;
   },
-  upsertProduct(product) {
+  upsertProduct(product, options = {}) {
+    let attrs;
+    try {
+      attrs = normalizeProductAttributes(product.attributes || {}, {
+        productName: product.name,
+        productId: product.id,
+      });
+    } catch (err) {
+      if (err.code === "image_data_url_too_large") throw err;
+      attrs = product.attributes || {};
+    }
     getDb()
       .prepare(
         `INSERT INTO products (id, name, sku, category_id, attributes) VALUES (?, ?, ?, ?, ?)
@@ -668,12 +855,14 @@ export const repo = {
         product.name,
         product.sku || "",
         product.categoryId,
-        JSON.stringify(product.attributes || {})
+        JSON.stringify(attrs)
       );
-    return product;
+    if (!options.skipCacheInvalidate) invalidateCatalogCache();
+    return { ...product, attributes: attrs, imageUrl: attrs.imageUrl || null };
   },
   deleteProduct(id) {
     const info = getDb().prepare("DELETE FROM products WHERE id = ?").run(id);
+    if (info.changes > 0) invalidateCatalogCache();
     return info.changes > 0;
   },
   deleteCategory(id) {
@@ -683,6 +872,7 @@ export const repo = {
     const productCount = db.prepare("SELECT COUNT(*) AS n FROM products WHERE category_id = ?").get(id)?.n ?? 0;
     if (productCount > 0) return { ok: false, error: "category_has_products" };
     const info = db.prepare("DELETE FROM categories WHERE id = ?").run(id);
+    if (info.changes > 0) invalidateCatalogCache();
     return info.changes > 0 ? { ok: true } : { ok: false, error: "not_found" };
   },
   getLayout(id) {

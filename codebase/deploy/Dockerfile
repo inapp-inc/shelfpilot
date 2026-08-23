@@ -12,6 +12,8 @@ RUN cd api && \
     else npm install --omit=dev --no-audit --no-fund; fi
 
 COPY api/src ./api/src
+# Shared ESM modules imported by api/src/services/* (productBuffer, warehouseLayout, …).
+COPY shared ./shared
 COPY web/dist ./web/dist
 
 ENV NODE_ENV=production

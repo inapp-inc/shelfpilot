@@ -1,6 +1,11 @@
 import { normalizeLayout } from "./layoutNormalize.js";
 import { repo } from "../store/sqlite.js";
 import { listCategoriesForLayout } from "./categoryTree.js";
+import {
+  customerMayAccessLayout as storeAccessMayBrowse,
+  permittedStoresFor,
+  resolveDefaultStoreId,
+} from "./storeAccess.js";
 
 const DEFAULT = {
   enabled: false,
@@ -8,6 +13,23 @@ const DEFAULT = {
   displayName: "",
   entryPointId: null,
 };
+
+/** @deprecated use permittedStoresFor(user) */
+export function listKioskBrowsableStores(assignedLayoutId = null) {
+  if (assignedLayoutId) {
+    const layout = repo.getLayout(assignedLayoutId);
+    return layout ? [{ id: layout.id, name: layout.name, vertical: layout.vertical, status: layout.status }] : [];
+  }
+  return permittedStoresFor({ role: "Customer", id: null, shopperLayoutId: null });
+}
+
+export function customerMayBrowseLayout(layoutId, userOrAssigned = null) {
+  if (userOrAssigned && typeof userOrAssigned === "object" && userOrAssigned.role) {
+    return storeAccessMayBrowse(userOrAssigned, layoutId);
+  }
+  const assigned = userOrAssigned || null;
+  return listKioskBrowsableStores(assigned).some((s) => s.id === layoutId);
+}
 
 export function getShopperExperience() {
   return repo.getShopperExperience?.() || { ...DEFAULT };
@@ -21,8 +43,29 @@ export function putShopperExperience(patch) {
     displayName: patch.displayName !== undefined ? String(patch.displayName || "") : prev.displayName,
     entryPointId: patch.entryPointId !== undefined ? patch.entryPointId || null : prev.entryPointId,
   };
+  if (next.enabled && !next.layoutId) {
+    const err = new Error("shopper_layout_required");
+    err.code = "shopper_layout_required";
+    err.status = 400;
+    throw err;
+  }
   repo.putShopperExperience(next);
   return next;
+}
+
+/** Load layout for admin UI even when kiosk is still disabled. */
+export function getShopperLayoutForAdmin(layoutId = null) {
+  const exp = getShopperExperience();
+  const id = layoutId || exp.layoutId;
+  if (!id) return { exp, layout: null, entry: null };
+  const raw = repo.getLayout(id);
+  if (!raw) return { exp, layout: null, entry: null };
+  const layout = normalizeLayout(raw);
+  const entry =
+    (layout.entryPoints || []).find((e) => e.id === exp.entryPointId) ||
+    layout.entryPoints?.[0] ||
+    null;
+  return { exp, layout, entry };
 }
 
 export function resolveShopperLayout(requestedLayoutId = null) {
@@ -40,6 +83,56 @@ export function resolveShopperLayout(requestedLayoutId = null) {
     layout.entryPoints?.[0] ||
     null;
   return { exp, layout, entry };
+}
+
+function entryPointPayload(entry) {
+  if (!entry) return null;
+  const label = entry.name || entry.label || "Entrance";
+  return {
+    id: entry.id,
+    name: label,
+    label,
+    x: entry.x,
+    y: entry.y,
+  };
+}
+
+/** Customer kiosk — enabled when at least one permitted store exists. */
+export function resolveCustomerKiosk(user, requestedLayoutId = null) {
+  const stores = permittedStoresFor(user);
+  if (!stores.length) {
+    return {
+      enabled: false,
+      reason: user?.shopperLayoutId ? "no_layout" : "no_layout",
+      stores: [],
+    };
+  }
+  const layoutId = resolveDefaultStoreId(user, requestedLayoutId);
+  if (requestedLayoutId && !layoutId) {
+    return { enabled: false, reason: "forbidden", stores };
+  }
+  if (!layoutId || !storeAccessMayBrowse(user, layoutId)) {
+    return { enabled: false, reason: "forbidden", stores };
+  }
+  const raw = repo.getLayout(layoutId);
+  if (!raw) return { enabled: false, reason: "no_layout", stores };
+  const layout = normalizeLayout(raw);
+  const exp = getShopperExperience();
+  const adminForLayout = exp.enabled && exp.layoutId === layoutId;
+  const entry =
+    (adminForLayout && exp.entryPointId
+      ? (layout.entryPoints || []).find((e) => e.id === exp.entryPointId)
+      : null) ||
+    layout.entryPoints?.[0] ||
+    null;
+  return {
+    enabled: true,
+    displayName: adminForLayout && exp.displayName ? exp.displayName : layout.name,
+    layoutId: layout.id,
+    defaultStoreId: user?.shopperLayoutId || layout.id,
+    stores,
+    entryPoint: entryPointPayload(entry),
+  };
 }
 
 /** Public layout payload — geometry + labels only. */
@@ -93,9 +186,10 @@ export function publicLayoutPayload(layout) {
       })),
     entryPoints: (layout.entryPoints || []).map((e) => ({
       id: e.id,
+      name: e.name || e.label || "Entrance",
+      label: e.name || e.label || "Entrance",
       x: e.x,
       y: e.y,
-      label: e.label,
     })),
   };
 }
@@ -116,3 +210,5 @@ export function publicProductsForLayout(layout) {
       imageUrl: p.imageUrl || p.attributes?.imageUrl || null,
     }));
 }
+
+export { permittedStoresFor, resolveDefaultStoreId };

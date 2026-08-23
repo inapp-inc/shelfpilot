@@ -123,8 +123,11 @@ export function validateUser(user) {
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = "Enter a valid email address.";
   if (!trim(user?.password)) errors.password = "Password is required.";
   else if (user.password.length < 6) errors.password = "Password must be at least 6 characters.";
-  if (user?.role === "Customer" && !trim(user?.shopperLayoutId)) {
-    errors.shopperLayoutId = "Select a layout for this customer.";
+  if (user?.role === "Customer" && !(user?.storeAccess?.length)) {
+    errors.storeAccess = "Select at least one store for this customer.";
+  }
+  if (user?.role === "Customer" && user?.storeAccess?.length > 1 && !trim(user?.shopperLayoutId)) {
+    errors.shopperLayoutId = "Choose which store opens first for this customer.";
   }
   return { ok: Object.keys(errors).length === 0, errors };
 }
