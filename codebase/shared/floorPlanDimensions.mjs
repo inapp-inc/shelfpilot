@@ -31,6 +31,14 @@ export function parseStoreDimensionsFromText(text) {
 
   const patterns = [
     {
+      re: /(?:total\s+external\s+dimensions|external\s+dimensions|store\s+footprint)[^0-9]{0,48}(\d+(?:\.\d+)?)\s*m\s*[x×]\s*(\d+(?:\.\d+)?)\s*m/gi,
+      pick: (m) => ({
+        a: Number(m[1]),
+        b: Number(m[2]),
+        matched: m[0],
+      }),
+    },
+    {
       re: /(\d+(?:\.\d+)?)\s*(?:m|metres?|meters?)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(m|metres?|meters?|mm|cm|ft)?/gi,
       pick: (m) => ({
         a: toMeters(m[1], m[3]),

@@ -183,6 +183,10 @@ export function normalizeLayout(layout) {
   layout.floorPlan = normalizeFloorPlan(layout.floorPlan);
   layout.arrangementAcceptedAt = layout.arrangementAcceptedAt || null;
   layout.arrangementAcceptedBy = layout.arrangementAcceptedBy || null;
+  // importSource.fixtureImport — scale, runCount, warnings, parserVersion (plan-fixture-import)
+  if (layout.importSource && typeof layout.importSource === "object") {
+    layout.importSource = { ...layout.importSource };
+  }
   return layout;
 }
 

@@ -27,7 +27,8 @@
 - **Product brief:** root `project.md` · `openspec/project.md`
 - **BRD addendum (Aug 2026 demo):** `Docs/BRD_ADDENDUM_DEMO_AUG_2026.md`
 - **FSD:** `Docs/FSD_ShelfPilot.md` (v1.2 points at addendum)
-- **Floor plan import:** `Docs/FLOOR_PLAN_IMPORT_SPEC.md`
+- **Floor plan import:** `Docs/FLOOR_PLAN_IMPORT_SPEC.md` (store envelope + packer)
+- **Fixture plan import (Sep 2026):** `Docs/PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md` — parse shelf/aisle labels from PDF text (or `.txt` extract), create layout via `PLAN_FIXTURE_IMPORT_ENABLED=true`; analyze via `POST /layouts/analyze-plan`
 - **OpenAPI:** `Docs/openapi.yaml`
 - **UI SoT:** `ui/ShelfPilot.dc.html`
 - **Local architecture:** `Docs/ARCHITECTURE_LOCAL.md`
@@ -65,7 +66,7 @@ npm run smoke:demo
 
 **Playwright E2E (Phases A–C smoke):** [`Docs/automation/`](./automation/README.md) · `cd codebase && npm run test:e2e:smoke` (app must be up at http://localhost:8080) — auth, layouts, Smart Generate, arrangement & volume accept, 3D, dashboard, Viewer RBAC, catalog CRUD, admin tabs, approval.
 
-**Evidence (2026-07-15):** **25 API tests passed; OpenAPI 36 operations verified**; seed + smoke scripts ship in `codebase/`.
+**Evidence (2026-07-15, updated 2026-09-11):** **264 API tests passing** (`npm test -w api` — was 25 at initial handover, and the `npm test` script itself only ran 34 of 52 test files until 2026-09-11; see `Docs/need-works.md` QA-01); OpenAPI 38 core operations verified via `npm run openapi:check` (28 additional live routes are not yet documented — see `Docs/need-works.md` SEED-01 for the exact list); seed + smoke scripts ship in `codebase/`.
 
 **Manual:** Run `npm run seed:demo` once for full category/product samples · Login → Catalog: add category/product via drawers · Layout editor: Merchandising tab → map category → place by level · draw polygon → generate → 2D/3D.
 

@@ -23,6 +23,8 @@ import {
   physicalShelfForMerchandisingFace,
   planogramForSceneFace,
   planogramForMerchandisingFace,
+  planogramForScene3dFromPhysicalLayout,
+  planogramForScene3dUnit,
   shelfCanvasFaceLabel,
   storageFaceIdForScene3D,
   shelvesForScene3D,
@@ -43,6 +45,7 @@ import { colorForShelfFace } from "./categoryColors.js";
 import {
   layoutBounds,
   levelClearanceMeters,
+  levelsForScene3dUnit,
   productFacingSize,
   shelf3dLocalBox,
   shelfFaceWorldFocus,
@@ -291,7 +294,7 @@ function createBoxMaterial(inst, matCache, disposables, texture = null) {
     roughness: 0.55,
     metalness: 0.02,
     transparent: Boolean(inst.dimmed),
-    opacity: inst.dimmed ? 0.28 : 1,
+    opacity: inst.dimmed ? 0.52 : 1,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
@@ -370,6 +373,38 @@ function applyProductImagesToJobs(expandedJobs, { matCache, disposables }) {
   }
 }
 
+/**
+ * Which product materials on a shelf face should glow (emphasized), dim, or count as "the
+ * focused row" (shelfFocus) in 3D shelf-focus mode.
+ *
+ * Only the physically clicked shelf+face (isTarget && faceId === activeFace) may glow.
+ * `isHighlighted` also covers the FR-VIEW-02 context neighbours drawn alongside the target, and
+ * resolveActiveFaceForHighlight() falls back to the same activeFace letter for every unit in that
+ * group — so gating the glow on isHighlighted painted the highlight color over every neighbour's
+ * products too, not just the selected shelf's (reported as "red on nearby shelves as well").
+ * Neighbours still render at normal brightness (dimmed: false) — only fully out-of-group shelves,
+ * and the target's own off-camera face, are dimmed.
+ */
+export function productHighlightFlags({
+  isTarget,
+  isHighlighted,
+  faceId,
+  activeFace,
+  shelfFocusMode,
+  highlightProductId = null,
+  productId = null,
+}) {
+  const isFocusFace = Boolean(isTarget && faceId === activeFace);
+  return {
+    isFocusFace,
+    emphasized: Boolean(
+      isFocusFace || (highlightProductId && productId === highlightProductId)
+    ),
+    dimmed: Boolean(shelfFocusMode && ((isTarget && !isFocusFace) || !isHighlighted)),
+    shelfFocus: Boolean(shelfFocusMode && isFocusFace),
+  };
+}
+
 function collectShelfFacingInstances({
   f,
   layout,
@@ -377,7 +412,6 @@ function collectShelfFacingInstances({
   focusPhysicalShelfId,
   focusPhysicalShelfIds,
   shelfFocusMode,
-  focusLevelIndex = null,
   isHighlighted,
   isTarget,
   d,
@@ -404,8 +438,27 @@ function collectShelfFacingInstances({
     rotY: faceShopperRotY(dual, face.id),
   }));
 
+  if (shelfFocusMode && isTarget && focusPhysicalShelfId) {
+    for (const face of facePlanograms) {
+      if (face.id !== activeFace) continue;
+      const rows = planogramForScene3dFromPhysicalLayout(layout, focusPhysicalShelfId, activeFace);
+      if (rows.length) face.planogram = rows;
+    }
+  }
+
+  // Spend the per-shelf facing budget on the face the shopper is looking at first. Without this
+  // the fixed [A, B] order let a well-stocked face A exhaust the cap on a double-sided gondola,
+  // so focusing a *back* shelf drew its decks completely empty while its products sat on the
+  // hidden side. See the per-face cap in expandFacingInstances, which keeps both halves stocked.
+  const orderedFaces =
+    facePlanograms.length > 1
+      ? [...facePlanograms].sort(
+          (a, b) => (a.id === activeFace ? 0 : 1) - (b.id === activeFace ? 0 : 1)
+        )
+      : facePlanograms;
+
   // Always draw products. In single-shelf focus, non-focused shelves stay visible but quieter.
-  for (const face of facePlanograms) {
+  for (const face of orderedFaces) {
     if (!face.planogram?.length) continue;
     const physRaw = physicalShelfForMerchandisingFace(f, layout, face.id);
     const physShelf = normalizeShelfUI(physRaw);
@@ -415,14 +468,6 @@ function collectShelfFacingInstances({
 
     for (const placement of face.planogram) {
       if (!placement?.productId) continue;
-      if (
-        shelfFocusMode &&
-        focusLevelIndex != null &&
-        isHighlighted &&
-        Number(placement.levelIndex) !== Number(focusLevelIndex)
-      ) {
-        continue;
-      }
       const lv =
         levels.find((l) => Number(l.levelIndex) === Number(placement.levelIndex)) ||
         levels[Number(placement.levelIndex)] ||
@@ -446,8 +491,19 @@ function collectShelfFacingInstances({
       const clearance = levelClearanceMeters(lv, levels, h);
       const depthSign = face.id === "B" ? -1 : 1;
 
+      const flags = productHighlightFlags({
+        isTarget,
+        isHighlighted,
+        faceId: face.id,
+        activeFace,
+        shelfFocusMode,
+        highlightProductId,
+        productId: placement.productId,
+      });
+
       instances.push({
         placement,
+        faceId: face.id,
         productId: placement.productId,
         boardY,
         slotW,
@@ -463,14 +519,9 @@ function collectShelfFacingInstances({
         merchW: segW,
         segmentOffset: Number(seg?.offsetMeters) || 0,
         overviewProductBoost,
-        emphasized: Boolean(
-          (isHighlighted && face.id === activeFace) ||
-            (highlightProductId && placement.productId === highlightProductId)
-        ),
-        dimmed: Boolean(
-          shelfFocusMode && !(isHighlighted && face.id === activeFace)
-        ),
-        shelfFocus: Boolean(shelfFocusMode && isHighlighted && face.id === activeFace),
+        emphasized: flags.emphasized,
+        dimmed: flags.dimmed,
+        shelfFocus: flags.shelfFocus,
         shelfDepth: faceDepth,
       });
     }
@@ -480,9 +531,20 @@ function collectShelfFacingInstances({
 
 function expandFacingInstances(rawInstances, productLookup, maxDim, facingBudgetRef, { overview = false, shelfCap = Infinity } = {}) {
   const out = [];
-  let shelfCount = 0;
+  // Split the unit's allowance evenly between its faces instead of letting one counter serve
+  // both. A single shared counter was spent entirely by whichever face was iterated first, so
+  // the other half of a double-sided gondola got no product meshes at all — its decks rendered
+  // empty, which read as "the shelf I picked has nothing on it" whenever the pick was the back
+  // half. Dividing rather than duplicating the cap keeps the total mesh count per unit the same.
+  const faceIds = new Set(rawInstances.map((raw) => raw.faceId ?? "A"));
+  const capPerFace = shelfCap === Infinity ? Infinity : Math.max(1, Math.floor(shelfCap / faceIds.size));
+  const perFace = new Map();
+  const faceCount = (raw) => perFace.get(raw.faceId ?? "A") || 0;
+  const bumpFace = (raw) => perFace.set(raw.faceId ?? "A", faceCount(raw) + 1);
   for (const raw of rawInstances) {
-    if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
+    if (facingBudgetRef.count >= MAX_FACINGS) break;
+    // Only this face is full — the unit's other face still has its own allowance.
+    if (faceCount(raw) >= capPerFace) continue;
     const product = resolveCatalogProduct(productLookup, raw.productId);
     const imageUrl = productImageUrl(product);
     let facing = productFacingSize(product, raw.slotW, raw.clearance, raw.shelfDepth);
@@ -512,7 +574,7 @@ function expandFacingInstances(rawInstances, productLookup, maxDim, facingBudget
     for (let stackIdx = 0; stackIdx < stackLimit; stackIdx += 1) {
       for (let depthIdx = 0; depthIdx < depthLimit; depthIdx += 1) {
         for (let faceIdx = 0; faceIdx < raw.facingsCount; faceIdx += 1) {
-          if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
+          if (facingBudgetRef.count >= MAX_FACINGS || faceCount(raw) >= capPerFace) break;
           let unitW = unitWFit;
           let unitH = facing.h;
           let unitD = Math.max(0.04, unitDFit);
@@ -522,7 +584,14 @@ function expandFacingInstances(rawInstances, productLookup, maxDim, facingBudget
             unitH = boosted.h;
             unitD = Math.min(boosted.d, unitDFit);
           }
-          const xLocal = (raw.segmentOffset || 0) + raw.slotW * (faceIdx + 0.5);
+          const xLocal = facingCenterX(
+            raw.placement,
+            raw.physShelf,
+            raw.storageFaceId,
+            faceIdx,
+            raw.facingsCount,
+            raw.merchW
+          );
           const z = raw.faceZ + raw.depthSign * (unitD * 0.5 + depthIdx * (unitD + 0.01));
           const vis = facingVisualSize(unitW, unitH, unitD, raw.overviewProductBoost);
           out.push({
@@ -541,11 +610,11 @@ function expandFacingInstances(rawInstances, productLookup, maxDim, facingBudget
             shelfFocus: raw.shelfFocus,
           });
           facingBudgetRef.count += 1;
-          shelfCount += 1;
+          bumpFace(raw);
         }
-        if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
+        if (facingBudgetRef.count >= MAX_FACINGS || faceCount(raw) >= capPerFace) break;
       }
-      if (facingBudgetRef.count >= MAX_FACINGS || shelfCount >= shelfCap) break;
+      if (facingBudgetRef.count >= MAX_FACINGS || faceCount(raw) >= capPerFace) break;
     }
   }
   return out;
@@ -672,30 +741,12 @@ function planogramRowsForFace(
   activeFace,
   isTarget
 ) {
-  if (shelfFocusMode && !isHighlighted) {
-    return [];
-  }
-  if (shelfFocusMode && isHighlighted) {
-    let physId = focusPhysicalShelfId;
-    if (f.pairDisplay && f.pairShelfIds) {
-      physId = faceId === "B" ? f.pairShelfIds.back : f.pairShelfIds.front;
-      if (physId !== focusPhysicalShelfId) {
-        return focusPhysicalShelfIds?.includes(physId)
-          ? planogramFromPhysicalShelf(layout, physId, "A")
-          : [];
-      }
-      if (faceId !== activeFace) return [];
-      return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, "A");
+  if (shelfFocusMode) {
+    if (isTarget && focusPhysicalShelfId && faceId === activeFace) {
+      const direct = planogramForScene3dFromPhysicalLayout(layout, focusPhysicalShelfId, activeFace);
+      if (direct.length) return direct;
     }
-    physId = f.id;
-    const allowed =
-      focusPhysicalShelfIds?.length > 0
-        ? focusPhysicalShelfIds.includes(physId)
-        : physId === focusPhysicalShelfId;
-    if (!allowed) return [];
-    if (!isTarget) return planogramFromPhysicalShelf(layout, physId, "A");
-    if (faceId !== activeFace) return [];
-    return planogramFromPhysicalShelf(layout, focusPhysicalShelfId, faceId);
+    return planogramForScene3dUnit(f, layout, faceId);
   }
   const id = faceId === "B" ? "B" : "A";
   const norm = normalizeShelfUI(f);
@@ -816,7 +867,12 @@ function unitTouchesPhysicalShelf(f, highlightShelfId) {
   );
 }
 
-function shelfFocusCamera(highlight, faceId = "A", { peek = false } = {}) {
+/** Direction the camera approaches a face from, in world XZ (see the note in shelfFocusCamera). */
+function focusApproachAngle(rot = 0, dual = false, faceId = "A") {
+  return -rot + Math.PI + (dual && faceId === "B" ? Math.PI : 0);
+}
+
+function shelfFocusCamera(highlight, faceId = "A", { peek = false, alongOffset = 0 } = {}) {
   const cx = highlight.x;
   const cz = highlight.z;
   const h = highlight.h || 2;
@@ -824,29 +880,61 @@ function shelfFocusCamera(highlight, faceId = "A", { peek = false } = {}) {
   const dual = Boolean(highlight.dual);
   const merchW = highlight.merchW || highlight.w || 1.2;
   const span = Math.max(merchW, highlight.d || 0.6);
-  const dist = peek
+  let dist = peek
     ? Math.max(2.4, Math.min(4.2, span * 2.1))
     : Math.max(1.35, Math.min(2.6, span * 1.35));
-  const eyeY = peek ? Math.max(2.2, h * 0.85) : Math.max(1.05, h * 0.5);
+  const eyeY = peek ? Math.max(1.55, h * 0.78) : Math.max(1.05, h * 0.5);
   const lookY = peek ? Math.max(0.75, h * 0.42) : Math.max(0.62, h * 0.46);
-  const faceFlip = dual && faceId === "B" ? Math.PI : 0;
-  const approach = rot + Math.PI + faceFlip;
+  // Stay inside the aisle this face opens onto. Backing straight out further than the aisle is
+  // wide puts the eye past the gondola row opposite, so the shot frames that row's back panel.
+  // Width to fit extra shelves comes from `alongOffset` (standing along the aisle) instead.
+  const aisleWidth = Number(highlight.aisleWidth) || 0;
+  if (aisleWidth > 0) {
+    dist = Math.min(dist, Math.max(0.9, aisleWidth * 0.88));
+  }
+  // NB: the shelf group is rendered with `group.rotation.y = -rot`, so local +Z (face B's
+  // outward direction) maps to world (-sin rot, cos rot). The approach angle must therefore
+  // negate rot — using +rot only coincides at rot 0°/180° and puts the camera on the wrong
+  // side of every shelf in a vertical (90°/270°) run.
+  const approach = focusApproachAngle(rot, dual, faceId);
   const lookOffset = dual ? (span * 0.08) * (faceId === "B" ? 1 : -1) : 0;
   const lookX = cx + Math.sin(approach + Math.PI / 2) * lookOffset;
   const lookZ = cz + Math.cos(approach + Math.PI / 2) * lookOffset;
+  // Step sideways along the aisle rather than backwards out of it, so neighbouring shelves come
+  // into frame without putting the opposite gondola row between the eye and the selected face.
+  const alongAngle = approach + Math.PI / 2;
+  const camX = lookX + Math.sin(approach) * dist + Math.sin(alongAngle) * alongOffset;
+  const camZ = lookZ + Math.cos(approach) * dist + Math.cos(alongAngle) * alongOffset;
   return {
-    camX: lookX + Math.sin(approach) * dist,
+    camX,
     camY: eyeY,
-    camZ: lookZ + Math.cos(approach) * dist,
+    camZ,
     lookX,
     lookY,
     lookZ,
     minDist: 0.75,
-    maxDist: Math.max(dist * 2.4, 8),
+    maxDist: Math.max(Math.hypot(dist, alongOffset) * 2.4, 8),
   };
 }
 
-function shelfGroupFocusCamera(focusPoints, faceId = "A") {
+/** Signed sideways step (metres along the aisle) for the group shot.
+ *
+ *  The neighbours are context: we want them *behind* the selected shelf from the eye's point of
+ *  view, not between it and the camera. So we project the anchor→group-centroid vector onto the
+ *  aisle axis and step the opposite way. Always stepping the same direction (the old behaviour)
+ *  walked off the end of the run whenever the clicked shelf sat at that end, leaving the target
+ *  pinned to the frame edge staring at empty floor. When the anchor is mid-run the projection is
+ *  ~0 and either direction is equivalent, so we default to +along.
+ */
+function groupAlongOffset(anchor, cx, cz, alongSpan, faceId = "A") {
+  const alongAngle = focusApproachAngle(anchor.rot || 0, Boolean(anchor.dual), faceId) + Math.PI / 2;
+  const toCentre =
+    (cx - (anchor.x ?? cx)) * Math.sin(alongAngle) + (cz - (anchor.z ?? cz)) * Math.cos(alongAngle);
+  const sign = toCentre > 0.05 ? -1 : 1;
+  return sign * Math.max(1.2, alongSpan * 0.55);
+}
+
+function shelfGroupFocusCamera(focusPoints, faceId = "A", target = null) {
   if (!focusPoints?.length) return null;
   if (focusPoints.length === 1) {
     return shelfFocusCamera(focusPoints[0], faceId, { peek: true });
@@ -861,22 +949,42 @@ function shelfGroupFocusCamera(focusPoints, faceId = "A") {
     ...focusPoints.map((p) => Math.max(p.merchW || p.w || 1.2, p.d || 0.6))
   );
   const h = Math.max(...focusPoints.map((p) => p.h || 2));
+  // Orient the group shot from the focused shelf itself, not from whichever unit happened to
+  // be first. `dual` in particular must be the real value: shelfFocusCamera only applies the
+  // 180° face-B flip when dual is true, so hardcoding false parked the camera on the face-A
+  // side of a gondola — focusing a *back* (face B) shelf then showed its blank back panel,
+  // with that shelf's products correctly drawn on the far side, out of view.
+  const anchor = target || focusPoints[0];
+  const anchorDual = Boolean(anchor.dual ?? focusPoints.some((p) => p.dual));
   const view = shelfFocusCamera(
-    { x: cx, z: cz, h, merchW: merchSpan, d: merchSpan * 0.65, rot: focusPoints[0].rot || 0, dual: false },
+    {
+      // Look at the shelf that was actually clicked, not the group's centroid — the neighbours
+      // are context, so centring between them pushed the target off to the side and small.
+      x: anchor.x ?? cx,
+      z: anchor.z ?? cz,
+      h,
+      merchW: merchSpan,
+      d: merchSpan * 0.65,
+      rot: anchor.rot || 0,
+      dual: anchorDual,
+      aisleWidth: anchor.aisleWidth || 0,
+      unitDepth: anchor.unitDepth || 0,
+    },
     faceId,
-    { peek: true }
+    // Stand along the aisle far enough that the neighbouring shelves in the focus group fall
+    // inside the frame; the eye stays in the aisle, so nothing blocks the selected face.
+    // Step to the side *opposite* the neighbours so they recede behind the selected shelf
+    // rather than standing between it and the camera (or walking off the end of the run).
+    {
+      peek: true,
+      alongOffset: groupAlongOffset({ ...anchor, dual: anchorDual }, cx, cz, alongSpan, faceId),
+    }
   );
   return {
     ...view,
     minDist: Math.max(1.6, merchSpan * 0.5),
     maxDist: Math.max(14, merchSpan * 3.4),
   };
-}
-
-function levelsForFocusRender(levels, { shelfFocusMode, focusLevelIndex, isHighlighted, isTarget }) {
-  if (!shelfFocusMode || focusLevelIndex == null || !isHighlighted || !isTarget) return levels;
-  const idx = Number(focusLevelIndex);
-  return levels.filter((lv) => Number(lv.levelIndex) === idx);
 }
 
 function focusPhysicalIdForUnit(unit, focusIds, focusTargetId) {
@@ -899,7 +1007,6 @@ export default function Scene3D({
   highlightAisleId = null,
   focusPhysicalShelfId = null,
   focusPhysicalShelfIds = null,
-  focusLevelIndex = null,
   shelfFocusMode = false,
   shelfGroupFocus = SHELF_3D_GROUP_FOCUS,
   focusRequest = 0,
@@ -1090,7 +1197,11 @@ export default function Scene3D({
         transparent: dimOthers || (isHighlighted && dual) || neighborOpacity < 1,
         opacity: dimOthers ? 0.28 : neighborOpacity < 1 ? neighborOpacity : isHighlighted && dual ? 0.55 : 1,
       });
-      if (isHighlighted && !dual) {
+      // Glow color marks the shelf the shopper actually clicked, not the whole context group —
+      // resolveActiveFaceForHighlight falls back to the same activeFace letter for every unit in
+      // the focus group, so gating this on isHighlighted lit up all 3 shelves in the same color
+      // instead of just the selected one.
+      if (isTarget && !dual) {
         frameMat.emissive = new THREE.Color(faceHighlightColor(activeFace));
         frameMat.emissiveIntensity = shelfFocusMode ? 0.28 : 0.2;
       }
@@ -1116,14 +1227,23 @@ export default function Scene3D({
           physicalShelfId: unitFocusId,
           faceId: isTarget ? activeFace : "A",
         });
+        // The camera must stay in the aisle this face opens onto. Without this it backs off
+        // further than the aisle is wide, ends up past the gondola row opposite, and frames
+        // that row's back panel instead of the shelf you picked.
+        const aisleWidth =
+          Number((layout?.aisles || []).find((a) => a.id === focusPt.aisleId)?.widthMeters) || 0;
         if (isTarget) {
           highlightCenter = { x: focusPt.x, z: focusPt.z };
-          highlightFocus = { ...focusPt, dual, activeFace };
+          highlightFocus = { ...focusPt, dual, activeFace, aisleWidth, unitDepth: d };
         }
         if (useGroupFocus) {
-          groupFocusPoints.push({ ...focusPt, dual, activeFace, merchW, w, d, h, rot });
+          groupFocusPoints.push({ ...focusPt, dual, activeFace, aisleWidth, unitDepth: d, merchW, w, d, h, rot });
         }
       }
+
+      const levelFaceId = isTarget ? activeFace : "A";
+      const { levels, hasConfiguredLevels } = levelsForScene3dUnit(f, layout, levelFaceId);
+      const renderLevels = levels;
 
       if (dual) {
         const spineGeo = new THREE.BoxGeometry(w * 0.96, h * 0.92, Math.max(0.06, d * 0.1));
@@ -1133,47 +1253,42 @@ export default function Scene3D({
         group.add(spine);
         disposables.push(spineGeo, spineMat);
 
-        const halfBoardGeo = new THREE.BoxGeometry(w * 0.94, 0.03, faceDepth * 0.88);
-        const boardAMat = new THREE.MeshStandardMaterial({
-          color: faceColorA ? new THREE.Color(faceColorA) : 0xf3f0eb,
-          roughness: 0.85,
-        });
-        if (isHighlighted && activeFace === "A") {
-          boardAMat.emissive = new THREE.Color(SCENE_COLORS.faceA);
-          boardAMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
-        } else if (isHighlighted && activeFace !== "A") {
-          boardAMat.transparent = true;
-          boardAMat.opacity = 0.18;
-        }
-        const boardA = new THREE.Mesh(halfBoardGeo, boardAMat);
-        boardA.position.set(w / 2, 0.35, faceDepth * 0.5);
-        group.add(boardA);
-        disposables.push(halfBoardGeo, boardAMat);
+        // Legacy placeholder boards at y≈0.35 — only when no configured levels (avoids an extra “5th” tier).
+        if (!hasConfiguredLevels) {
+          const halfBoardGeo = new THREE.BoxGeometry(w * 0.94, 0.03, faceDepth * 0.88);
+          const boardAMat = new THREE.MeshStandardMaterial({
+            color: faceColorA ? new THREE.Color(faceColorA) : 0xf3f0eb,
+            roughness: 0.85,
+          });
+          if (isTarget && activeFace === "A") {
+            boardAMat.emissive = new THREE.Color(SCENE_COLORS.faceA);
+            boardAMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
+          } else if (isTarget && activeFace !== "A") {
+            boardAMat.transparent = true;
+            boardAMat.opacity = 0.18;
+          }
+          const boardA = new THREE.Mesh(halfBoardGeo, boardAMat);
+          boardA.position.set(w / 2, 0.35, faceDepth * 0.5);
+          group.add(boardA);
+          disposables.push(halfBoardGeo, boardAMat);
 
-        const boardBMat = new THREE.MeshStandardMaterial({
-          color: faceColorB ? new THREE.Color(faceColorB) : 0xe8eef5,
-          roughness: 0.85,
-        });
-        if (isHighlighted && activeFace === "B") {
-          boardBMat.emissive = new THREE.Color(SCENE_COLORS.faceB);
-          boardBMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
-        } else if (isHighlighted && activeFace !== "B") {
-          boardBMat.transparent = true;
-          boardBMat.opacity = 0.18;
+          const boardBMat = new THREE.MeshStandardMaterial({
+            color: faceColorB ? new THREE.Color(faceColorB) : 0xe8eef5,
+            roughness: 0.85,
+          });
+          if (isTarget && activeFace === "B") {
+            boardBMat.emissive = new THREE.Color(SCENE_COLORS.faceB);
+            boardBMat.emissiveIntensity = shelfFocusMode ? 0.55 : 0.4;
+          } else if (isTarget && activeFace !== "B") {
+            boardBMat.transparent = true;
+            boardBMat.opacity = 0.18;
+          }
+          const boardB = new THREE.Mesh(halfBoardGeo.clone(), boardBMat);
+          boardB.position.set(w / 2, 0.35, d - faceDepth * 0.5);
+          group.add(boardB);
+          disposables.push(boardB.geometry, boardB.material);
         }
-        const boardB = new THREE.Mesh(halfBoardGeo.clone(), boardBMat);
-        boardB.position.set(w / 2, 0.35, d - faceDepth * 0.5);
-        group.add(boardB);
-        disposables.push(boardB.geometry, boardB.material);
       }
-
-      const levels = shelfLevels(f);
-      const renderLevels = levelsForFocusRender(levels, {
-        shelfFocusMode,
-        focusLevelIndex,
-        isHighlighted,
-        isTarget,
-      });
       // Boards stay near-white so products read clearly; the category hue is a wash.
       const boardTint = (hex, fallback) =>
         hex ? new THREE.Color(fallback).lerp(new THREE.Color(hex), 0.22) : new THREE.Color(fallback);
@@ -1199,10 +1314,10 @@ export default function Scene3D({
             color: boardTint(faceColorA, 0xf3f0eb),
             roughness: 0.85,
           });
-          if (isHighlighted && activeFace === "A") {
+          if (isTarget && activeFace === "A") {
             shelfAMat.emissive = new THREE.Color(SCENE_COLORS.faceA);
             shelfAMat.emissiveIntensity = 0.22;
-          } else if (isHighlighted && activeFace !== "A") {
+          } else if (isTarget && activeFace !== "A") {
             shelfAMat.transparent = true;
             shelfAMat.opacity = 0.4;
           }
@@ -1216,10 +1331,10 @@ export default function Scene3D({
             color: boardTint(faceColorB, 0xe8eef5),
             roughness: 0.85,
           });
-          if (isHighlighted && activeFace === "B") {
+          if (isTarget && activeFace === "B") {
             shelfBMat.emissive = new THREE.Color(SCENE_COLORS.faceB);
             shelfBMat.emissiveIntensity = 0.22;
-          } else if (isHighlighted && activeFace !== "B") {
+          } else if (isTarget && activeFace !== "B") {
             shelfBMat.transparent = true;
             shelfBMat.opacity = 0.4;
           }
@@ -1239,7 +1354,6 @@ export default function Scene3D({
         focusPhysicalShelfId: focusTargetId,
         focusPhysicalShelfIds: useFocusSet ? focusIds : null,
         shelfFocusMode,
-        focusLevelIndex,
         isHighlighted,
         isTarget,
         d,
@@ -1355,7 +1469,7 @@ export default function Scene3D({
       const focusFace = highlightFocus?.activeFace || (highlightFaceId === "B" ? "B" : "A");
       const groupCamera =
         useGroupFocus && groupFocusPoints.length > 0
-          ? shelfGroupFocusCamera(groupFocusPoints, focusFace)
+          ? shelfGroupFocusCamera(groupFocusPoints, focusFace, highlightFocus)
           : null;
       const focus =
         groupCamera ||
@@ -1389,7 +1503,11 @@ export default function Scene3D({
       controls.maxPolarAngle = storeOverview ? Math.PI / 2.5 : Math.PI / 2.02;
       controls.minPolarAngle = storeOverview ? 0.02 : 0.04;
       controls.minDistance = focus?.minDist ?? overview.minDist ?? 0.28;
-      controls.maxDistance = focus?.maxDist ?? overview.maxDist ?? Math.max(maxDim * 5.5, 40);
+      const storeMaxDist = overview.maxDist ?? Math.max(maxDim * 5.5, 40);
+      controls.maxDistance =
+        shelfFocusMode && !walkMode
+          ? Math.max(focus?.maxDist ?? 0, storeMaxDist)
+          : focus?.maxDist ?? storeMaxDist;
       controls.enablePan = true;
       controls.screenSpacePanning = false;
       controls.mouseButtons = {
@@ -1402,16 +1520,9 @@ export default function Scene3D({
         TWO: THREE.TOUCH.DOLLY_PAN,
       };
 
-      const orbitAnchor =
-        shelfFocusMode && highlightFocus
-          ? {
-              x: highlightFocus.x,
-              z: highlightFocus.z,
-              h: highlightFocus.h,
-              merchW: highlightFocus.merchW,
-              d: highlightFocus.d,
-            }
-          : null;
+      // Planogram shelf view starts on the picked shelf but pan/zoom is store-wide so other
+      // merchandised fixtures stay reachable (orbit anchor would lock the target to one bay).
+      const orbitAnchor = null;
 
       if (focus) {
         applyView(focus);
@@ -1743,7 +1854,6 @@ export default function Scene3D({
     highlightAisleId,
     focusPhysicalShelfId,
     focusPhysicalShelfIds,
-    focusLevelIndex,
     shelfFocusMode,
     shelfGroupFocus,
     contentRevision,
@@ -1810,7 +1920,7 @@ export default function Scene3D({
             {shopperMode
               ? "Drag to look around · scroll to zoom · green path follows aisle corridors"
               : shelfFocusMode
-                ? "Single-shelf focus — other shelves stay visible but dimmed. Click 3D again for full store view."
+                ? "Selected shelf is highlighted — zoom out or pan to see products on other shelves (dimmer)."
                 : "Products sit on their shelf boards · scroll to zoom · 0 = fit store"}
           </p>
         </div>

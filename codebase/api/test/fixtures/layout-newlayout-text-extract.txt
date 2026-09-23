@@ -1,0 +1,20 @@
+STORE LAYOUT PLAN (Simplified for Layout Planning)
+Total External Dimensions 24.00 m x 14.00 m
+Total Store Area 336.00 m2
+Chiller Freezer
+Shelf Gondola
+Checkout Area
+Non-Retail Area Room
+1 x CHILLER 3.1 m x 0.9 m
+5 x FREEZER 3.1 m x 0.9 m
+Four gondola islands
+Spacing between gondola islands 2.4 m
+Aisle to freezers 1.5 m
+Aisle to ambient shelves 2.4 m
+Ambient Shelves 12.0 m x 1.0 m
+Checkout Area 6.0 m x 2.8 m
+Electrical Room 2.5 m x 1.8 m
+Bakery 1.6 m x 4.0 m
+Lobby 2.8 m x 2.0 m
+Entrance west
+Scale 0 to 10 m

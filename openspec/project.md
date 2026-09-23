@@ -13,11 +13,11 @@ Living BRD addendum: `Docs/BRD_ADDENDUM_DEMO_AUG_2026.md`.
 ## Modules
 
 - M1 Store Setup, Canvas & Aisle Management (incl. floor-plan import)
-- M2 Shelving, Storage & Auto-Calculation (Smart Generate; temporary storage planned)
+- M2 Shelving, Storage & Auto-Calculation (Smart Generate; temporary storage delivered)
 - M3 Product & Category Management
-- M4 Category Mapping & 2D/3D Visualization (aisle-centric selection; Customer wayfinding planned)
+- M4 Category Mapping & 2D/3D Visualization (aisle-centric selection; Customer wayfinding delivered, core)
 - M5 Analytics & Reporting
-- M6 Administration & Configuration (Customer role + Warehouse type planned)
+- M6 Administration & Configuration (Customer role + Warehouse type delivered)
 
 ## Recent delivery (Jul–Aug 2026)
 
@@ -27,13 +27,16 @@ Living BRD addendum: `Docs/BRD_ADDENDUM_DEMO_AUG_2026.md`.
 - 3D product images (planogram View in 3D)
 - Aisle-centric labels; arrangement summary gate
 
-## Next (demo feedback)
+## Aug 2026 demo requirements — delivered
 
-- Aisle-based selection/highlight (not gondola pair co-select) in 2D & 3D
-- 1 cm product buffer in facing math
-- Temporary storage fixtures
-- Customer role + full-screen find + flat aisle shelf viewer
-- Warehouse store type (design first)
+All shipped; see root `project.md` §6 and `Docs/PENDING.md` §10 for status, §2 for open follow-ups
+(Customer 2D map UX polish, Warehouse shared-vs-separate editor UX decision).
+
+- Aisle-based selection/highlight (not gondola pair co-select) in 2D & 3D — **Done**
+- 1 cm product buffer in facing math — **Done**
+- Temporary storage fixtures — **Done**
+- Customer role + full-screen find + flat aisle shelf viewer — **Done** (core)
+- Warehouse store type — **Done** (core; editor-UX design question open)
 
 ## Delivery constraints
 

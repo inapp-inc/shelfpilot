@@ -162,7 +162,7 @@ export default function PlanogramEditorModal({
       setAddCell(null);
       setEditPlacement(null);
       setDraftSegmentsByLevel({});
-      setSelectedLevelIndex(0);
+      setSelectedLevelIndex(Number.isFinite(initialLevelIndex) ? initialLevelIndex : 0);
       setDismissedFillWarning(false);
       setSidebarTab("missing");
     }
@@ -590,7 +590,11 @@ export default function PlanogramEditorModal({
                 type="button"
                 className="btn-primary planogram-view-3d-btn"
                 onClick={() =>
-                  onViewIn3d(activePhysicalId, merchandisingFaceId(shelfRaw, faceId), selectedLevelIndex)
+                  // Pass no level: "View in 3D" should show the whole shelf. selectedLevelIndex
+                  // just tracks which row the Positions/Split toolbar is acting on (it defaults
+                  // to 0), and 3D treats a level as a hard filter — hiding every other level's
+                  // boards and products, so a fully merchandised shelf looked empty.
+                  onViewIn3d(activePhysicalId, merchandisingFaceId(shelfRaw, faceId), null)
                 }
               >
                 View in 3D

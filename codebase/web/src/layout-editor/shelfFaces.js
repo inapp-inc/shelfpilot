@@ -176,6 +176,27 @@ export function planogramForSceneFace(sceneShelf, merchandisingFaceId = "A", lay
   return [];
 }
 
+/** Planogram rows from a physical shelf id — same record the planogram API mutates. */
+export function planogramForScene3dFromPhysicalLayout(layout, physicalShelfId, merchandisingFaceId = "A") {
+  if (!layout || !physicalShelfId) return [];
+  const shelves = layout.shelves?.length ? layout.shelves : layout.fixtures || [];
+  const phys = shelves.find((s) => s.id === physicalShelfId);
+  if (!phys) return [];
+  return planogramForSceneFace(phys, merchandisingFaceId, layout);
+}
+
+/** Planogram rows for one 3D shelf unit + merchandising face (always prefers live layout.shelves). */
+export function planogramForScene3dUnit(sceneUnit, layout, merchandisingFaceId = "A") {
+  const merch = merchandisingFaceId === "B" ? "B" : "A";
+  const phys = physicalShelfForMerchandisingFace(sceneUnit, layout, merch);
+  if (phys) {
+    const storage = storageFaceIdForScene3D(sceneUnit, merch);
+    const fromPhys = planogramRowsOnPhysicalShelf(phys, storage);
+    if (fromPhys.length) return fromPhys;
+  }
+  return planogramForSceneFace(sceneUnit, merch, layout);
+}
+
 /** Planogram rows for one merchandising face — prefers face data, falls back to legacy shelf.planogram. */
 export function planogramForMerchandisingFace(shelf, faceId = "A", layout = null) {
   const id = faceId === "B" ? "B" : "A";
@@ -410,7 +431,15 @@ export function groupPlanogramByLevel(planogram, levels) {
   }));
 }
 
-/** Shelves to render in 3D — one entry per gondola unit. */
+/** Shelves to render in 3D — one entry per gondola unit.
+ *
+ * NOTE: front/back of a pair share ONE floor footprint (see oppositeShelfOrigin /
+ * syncPairedShelfFootprints on the API side) — the back's origin is the diagonally opposite
+ * corner with rotation+180, so their *anchor* coordinates are a footprint-diagonal apart
+ * (e.g. 2.01m for a 1.8x0.9 gondola) even though they occupy the same floor space. Do not
+ * mistake that anchor distance for a physical gap and try to render them as separate units;
+ * that draws two interpenetrating boxes on one footprint.
+ */
 export function shelvesForScene3D(shelves) {
   const list = shelves || [];
   const seen = new Set();

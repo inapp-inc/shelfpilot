@@ -32,9 +32,16 @@ export default function ShopperLayoutPlanMap({
   layout,
   entryPoint,
   route = [],
+  routes = null,
   highlightShelfId = null,
   highlightMapUnitId = null,
   highlightAisleId = null,
+  highlightShelfIds = null,
+  shelfMarkers = null,
+  focusedPlacementId = null,
+  focusedRoutePlacementId = null,
+  mapEntryPoint = null,
+  onSpotSelect = null,
   categories = [],
   className = "",
 }) {
@@ -65,6 +72,19 @@ export default function ShopperLayoutPlanMap({
     [layout, entryPoint, categories]
   );
 
+  const highlightIdSet = useMemo(() => {
+    const ids = highlightShelfIds?.length ? highlightShelfIds : highlightShelfId ? [highlightShelfId] : [];
+    return new Set(ids.filter(Boolean));
+  }, [highlightShelfIds, highlightShelfId]);
+
+  const markerList = useMemo(() => {
+    if (shelfMarkers?.length) return shelfMarkers;
+    if (highlightShelfId) {
+      return [{ shelfId: highlightShelfId, isPrimary: true, spotIndex: null, footprint: null }];
+    }
+    return [];
+  }, [shelfMarkers, highlightShelfId]);
+
   const target = useMemo(() => {
     if (!scene || !highlightShelfId) return null;
     return findPlanFixture(scene.fixtures, highlightShelfId, highlightMapUnitId);
@@ -72,15 +92,80 @@ export default function ShopperLayoutPlanMap({
 
   const overlay = useMemo(() => {
     if (!scene) return null;
-    const walked = routePolylineForMap(layout, route, highlightShelfId);
-    const aisleNear = walked.length >= 2 ? walked[walked.length - 2] : walked[walked.length - 1];
-    const footprint = highlightShelfId ? shelfMarkerFootprint(layout, highlightShelfId, aisleNear) : null;
-    const pinWorld = footprint?.badge || null;
 
-    const hasRoute = walked.length >= 2;
+    const routeSpecs =
+      routes?.length > 0
+        ? routes
+        : route?.length >= 2
+          ? [{ route, shelfId: highlightShelfId, placementId: highlightShelfId || "route-0" }]
+          : [];
+
+    const routeFocusId =
+      focusedRoutePlacementId ?? focusedPlacementId ?? routeSpecs[0]?.placementId ?? null;
+
+    const routeLayers = routeSpecs
+      .map((spec, idx) => {
+        const walked = routePolylineForMap(
+          layout,
+          spec.route || [],
+          spec.shelfId,
+          mapEntryPoint ?? entryPoint
+        );
+        const placementId = spec.placementId || spec.shelfId || `route-${idx}`;
+        const isPrimaryRoute = idx === 0;
+        const isFocusedRoute = routeFocusId ? placementId === routeFocusId : isPrimaryRoute;
+        return {
+          key: placementId,
+          placementId,
+          walked,
+          shelfId: spec.shelfId,
+          isPrimaryRoute,
+          isFocusedRoute,
+        };
+      })
+      .filter((layer) => layer.walked.length >= 2);
+
+    const primaryLayer = routeLayers[0];
+    const walked = primaryLayer?.walked || [];
+    const aisleNear = walked.length >= 2 ? walked[walked.length - 2] : walked[walked.length - 1];
+
+    const resolvedMarkers = markerList
+      .map((m) => {
+        if (m.footprint) return m;
+        const footprint = shelfMarkerFootprint(
+          layout,
+          m.shelfId,
+          m.isPrimary ? aisleNear : null
+        );
+        return footprint ? { ...m, footprint } : null;
+      })
+      .filter(Boolean);
+    const primaryMarker = resolvedMarkers.find((m) => m.isPrimary) || resolvedMarkers[0];
+    const footprint = primaryMarker?.footprint || null;
+    const pinWorld = footprint?.badge || null;
+    const multiSpot = resolvedMarkers.length > 1 || routeLayers.length > 1;
+
+    const hasRoute = routeLayers.length > 0;
     const hostAspect = hostBox?.width && hostBox?.height ? hostBox.width / hostBox.height : 16 / 9;
     let vb = scene.vb;
-    if (hasRoute) {
+    const framePoints = [];
+    for (const layer of routeLayers) framePoints.push(...layer.walked);
+    if (entryPoint) framePoints.push({ x: entryPoint.x, y: entryPoint.y });
+    for (const m of resolvedMarkers) {
+      if (m.footprint?.badge) framePoints.push(m.footprint.badge);
+      if (m.footprint?.corners) framePoints.push(...m.footprint.corners);
+    }
+
+    if (multiSpot) {
+      const full = expandViewBoxForPoints(scene.vb, framePoints, 1.05);
+      vb = fitViewBoxToAspect(full, hostAspect);
+      vb = clampViewBoxToBounds(vb, {
+        minX: scene.vb.minX,
+        minY: scene.vb.minY,
+        maxX: scene.vb.minX + scene.vb.width,
+        maxY: scene.vb.minY + scene.vb.height,
+      });
+    } else if (hasRoute && walked.length >= 2) {
       const full = expandViewBoxForPoints(scene.vb, walked, 0.9);
       vb = focusViewBoxForGuidedRoute(full, walked, entryPoint, pinWorld, target?.fixture?.aabb || null, {
         storeShare: guidedStoreShare(scene.span),
@@ -97,35 +182,73 @@ export default function ShopperLayoutPlanMap({
     }
 
     const renderWidthPx = Math.max(hostBox?.width || 560, 560);
-    const strokeOpts = { minPx: hasRoute ? 5 : 4, renderWidthPx };
+    const strokeOpts = { minPx: hasRoute ? 9 : 4, renderWidthPx };
     const wayW = routeStrokeUserUnits(vb.width, strokeOpts);
     const wayDash = routeDashPatternUserUnits(vb.width, {
-      dashPx: 11,
-      gapPx: 8,
+      dashPx: 10,
+      gapPx: 7,
       renderWidthPx,
     });
     const labelFs = Math.max(0.22, scene.span * 0.028);
     const markR = Math.max(0.06, scene.span * 0.008);
 
+    const mapTargets = resolvedMarkers
+      .map((m) => {
+        const isFocusedSpot = routeFocusId && m.placementId === routeFocusId;
+        const variant =
+          multiSpot && routeFocusId
+            ? isFocusedSpot
+              ? "primary"
+              : "secondary"
+            : m.isPrimary
+              ? "primary"
+              : "secondary";
+        return {
+          key: m.placementId || m.shelfId,
+          placementId: m.placementId || null,
+          outline: m.footprint?.corners || [],
+          badge: m.footprint?.badge || null,
+          spotIndex: multiSpot ? m.spotIndex : null,
+          variant,
+          isFocusedSpot,
+          label: m.label || null,
+        };
+      })
+      .filter((t) => t.badge && (t.spotIndex != null || t.outline.length >= 3));
+
     return {
       walked,
+      routeLayers,
       shelfOutline: footprint?.corners || target?.fixture?.corners || [],
       badgeAt: pinWorld,
+      mapTargets,
       vb,
       wayW,
       wayDash,
       labelFs,
       markR,
     };
-  }, [scene, layout, route, entryPoint, highlightShelfId, target, hostBox]);
+  }, [
+    scene,
+    layout,
+    route,
+    routes,
+    entryPoint,
+    highlightShelfId,
+    target,
+    hostBox,
+    markerList,
+    focusedPlacementId,
+    focusedRoutePlacementId,
+    mapEntryPoint,
+  ]);
 
   if (!layout || !scene || !overlay) {
     return <div className={`shopper-floor-map-host shopper-floor-map--empty ${className}`.trim()} />;
   }
 
   const viewBox = `${overlay.vb.minX} ${overlay.vb.minY} ${overlay.vb.width} ${overlay.vb.height}`;
-  const routeD = pathFromPoints(overlay.walked);
-  const hasRoute = overlay.walked.length >= 2;
+  const hasRoute = overlay.routeLayers?.length > 0;
 
   return (
     <div
@@ -135,14 +258,28 @@ export default function ShopperLayoutPlanMap({
       data-testid="shopper-plan-map"
     >
       <svg
-        className={`shopper-layout-map-board shopper-plan-board${
+        className={`shopper-layout-map-board shopper-plan-board shopper-floor-map${
           hasRoute ? " shopper-floor-map--routed" : ""
         }${highlightShelfId ? " shopper-floor-map--guided" : ""}`}
         viewBox={viewBox}
         preserveAspectRatio="xMidYMid meet"
+        width="100%"
+        height="100%"
         style={{ "--way-dash-period": `${overlay.wayDash.period}` }}
         aria-label="Store plan map"
       >
+        <defs>
+          {scene.floor ? (
+            <clipPath id={`shopper-plan-clip-${layout.id}`}>
+              <rect
+                x={scene.floor.x}
+                y={scene.floor.y}
+                width={scene.floor.widthMeters}
+                height={scene.floor.depthMeters}
+              />
+            </clipPath>
+          ) : null}
+        </defs>
         <rect
           x={overlay.vb.minX}
           y={overlay.vb.minY}
@@ -151,6 +288,7 @@ export default function ShopperLayoutPlanMap({
           className="shopper-floor-map-bg"
         />
 
+        <g clipPath={scene.floor ? `url(#shopper-plan-clip-${layout.id})` : undefined}>
         {scene.envelope ? (
           <rect
             x={scene.envelope.x}
@@ -187,8 +325,9 @@ export default function ShopperLayoutPlanMap({
 
         {scene.corridors.map((band) => {
           const badge = badgeClearOfEntrance(band, entryPoint);
+          const multiSpot = highlightIdSet.size > 1;
           const isTarget = highlightAisleId && band.aisleId === highlightAisleId;
-          const dim = highlightAisleId && !isTarget;
+          const dim = !multiSpot && highlightAisleId && !isTarget;
           return (
             <g
               key={band.id || `${band.x}-${band.y}`}
@@ -213,10 +352,17 @@ export default function ShopperLayoutPlanMap({
         })}
 
         {scene.fixtures.map((fixture) => {
+          const matchesHighlight =
+            highlightIdSet.size > 0 &&
+            [...highlightIdSet].some(
+              (id) => fixture.id === id || fixture.highlightIds?.has?.(id)
+            );
           const isTarget =
             target?.fixture?.id === fixture.id ||
+            matchesHighlight ||
             (highlightShelfId && fixture.highlightIds?.has?.(highlightShelfId));
-          const dim = highlightShelfId && !isTarget;
+          const dimAllOthers = highlightIdSet.size > 0 && highlightIdSet.size === 1;
+          const dim = dimAllOthers && !isTarget;
           return (
             <g
               key={fixture.id}
@@ -279,28 +425,59 @@ export default function ShopperLayoutPlanMap({
             </g>
           );
         })}
+        </g>
 
-        {hasRoute ? (
-          <RouteLayer
-            route={overlay.walked}
-            routeD={routeD}
-            wayW={overlay.wayW}
-            wayDash={overlay.wayDash}
-          />
-        ) : null}
-        <EntryMarker entryPoint={entryPoint} fontSize={overlay.labelFs} />
-        {overlay.badgeAt && overlay.shelfOutline?.length >= 3 ? (
-          <ShelfTargetMarker
-            outline={overlay.shelfOutline}
-            badge={overlay.badgeAt}
-            markR={overlay.markR}
-          />
-        ) : target?.fixture?.corners?.length >= 3 ? (
-          <path
-            d={shelfOutlinePath(target.fixture.corners)}
-            className="shopper-floor-map-shelf-outline"
-          />
-        ) : null}
+        <g
+          className="shopper-plan-map-overlays"
+          clipPath={scene.floor ? `url(#shopper-plan-clip-${layout.id})` : undefined}
+        >
+          {hasRoute
+            ? overlay.routeLayers.map((layer) => (
+                <RouteLayer
+                  key={layer.key}
+                  route={layer.walked}
+                  wayW={overlay.wayW * (layer.isFocusedRoute ? 1 : 0.88)}
+                  wayDash={overlay.wayDash}
+                  variant={layer.isFocusedRoute ? "primary" : "secondary"}
+                  showTurnNodes={false}
+                  showArrow={layer.isFocusedRoute}
+                  animate
+                />
+              ))
+            : null}
+
+          <EntryMarker entryPoint={entryPoint} fontSize={overlay.labelFs} />
+
+          {overlay.mapTargets?.length
+            ? overlay.mapTargets.map((targetRow) => (
+                <ShelfTargetMarker
+                  key={targetRow.key}
+                  outline={targetRow.outline}
+                  badge={targetRow.badge}
+                  markR={overlay.markR}
+                  spotIndex={targetRow.spotIndex}
+                  variant={targetRow.variant}
+                  onActivate={
+                    onSpotSelect && targetRow.placementId
+                      ? () => onSpotSelect(targetRow.placementId)
+                      : null
+                  }
+                  ariaLabel={targetRow.label || undefined}
+                />
+              ))
+            : overlay.badgeAt && overlay.shelfOutline?.length >= 3 ? (
+                <ShelfTargetMarker
+                  outline={overlay.shelfOutline}
+                  badge={overlay.badgeAt}
+                  markR={overlay.markR}
+                />
+              ) : target?.fixture?.corners?.length >= 3 ? (
+                <path
+                  d={shelfOutlinePath(target.fixture.corners)}
+                  className="shopper-floor-map-shelf-outline"
+                />
+              ) : null}
+        </g>
       </svg>
     </div>
   );

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { api, apiErrorMessage } from "./api.js";
 import { clearChunkReloadFlag, lazyWithRetry } from "./lazyWithRetry.js";
 import ToastStack from "./components/ToastStack.jsx";
@@ -17,6 +17,7 @@ import { normalizeStorageType, productStorageType, resolveCategoryStorageType } 
 import CategoryFormDrawer from "./catalog/CategoryFormDrawer.jsx";
 import LayoutsPortfolio from "./modules/LayoutsPortfolio.jsx";
 import LayoutCreateModal, { EMPTY_CREATE_DRAFT } from "./modules/LayoutCreateModal.jsx";
+import { floorPlanImportPayloadFromDraft } from "./floorPlanImport.js";
 import FixtureTemplatesEditor from "./modules/FixtureTemplatesEditor.jsx";
 import { fixtureTemplatesForVertical } from "./fixtureCatalog.js";
 import { NAV_MODULES, STORE_TYPES, mixForStoreType } from "./storeTypes.js";
@@ -83,6 +84,9 @@ export default function App() {
   const editorLayoutId = page === "layouts" ? route.layoutId : null;
   const shopLayoutId = page === "shop" ? route.layoutId : null;
   const [vertical, setVertical] = useState("pharmacy");
+  // Dedupes concurrent loadCatalog(v) calls for the same vertical (e.g. two effects firing on
+  // the same render when a layout opens) without affecting deliberate sequential refetches.
+  const catalogLoadRef = useRef({ vertical: null, promise: null });
   const [layouts, setLayouts] = useState([]);
   const [layout, setLayout] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -282,7 +286,11 @@ export default function App() {
     api(`/admin/config?vertical=${configVertical}`, { token })
       .then(setConfig)
       .catch(() => {});
-  }, [token, configVertical, statusFilter, page]);
+    // `page` intentionally excluded: neither fetch above depends on it, and every mutation
+    // that changes the layouts list already calls refreshLayouts() explicitly — see call
+    // sites at lines ~394/420/435. Including it caused a re-fetch on every navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, configVertical, statusFilter]);
 
   const activeLayoutId = editorLayoutId || shopLayoutId;
 
@@ -373,15 +381,14 @@ export default function App() {
         polygon,
       };
       if (fromFloorPlan) {
-        body.floorPlanImport = {
-          sourceFileName: createDraft.floorPlanSourceFileName || createDraft.floorPlanFileName,
-          sourceType: createDraft.floorPlanSourceType || "image",
-          dimensionSource: createDraft.floorPlanDimensionSource || "manual",
-          matchedText: createDraft.floorPlanMatchedText || null,
-          pageIndex: createDraft.floorPlanPageIndex ?? 0,
-        };
-        body.autoGenerateFixtures = true;
-        body.categoryMix = mixForStoreType(createDraft.storeTypeId);
+        body.floorPlanImport = floorPlanImportPayloadFromDraft(createDraft);
+        const fixtureImport =
+          body.floorPlanImport.importMode === "fixture" &&
+          (body.floorPlanImport.runs?.length || 0) > 0;
+        body.autoGenerateFixtures = !fixtureImport;
+        if (!fixtureImport) {
+          body.categoryMix = mixForStoreType(createDraft.storeTypeId);
+        }
       }
       const created = await api("/layouts", {
         token,
@@ -395,7 +402,9 @@ export default function App() {
       navigate(pathForModule("layouts", created.id));
       toast(
         fromFloorPlan
-          ? `Layout built from ${createDraft.floorPlanFileName || "floor plan"} — ${created.shelves?.length || 0} shelves placed`
+          ? created.generated?.fixtureImport
+            ? `Layout imported from ${createDraft.floorPlanFileName || "floor plan"} — ${created.shelves?.length || 0} fixture runs placed`
+            : `Layout built from ${createDraft.floorPlanFileName || "floor plan"} — ${created.shelves?.length || 0} shelves placed`
           : "Layout created",
         { type: "success" }
       );
@@ -537,31 +546,56 @@ export default function App() {
   }
 
   async function loadCatalog(v = vertical) {
-    const verticals = catalogVerticalsForLayout(v);
-    const catResults = await Promise.all(
-      verticals.map((cv) =>
-        api(`/categories?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
-      )
-    );
-    const listsByVertical = Object.fromEntries(
-      verticals.map((cv, i) => [cv, catResults[i]?.items || []])
-    );
-    const allCategories = mergeCategoriesForLayout(v, listsByVertical);
-    const catIds = new Set(allCategories.map((c) => c.id));
-
-    let merged = [];
-    if (verticals.length === 1) {
-      const prodRes = await api(`/products?vertical=${encodeURIComponent(verticals[0])}`, { token }).catch(
-        () => ({ items: [] })
-      );
-      merged = prodRes.items || [];
-    } else {
-      const prodAll = await api(`/products`, { token }).catch(() => ({ items: [] }));
-      merged = (prodAll.items || []).filter((p) => catIds.has(p.categoryId));
+    // If a request for this exact vertical is already in flight, join it instead of firing a
+    // second identical fetch (two effects can both call loadCatalog with the same vertical on
+    // the same render). Deliberate sequential refreshes after mutations are unaffected since
+    // any prior call has already settled by the time those run.
+    if (catalogLoadRef.current.vertical === v && catalogLoadRef.current.promise) {
+      return catalogLoadRef.current.promise;
     }
+    const promise = (async () => {
+      const verticals = catalogVerticalsForLayout(v);
+      const singleVertical = verticals.length === 1;
+      const catPromise = Promise.all(
+        verticals.map((cv) =>
+          api(`/categories?vertical=${cv}`, { token }).catch(() => ({ items: [] }))
+        )
+      );
+      // Single-vertical products don't depend on the category results (only the multi-vertical
+      // branch below filters by catIds), so fetch both in parallel instead of sequentially.
+      const prodSinglePromise = singleVertical
+        ? api(`/products?vertical=${encodeURIComponent(verticals[0])}`, { token }).catch(() => ({
+            items: [],
+          }))
+        : null;
 
-    setCatCategories(allCategories);
-    setCatProducts(merged);
+      const catResults = await catPromise;
+      const listsByVertical = Object.fromEntries(
+        verticals.map((cv, i) => [cv, catResults[i]?.items || []])
+      );
+      const allCategories = mergeCategoriesForLayout(v, listsByVertical);
+
+      let merged = [];
+      if (singleVertical) {
+        const prodRes = await prodSinglePromise;
+        merged = prodRes.items || [];
+      } else {
+        const catIds = new Set(allCategories.map((c) => c.id));
+        const prodAll = await api(`/products`, { token }).catch(() => ({ items: [] }));
+        merged = (prodAll.items || []).filter((p) => catIds.has(p.categoryId));
+      }
+
+      setCatCategories(allCategories);
+      setCatProducts(merged);
+    })();
+    catalogLoadRef.current = { vertical: v, promise };
+    try {
+      await promise;
+    } finally {
+      if (catalogLoadRef.current.promise === promise) {
+        catalogLoadRef.current = { vertical: null, promise: null };
+      }
+    }
   }
 
   function openProductEditor(partial = {}) {
@@ -1375,7 +1409,11 @@ export default function App() {
                     <div className="admin-stores-panel" data-testid="admin-stores">
                       <div className="admin-stores-bar">
                         <div className="admin-stores-bar-left">
-                          <label className="admin-stores-inline-label" htmlFor="admin-stores-vertical">
+                          <label
+                            className="admin-stores-inline-label"
+                            htmlFor="admin-stores-vertical"
+                            title="Store type — shelf templates and aisle rules apply per vertical"
+                          >
                             Store type
                           </label>
                           <select
@@ -1394,16 +1432,24 @@ export default function App() {
                             {layouts.filter((l) => l.vertical === vertical).length} layout
                             {layouts.filter((l) => l.vertical === vertical).length === 1 ? "" : "s"}
                           </span>
-                        </div>
-                        {canManageUsers(role) ? (
-                          <button
-                            className="btn-primary admin-stores-save"
-                            data-testid="admin-stores-save"
-                            onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
+                          <label
+                            className="admin-stores-inline-label"
+                            htmlFor="admin-config-min-aisle"
+                            title="Minimum aisle width used for compliance checks on this store type"
                           >
-                            Save
-                          </button>
-                        ) : null}
+                            Min aisle (m)
+                          </label>
+                          <input
+                            id="admin-config-min-aisle"
+                            className="mono admin-stores-aisle-input"
+                            type="number"
+                            step="0.1"
+                            data-testid="admin-config-min-aisle"
+                            value={configForm.minAisleWidthMeters}
+                            disabled={!canManageUsers(role)}
+                            onChange={(e) => setConfigForm({ ...configForm, minAisleWidthMeters: e.target.value })}
+                          />
+                        </div>
                       </div>
                       <FixtureTemplatesEditor
                         templates={
@@ -1422,11 +1468,21 @@ export default function App() {
                           {configSaveError}
                         </AlertBanner>
                       ) : null}
-                      {!canManageUsers(role) ? (
-                        <div className="muted" style={{ fontSize: 12 }}>
-                          Only Admin can save store master shelf types.
-                        </div>
-                      ) : null}
+                      <div className="admin-panel-footer">
+                        {canManageUsers(role) ? (
+                          <button
+                            className="btn-primary admin-stores-save"
+                            data-testid="admin-stores-save"
+                            onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
+                          >
+                            Save
+                          </button>
+                        ) : (
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            Only Admin can save store master settings.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                   {adminTab === "approval" && (
@@ -1448,53 +1504,6 @@ export default function App() {
                         />
                         Approval workflow enabled ({vMeta.label})
                       </label>
-                    </div>
-                  )}
-                  {adminTab === "configuration" && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="admin-configuration">
-                      <div className="field" style={{ maxWidth: 280 }}>
-                        <label>Store type / vertical</label>
-                        <select
-                          data-testid="admin-config-vertical"
-                          value={vertical}
-                          onChange={(e) => setVertical(e.target.value)}
-                          style={{ padding: "9px 12px", borderRadius: 9, border: "1px solid #e5e7eb", width: "100%" }}
-                        >
-                          {Object.entries(VERTICALS).map(([key, meta]) => (
-                            <option key={key} value={key}>
-                              {meta.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                        Shelf types and dimensions are managed in <strong>Store Master</strong>. This tab controls aisle
-                        rules for {vMeta.label}.
-                      </p>
-                      <div className="field">
-                        <label>Min aisle width (m)</label>
-                        <input
-                          className="mono"
-                          type="number"
-                          step="0.1"
-                          data-testid="admin-config-min-aisle"
-                          value={configForm.minAisleWidthMeters}
-                          disabled={!canManageUsers(role)}
-                          onChange={(e) => setConfigForm({ ...configForm, minAisleWidthMeters: e.target.value })}
-                        />
-                      </div>
-                      {canManageUsers(role) ? (
-                        <button
-                          className="btn-primary"
-                          data-testid="admin-config-save"
-                          style={{ padding: "10px 14px", width: "fit-content" }}
-                          onClick={() => saveConfig({}).catch((e) => toast(friendlyError(e), { type: "error" }))}
-                        >
-                          Save store configuration
-                        </button>
-                      ) : (
-                        <div className="muted">Only Admin can save configuration.</div>
-                      )}
                     </div>
                   )}
                   {adminTab === "audit" && (
@@ -1519,6 +1528,7 @@ export default function App() {
         onClose={() => setCreateOpen(false)}
         draft={createDraft}
         setDraft={setCreateDraft}
+        authToken={token}
         submitting={creating}
         shelfTemplates={fixtureTemplatesForVertical(
           createConfig,

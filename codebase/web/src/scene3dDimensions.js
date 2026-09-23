@@ -3,7 +3,8 @@
  * All values in metres unless noted.
  */
 import { shelfLocalMeters, shelfCanvasAabb, gondolaCanvasAabb } from "./layout-editor/polygonCanvas.js";
-import { normalizeShelfUI } from "./layout-editor/shelfFaces.js";
+import { normalizeShelfUI, physicalShelfForMerchandisingFace } from "./layout-editor/shelfFaces.js";
+import { shelfLevels } from "./layout-editor/planogramSegments.js";
 import { productDimensions as catalogProductDimensions } from "./productCatalog.js";
 import { facingWidthInSlot, PRODUCT_LATERAL_BUFFER_TOTAL_M } from "../../shared/productBuffer.mjs";
 
@@ -182,4 +183,14 @@ export function productFacingSize(product, slotWidthMeters, levelClearanceMeters
 
 export function formatMeters(value, digits = 2) {
   return formatLengthFromMeters(value, { dash: "—" });
+}
+
+/** Level list for 3D boards — same physical shelf record the planogram editor uses. */
+export function levelsForScene3dUnit(sceneUnit, layout, merchandisingFaceId = "A") {
+  const phys = physicalShelfForMerchandisingFace(sceneUnit, layout, merchandisingFaceId);
+  const norm = normalizeShelfUI(phys || sceneUnit);
+  return {
+    levels: shelfLevels(norm),
+    hasConfiguredLevels: Boolean(phys?.levels?.length),
+  };
 }

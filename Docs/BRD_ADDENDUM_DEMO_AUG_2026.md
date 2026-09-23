@@ -68,12 +68,14 @@ These items are **implemented** (or substantially implemented) in the current co
 - Planogram **View in 3D** focuses a shelf; texture cache survives remount so images remain visible.
 - Aisle-centric shelf labels (`4A`, `5A`, …) with orientation-aware aisle binding.
 
-### 3.6 Known demo gap (must fix — DF-05 / DF-06)
+### 3.6 Former demo gap (resolved — DF-05 / DF-06)
 
-**Current behaviour (incorrect vs customer expectation):**  
-Gondola front/back are often treated as **one selected unit** in 2D merge and 3D highlight (`pairId`), so nearby / opposite faces light up together.
+_Updated 2026-09-11: fixed, see FR-AISLE-01/FR-AISLE-02 status below. Kept for traceability._
 
-**Required behaviour:**  
+**Previous behaviour (incorrect vs customer expectation):**  
+Gondola front/back were often treated as **one selected unit** in 2D merge and 3D highlight (`pairId`), so nearby / opposite faces lit up together.
+
+**Required behaviour (now implemented):**  
 Selection and highlight are **aisle-scoped**:
 
 - Selecting shelf `4A` (aisle 4) selects **only** that physical merchandising face (and optionally offers “view other shelves on aisle 4”).
@@ -92,7 +94,7 @@ Selection and highlight are **aisle-scoped**:
 | **Module** | M2 / M4 (planogram & auto-fill) |
 | **Requirement** | Facing, depth, and stack capacity calculations SHALL reserve a **1 cm (0.01 m) total lateral buffer** between products — modelled as **0.5 cm on each side** of a unit (or equivalent usable-width reduction). |
 | **Acceptance** | Given product width *W* and usable width *U*, max facings = floor((*U* − buffers) / (*W* + buffer)) such that packing never exceeds physical clearance; unit tests cover the 1 cm rule. |
-| **Status** | **Planned** (logic partially exists for board/clearance/stack gap; lateral 1 cm buffer still to finalize). |
+| **Status** | **Done** — `codebase/shared/productBuffer.mjs`; covered by `product-buffer.test.js`. |
 
 ### FR-TEMP-01 — Temporary storage fixtures (DF-02)
 
@@ -102,7 +104,7 @@ Selection and highlight are **aisle-scoped**:
 | **Module** | M1 / M2 |
 | **Requirement** | Palette SHALL include **Temporary storage** types (e.g. display table, pallet) placeable on the floor for seasonal/promo use. Entities are optional, may ignore strict category bay rules, and remain editable by Designer/Admin. |
 | **Acceptance** | Designer can place, move, resize, and delete temporary storage; Analytics can report count/area separately from permanent fixtures. |
-| **Status** | **Planned**. |
+| **Status** | **Done** — `temporaryStorage.js`, palette entry; covered by `temporary-storage.test.js`. |
 
 ### FR-CUST-01 — Customer role & find-product wayfinding (DF-03)
 
@@ -127,7 +129,7 @@ Selection and highlight are **aisle-scoped**:
 | **Requirement** | Separate **Warehouse** store type from retail **Store** layouts: own fixture templates, default dimensions, aisle rules, and possibly packing heuristics. |
 | **Note** | Team agreed to **revisit sizing / shelving model** before implementation — do not rush a clone of Store with a different label. |
 | **Acceptance** | TBD after design workshop (templates, min aisle, height defaults, pallet vs bay semantics). |
-| **Status** | **Discovery / planned**. |
+| **Status** | **Done** (core) — `warehouseLayout.mjs`, packer support, `warehouse-layout.test.js`. Design-workshop question on shared-vs-separate editor UX (§6 Q1) remains open. |
 
 ### FR-AISLE-01 — Aisle-based selection in 2D (DF-05)
 
@@ -157,7 +159,7 @@ Selection and highlight are **aisle-scoped**:
 | **Module** | M4 |
 | **Requirement** | Menu / mode to view **adjacent and opposite shelves** on a flat canvas or strip UI without 3D navigation. Binding key = `aisleId` (+ shelf index order). |
 | **Acceptance** | From shelf `4B`, user can open aisle-4 strip showing `4A`…`4n` and optionally “facing across aisle” if modelled; no edit in Customer role. |
-| **Status** | **Planned**. |
+| **Status** | **Done** — `AisleShelfViewModal.jsx`. |
 
 ---
 
@@ -182,13 +184,15 @@ Selection and highlight are **aisle-scoped**:
 
 ---
 
-## 7. Suggested delivery order
+## 7. Delivery order (completed 2026-09-11)
 
-1. **FR-AISLE-01 / FR-AISLE-02** — fix selection & 3D aisle focus (demo blocker).  
-2. **FR-BUF-01** — 1 cm product buffer in facing math.  
-3. **FR-TEMP-01** — temporary storage fixture.  
-4. **FR-CUST-01 + FR-VIEW-01** — Customer role + flat aisle shelf viewer + wayfinding.  
-5. **FR-WH-01** — Warehouse type after design workshop.
+All five items below have shipped, in this order:
+
+1. **FR-AISLE-01 / FR-AISLE-02** — fix selection & 3D aisle focus (demo blocker). ✅
+2. **FR-BUF-01** — 1 cm product buffer in facing math. ✅
+3. **FR-TEMP-01** — temporary storage fixture. ✅
+4. **FR-CUST-01 + FR-VIEW-01** — Customer role + flat aisle shelf viewer + wayfinding. ✅
+5. **FR-WH-01** — Warehouse type after design workshop. ✅ (core; §6 Q1 design question still open)
 
 ---
 

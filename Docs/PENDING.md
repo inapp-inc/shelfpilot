@@ -23,16 +23,18 @@ Spec: [CLIENT_FEEDBACK_AUG_2026_SPEC.md](./CLIENT_FEEDBACK_AUG_2026_SPEC.md) · 
 
 ---
 
-## 1. Documentation out of date (pending refresh)
+## 1. Documentation out of date — **refreshed 2026-09-11**
 
-These docs still list Aug 2026 demo items as **Planned** even though code exists. Updating them is pending.
+~~These docs still list Aug 2026 demo items as **Planned** even though code exists.~~ Fixed: all
+files below now say **Done** (with "(core)" / open-question caveats preserved where real
+follow-up work remains — see §2).
 
-| File | What is stale |
+| File | What was stale |
 |------|----------------|
-| [project.md](../project.md) | §3–§7 still say Customer, Warehouse, temporary storage, aisle fixes are “planned” or “in progress”. |
-| [DEMO_CHANGES_SUMMARY.md](./DEMO_CHANGES_SUMMARY.md) | “Customer feedback captured (planned)” table still lists FR-BUF-01, FR-TEMP-01, FR-CUST-01, FR-VIEW-01, FR-WH-01 as planned. |
-| [BRD_ADDENDUM_DEMO_AUG_2026.md](./BRD_ADDENDUM_DEMO_AUG_2026.md) | §3.6 “Known demo gap” for aisle selection is superseded; §4 status columns for FR-BUF-01, FR-TEMP-01, FR-CUST-01, FR-VIEW-01, FR-WH-01 still say Planned / Discovery. |
-| [openspec/project.md](../openspec/project.md) | Likely mirrors root `project.md` — verify and sync. |
+| [project.md](../project.md) | §3–§7 said Customer, Warehouse, temporary storage, aisle fixes were "planned" or "in progress" — updated to Done. |
+| [DEMO_CHANGES_SUMMARY.md](./DEMO_CHANGES_SUMMARY.md) | "Customer feedback captured (planned)" table listed FR-BUF-01, FR-TEMP-01, FR-CUST-01, FR-VIEW-01, FR-WH-01 as planned — updated to Done. |
+| [BRD_ADDENDUM_DEMO_AUG_2026.md](./BRD_ADDENDUM_DEMO_AUG_2026.md) | §3.6 "Known demo gap" for aisle selection was superseded; §4 status columns for FR-BUF-01, FR-TEMP-01, FR-CUST-01, FR-VIEW-01, FR-WH-01 said Planned / Discovery — all updated to Done. |
+| [openspec/project.md](../openspec/project.md) | Mirrored root `project.md`'s stale "planned" language — synced. |
 
 ### Implemented in code but marked planned in docs
 

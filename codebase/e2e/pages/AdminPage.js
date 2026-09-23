@@ -33,8 +33,8 @@ export class AdminPage {
   }
 
   async expectHypermarketMinAisle(min = "1.5") {
-    await this.openTab("configuration");
-    await this.page.getByTestId("admin-config-vertical").selectOption("hypermarket");
+    await this.openTab("stores");
+    await this.page.getByTestId("admin-stores-vertical").selectOption("hypermarket");
     await expect(this.page.getByTestId("admin-config-min-aisle")).toHaveValue(String(min));
   }
 
@@ -42,7 +42,6 @@ export class AdminPage {
     await expect(this.page.getByTestId("admin-tab-audit")).toBeVisible();
     await expect(this.page.getByTestId("admin-tab-users")).toHaveCount(0);
     await expect(this.page.getByTestId("admin-tab-stores")).toHaveCount(0);
-    await expect(this.page.getByTestId("admin-tab-configuration")).toHaveCount(0);
     await expect(this.page.getByTestId("admin-audit-list")).toBeVisible();
   }
 }

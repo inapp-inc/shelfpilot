@@ -9,7 +9,7 @@
 
 ShelfPilot is the interactive realization of the **Graphical Store Layout Design Solution** (BRD v1.1 + addenda). It lets store planners, merchandisers, category managers, and operations teams digitally design store layouts, define fixtures and aisles, map product categories to shelf locations, fill planograms with dimension-aware capacity, and render the result in interactive 2D and 3D — replacing manual spreadsheet/CAD-based workflows.
 
-The solution is **configurable, not hard-coded**: the same platform serves Retail, Pharmacy, Beauty & Cosmetics, Apparel, Grocery, and (planned) **Warehouse** formats through configuration.
+The solution is **configurable, not hard-coded**: the same platform serves Retail, Pharmacy, Beauty & Cosmetics, Apparel, Grocery, and **Warehouse** formats through configuration. *(Warehouse: core layout mode delivered — see `warehouseLayout.mjs`; editor-UX-vs-retail question in §9 still open.)*
 
 | | |
 |---|---|
@@ -41,9 +41,9 @@ The solution is **configurable, not hard-coded**: the same platform serves Retai
 | Module | BRD Description | ShelfPilot Screen |
 |---|---|---|
 | **M1** Store Setup, Canvas & Aisle Management | Store boundaries, dimensions, zones; aisle definition & validation; floor-plan import | **Layout Editor** + New layout / import |
-| **M2** Shelving, Storage & Auto-Calculation | Fixtures with measurements; Smart Generate packer; temporary storage *(planned)* | **Layout Editor** (palette, capacity, Smart Generate) |
+| **M2** Shelving, Storage & Auto-Calculation | Fixtures with measurements; Smart Generate packer; temporary storage (delivered) | **Layout Editor** (palette, capacity, Smart Generate) |
 | **M3** Product & Category Management | Category hierarchy and product catalog | **Products & Categories** |
-| **M4** Category Mapping & 2D/3D Visualization | Map categories; planogram; aisle-centric 2D/3D; Customer wayfinding *(planned)* | **Layout Editor** + planned Customer find UI |
+| **M4** Category Mapping & 2D/3D Visualization | Map categories; planogram; aisle-centric 2D/3D; Customer wayfinding (delivered, core) | **Layout Editor** + Customer find UI (`ShopperKioskPage`) |
 | **M5** Analytics & Reporting | Utilization, capacity, category, version reports | **Analytics** / Dashboard |
 | **M6** Administration & Configuration | Users, roles, master data, vertical / store-type configuration | **Admin & Config** |
 
@@ -54,8 +54,8 @@ The solution is **configurable, not hard-coded**: the same platform serves Retai
 ## 4. Screens & Features
 
 ### Login & Access Control
-- Roles today: **Designer, Approver, Viewer, Admin**.
-- **Planned:** **Customer** — full-screen find product / wayfinding only; can select layout; cannot edit.
+- Roles: **Designer, Approver, Viewer, Admin, SuperAdmin, Customer**.
+- **Customer** (delivered, core) — full-screen find product / wayfinding only; cannot edit. Currently scoped to the shopper's assigned store(s) only; a multi-store picker is intentionally deferred (see [Docs/PENDING.md](./Docs/PENDING.md) §2).
 
 ### Dashboard
 - Portfolio of store layout projects with status filters.
@@ -63,14 +63,14 @@ The solution is **configurable, not hard-coded**: the same platform serves Retai
 
 ### Layout Editor (M1 + M2 + M4)
 - Scaled canvas: rectangular and irregular/polygon floor plans.
-- Fixture palette — shelves, racks, gondolas, storage; **temporary tables/pallets planned**.
+- Fixture palette — shelves, racks, gondolas, storage; **temporary tables/pallets** (delivered — `temporaryStorage.js`).
 - Aisle definition with min-width / accessibility validation.
 - **Floor plan import** (PNG/PDF): read dimensions → build layout via Smart Generate (see `Docs/FLOOR_PLAN_IMPORT_SPEC.md`).
 - **Smart Generate** + arrangement/volume summary accept gate.
 - **Planogram editor:** multi-level, segment-aware; dimension-based facings / depth / stack; weight load caps.
 - **Ctrl+click** shelf → move/resize; **Enter** exits; normal click opens planogram.
 - **2D WebGL** floor + **3D** Orbit / Walk with product images.
-- **Aisle-centric labels** (`4A`, `5A`, …). Selection/highlight must be **aisle-bound** (not whole gondola pair) — see addendum FR-AISLE-01/02 *(fix in progress)*.
+- **Aisle-centric labels** (`4A`, `5A`, …). Selection/highlight is **aisle-bound** (not whole gondola pair) — addendum FR-AISLE-01/02 (delivered — `layoutMath.js`, `Scene3D.jsx`).
 
 ### Products & Categories (M3)
 - Hierarchical categories, product CRUD, Excel import, product images & dimensions.
@@ -99,16 +99,20 @@ Detail: [Docs/BRD_ADDENDUM_DEMO_AUG_2026.md](./Docs/BRD_ADDENDUM_DEMO_AUG_2026.m
 
 ---
 
-## 6. Agreed next (customer demo Aug 2026)
+## 6. Aug 2026 demo requirements — delivered
 
-| ID | Requirement | Priority |
-|----|-------------|----------|
-| FR-AISLE-01/02 | Aisle-based selection & 3D corridors (not pair co-select) | Critical |
-| FR-BUF-01 | 1 cm product buffer (0.5 cm each side) in fill math | High |
-| FR-TEMP-01 | Temporary storage fixtures (table / pallet) | Medium |
-| FR-CUST-01 | Customer role + full-screen find + directions | High |
-| FR-VIEW-01 | Flat adjacent/opposite shelves viewing menu | High |
-| FR-WH-01 | Warehouse store type (design workshop first) | Medium |
+All six items agreed for the Aug 2026 customer demo have shipped. Table kept for traceability;
+see [Docs/PENDING.md](./Docs/PENDING.md) §10 for the authoritative status table and §2 for
+remaining follow-ups on each (e.g. Customer 2D map UX polish, Warehouse editor-UX decision).
+
+| ID | Requirement | Status |
+|----|-------------|--------|
+| FR-AISLE-01/02 | Aisle-based selection & 3D corridors (not pair co-select) | **Done** |
+| FR-BUF-01 | 1 cm product buffer (0.5 cm each side) in fill math | **Done** |
+| FR-TEMP-01 | Temporary storage fixtures (table / pallet) | **Done** |
+| FR-CUST-01 | Customer role + full-screen find + directions | **Done** (core) |
+| FR-VIEW-01 | Flat adjacent/opposite shelves viewing menu | **Done** |
+| FR-WH-01 | Warehouse store type | **Done** (core; design workshop question on shared vs. separate editor UX still open) |
 
 Full acceptance criteria: [Docs/BRD_ADDENDUM_DEMO_AUG_2026.md](./Docs/BRD_ADDENDUM_DEMO_AUG_2026.md).
 
@@ -116,11 +120,11 @@ Full acceptance criteria: [Docs/BRD_ADDENDUM_DEMO_AUG_2026.md](./Docs/BRD_ADDEND
 
 ## 7. Scope
 
-**In scope:** store setup & canvas, floor-plan import, fixture definition, aisle validation, category/product management, planogram, 2D/3D, auto-calc / Smart Generate, analytics, administration, configuration; **Customer wayfinding** (planned); **Warehouse type** (planned after design).
+**In scope:** store setup & canvas, floor-plan import, fixture definition, aisle validation, category/product management, planogram, 2D/3D, auto-calc / Smart Generate, analytics, administration, configuration; **Customer wayfinding** (delivered, core); **Warehouse type** (delivered, core — editor-UX-vs-retail question still open).
 
 **Out of scope:** POS integration, real-time inventory/stock, physical fixture procurement, structural engineering, foot-traffic sensors (future phase).
 
-**Target verticals / types:** General Retail, Pharmacy, Beauty, Apparel, Grocery — extensible via configuration; **Warehouse** as a distinct type under design.
+**Target verticals / types:** General Retail, Pharmacy, Beauty, Apparel, Grocery, **Warehouse** — extensible via configuration.
 
 ---
 
@@ -161,7 +165,7 @@ Full acceptance criteria: [Docs/BRD_ADDENDUM_DEMO_AUG_2026.md](./Docs/BRD_ADDEND
 - Selecting a shelf selects **only that aisle-facing unit**, not the opposite aisle’s pair.
 - Analytics show utilization and category allocation accurately.
 - Same system configures multiple verticals with no code fork.
-- *(Planned)* Customer finds a product and is directed to aisle/shelf without edit access.
+- Customer finds a product and is directed to aisle/shelf without edit access (delivered, core; assigned-store only).
 
 ---
 

@@ -60,6 +60,7 @@ Store planners today rely on spreadsheets and CAD, causing slow redesign cycles,
 
 ### Epic C — Layout Editor M1 (F3, D3)
 - **C1** Scaled canvas for rectangular and irregular/polygon floor plans.
+- **C1b** Fixture-level floor plan import: PDF/text labels → parsed runs → aisles/shelves (`Docs/PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md`, API flag `PLAN_FIXTURE_IMPORT_ENABLED`).
 - **C2** Zone and aisle definition with minimum-width / accessibility validation.
 - **C3** Layout Editor implemented as **reusable components** (shell, 2D canvas, palette, properties, 3D) — not a single monolithic page module.
 - **C4** Drag-and-drop placement and move of aisles and shelves on the 2D canvas with snap-to-grid persistence.

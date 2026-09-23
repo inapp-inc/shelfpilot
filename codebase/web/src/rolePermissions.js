@@ -90,7 +90,7 @@ export function canViewAuditLog(role) {
 /** Admin section tabs — Approver sees audit only. */
 export function adminTabsForRole(role) {
   if (role === "SuperAdmin") return ["users", "audit"];
-  if (role === "Admin") return ["users", "stores", "approval", "configuration", "audit"];
+  if (role === "Admin") return ["users", "stores", "approval", "audit"];
   if (role === "Approver") return ["audit"];
   return [];
 }
@@ -99,7 +99,6 @@ export function adminTabLabel(tab) {
   if (tab === "users") return "Users & Roles";
   if (tab === "stores") return "Store Master";
   if (tab === "approval") return "Approval Workflow";
-  if (tab === "configuration") return "Configuration";
   if (tab === "audit") return "Audit Log";
   return tab;
 }

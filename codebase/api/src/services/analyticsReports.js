@@ -537,6 +537,48 @@ function shelfCenter(shelf) {
   };
 }
 
+/**
+ * Shelf index pairs (i,j) with i<j whose centers are within `threshold` meters, found via a
+ * uniform spatial grid (cell size = threshold, 3x3 neighborhood scan) instead of all-pairs
+ * distance checks. Two points in cells more than 1 apart are always >= threshold apart, so a
+ * 1-cell-radius neighbor scan is sufficient — standard fixed-radius spatial hashing.
+ */
+function shelfPairsWithinThreshold(shelves, threshold) {
+  const centers = shelves.map((s) => shelfCenter(s));
+  const cellKey = (x, y) => `${Math.floor(x / threshold)},${Math.floor(y / threshold)}`;
+  const grid = new Map();
+  centers.forEach((c, i) => {
+    const key = cellKey(c.x, c.y);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  });
+
+  const found = [];
+  for (let i = 0; i < shelves.length; i += 1) {
+    const c = centers[i];
+    const cx = Math.floor(c.x / threshold);
+    const cy = Math.floor(c.y / threshold);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const bucket = grid.get(`${cx + dx},${cy + dy}`);
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j <= i) continue;
+          const cb = centers[j];
+          const dist = Math.hypot(c.x - cb.x, c.y - cb.y);
+          if (dist > threshold) continue;
+          found.push({ i, j, dist });
+        }
+      }
+    }
+  }
+  // Preserve the original nested-loop enumeration order (i asc, then j asc): pairs[] is
+  // truncated downstream (`pairs.slice(0, 20)`) and consumed by order-sensitive callers
+  // (e.g. computeRegulatoryCompliance's violation scan), so order must match exactly.
+  found.sort((a, b) => a.i - b.i || a.j - b.j);
+  return found;
+}
+
 /** §3.4 Category adjacency matrix. */
 export function computeCategoryAdjacency(layout, categories) {
   const shelves = layoutShelves(layout).filter((s) => isShelfMapped(s));
@@ -548,29 +590,31 @@ export function computeCategoryAdjacency(layout, categories) {
   const threshold = 2.5;
   const pairs = [];
 
-  for (let i = 0; i < shelves.length; i += 1) {
-    for (let j = i + 1; j < shelves.length; j += 1) {
-      const a = shelves[i];
-      const b = shelves[j];
-      const ca = shelfCenter(a);
-      const cb = shelfCenter(b);
-      const dist = Math.hypot(ca.x - cb.x, ca.y - cb.y);
-      if (dist > threshold) continue;
-      const catsA = shelfCategoryIds(a).map((id) => resolveCategoryId(id, categories) || id);
-      const catsB = shelfCategoryIds(b).map((id) => resolveCategoryId(id, categories) || id);
-      for (const c1 of catsA) {
-        for (const c2 of catsB) {
-          if (c1 === c2) continue;
-          pairs.push({
-            categoryA: c1,
-            categoryB: c2,
-            shelfA: a.id,
-            shelfB: b.id,
-            distanceMeters: Number(dist.toFixed(2)),
-          });
-        }
+  for (const { i, j, dist } of shelfPairsWithinThreshold(shelves, threshold)) {
+    const a = shelves[i];
+    const b = shelves[j];
+    const catsA = shelfCategoryIds(a).map((id) => resolveCategoryId(id, categories) || id);
+    const catsB = shelfCategoryIds(b).map((id) => resolveCategoryId(id, categories) || id);
+    for (const c1 of catsA) {
+      for (const c2 of catsB) {
+        if (c1 === c2) continue;
+        pairs.push({
+          categoryA: c1,
+          categoryB: c2,
+          shelfA: a.id,
+          shelfB: b.id,
+          distanceMeters: Number(dist.toFixed(2)),
+        });
       }
     }
+  }
+
+  // Count pairs per unordered category pair in one pass instead of re-filtering the full
+  // `pairs` array for every matrix cell (was O(categories^2 * pairs), now O(pairs + categories^2)).
+  const pairCounts = new Map();
+  for (const p of pairs) {
+    const key = p.categoryA < p.categoryB ? `${p.categoryA}|${p.categoryB}` : `${p.categoryB}|${p.categoryA}`;
+    pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
   }
 
   const matrix = ids.map((rowId) => ({
@@ -578,11 +622,8 @@ export function computeCategoryAdjacency(layout, categories) {
     categoryName: categoryDisplayName(rowId, categories),
     cells: ids.map((colId) => {
       if (rowId === colId) return { categoryId: colId, adjacent: false, count: 0 };
-      const count = pairs.filter(
-        (p) =>
-          (p.categoryA === rowId && p.categoryB === colId) ||
-          (p.categoryA === colId && p.categoryB === rowId)
-      ).length;
+      const key = rowId < colId ? `${rowId}|${colId}` : `${colId}|${rowId}`;
+      const count = pairCounts.get(key) || 0;
       return { categoryId: colId, adjacent: count > 0, count };
     }),
   }));
@@ -633,8 +674,8 @@ export function computeWalkability(layout) {
 }
 
 /** §4.3 Regulatory compliance scorecard (adjacency-based heuristic). */
-export function computeRegulatoryCompliance(layout, config, categories) {
-  const adjacency = computeCategoryAdjacency(layout, categories);
+export function computeRegulatoryCompliance(layout, config, categories, precomputedAdjacency = null) {
+  const adjacency = precomputedAdjacency || computeCategoryAdjacency(layout, categories);
   const incompatible = config?.incompatibleCategoryPairs || [];
   const rules = incompatible.length
     ? incompatible.map((pair, i) => ({
@@ -1088,7 +1129,7 @@ export function buildLayoutAnalyticsReport(layout, categories, config, listProdu
   const aisleCompliance = computeAisleCompliance(layout, config);
   const categoryAdjacency = computeCategoryAdjacency(layout, categoryList);
   const walkability = computeWalkability(layout);
-  const regulatoryCompliance = computeRegulatoryCompliance(layout, config, categoryList);
+  const regulatoryCompliance = computeRegulatoryCompliance(layout, config, categoryList, categoryAdjacency);
   const productCoverage = computePlanogramCoverage(
     layout,
     listCategoriesFn,

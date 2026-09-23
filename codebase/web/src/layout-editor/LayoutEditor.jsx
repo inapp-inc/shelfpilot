@@ -61,11 +61,14 @@ const EDITOR_PANELS_STORAGE_KEY = "shelfpilot.editorPanels";
 function readEditorPanelPrefs() {
   try {
     const raw = localStorage.getItem(EDITOR_PANELS_STORAGE_KEY);
-    if (!raw) return { palette: false };
+    // Default to collapsed (hidden) — the Tools sidebar took up space on load that most users
+    // don't need until they actually want to draw/place something. Anyone who has already
+    // expanded it before keeps that choice (saved below).
+    if (!raw) return { palette: true };
     const parsed = JSON.parse(raw);
-    return { palette: parsed.palette === true };
+    return { palette: parsed.palette !== false };
   } catch {
-    return { palette: false };
+    return { palette: true };
   }
 }
 
@@ -131,6 +134,29 @@ export default function LayoutEditor({
   const fixturePatchRef = useRef(null);
   const pendingFrameRef = useRef(null);
   const prevPaletteToolRef = useRef(paletteTool);
+
+  // Smart Generate and any placement tool (draw/edit-area/aisle/entry) are mutually exclusive —
+  // both open at once stacked instruction banners on top of the panel and left the canvas
+  // squeezed to a sliver. Smart Generate also replaces existing aisles/shelves, so being mid-
+  // placement while it's open doesn't make sense anyway.
+  useEffect(() => {
+    if (genOpen && paletteTool !== "select") {
+      setGenOpen(false);
+    }
+  }, [paletteTool, genOpen]);
+
+  // Smart Generate (and other 2D-only panels stacked in-flow above the canvas) must not stay
+  // open when switching to 3D/Walk — otherwise they push the 3D view below the fold, which
+  // looks exactly like "3D isn't loading" since nothing renders in the visible viewport until
+  // you scroll down past the still-open panel.
+  useEffect(() => {
+    if (view3d) {
+      setGenOpen(false);
+      setArrangementOpen(false);
+      setMissingProductsOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view3d]);
   const [focus3dRequest, setFocus3dRequest] = useState(0);
   const [planogramCoverage, setPlanogramCoverage] = useState(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
@@ -143,6 +169,7 @@ export default function LayoutEditor({
   const [planogramEditor, setPlanogramEditor] = useState(null);
   const [aisleShelfViewShelfId, setAisleShelfViewShelfId] = useState(null);
   const [planogram3dReturn, setPlanogram3dReturn] = useState(null);
+  const [planogram3dViewEpoch, setPlanogram3dViewEpoch] = useState(0);
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [missingProductsOpen, setMissingProductsOpen] = useState(false);
   const [findProductsPlanogramsLoading, setFindProductsPlanogramsLoading] = useState(false);
@@ -794,6 +821,16 @@ export default function LayoutEditor({
       const dy = (clientY - dragging.startClientY) / scale;
       return { x: Math.max(0, dragging.origX + dx), y: Math.max(0, dragging.origY + dy) };
     };
+    // Raw mousemove can fire far faster than the display refresh rate; coalesce setDragPos to
+    // one update per animation frame instead of one per event. This only throttles the visual
+    // preview — onUp always recomputes the final position fresh from the mouseup event
+    // coordinates, so the committed PATCH is unaffected.
+    let rafId = null;
+    let pendingPos = null;
+    const flushDragPos = () => {
+      rafId = null;
+      if (pendingPos) setDragPos(pendingPos);
+    };
     const onMove = (e) => {
       const movedPx = Math.hypot(
         e.clientX - dragging.startClientX,
@@ -804,7 +841,8 @@ export default function LayoutEditor({
       if (!entity) return;
       const tentative = { ...entity, x, y };
       if (!entityPlacementValid(tentative, dragging.kind, canvasBounds, layout, { ignoreId: dragging.id })) return;
-      setDragPos({ id: dragging.id, x, y });
+      pendingPos = { id: dragging.id, x, y };
+      if (rafId == null) rafId = requestAnimationFrame(flushDragPos);
     };
     const onUp = async (e) => {
       const movedPx = Math.hypot(
@@ -851,6 +889,7 @@ export default function LayoutEditor({
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (rafId != null) cancelAnimationFrame(rafId);
     };
   }, [dragging, scale, token, layout, canvasBounds]);
 
@@ -1293,6 +1332,7 @@ export default function LayoutEditor({
     setPlanogramEditor(null);
     setView3d(true);
     setWalkMode(false);
+    setPlanogram3dViewEpoch((n) => n + 1);
     setFocus3dRequest((n) => n + 1);
   }
 
@@ -1366,7 +1406,13 @@ export default function LayoutEditor({
       };
     }
     const faceId =
-      selection.faceId === "B" || s.pairRole === "back" ? "B" : "A";
+      selection.faceId === "B"
+        ? "B"
+        : selection.faceId === "A"
+          ? "A"
+          : s.pairRole === "back"
+            ? "B"
+            : "A";
     return {
       shelfId: selection.id,
       pairId: null,
@@ -1572,6 +1618,7 @@ export default function LayoutEditor({
         return;
       }
     }
+    setPaletteTool("select");
     setGenOpen(true);
     setPaletteCollapsed(false);
   }
@@ -2234,6 +2281,11 @@ export default function LayoutEditor({
             arrangementAccepted={arrangementAccepted}
             onOpenArrangement={() => setArrangementOpen(true)}
             ctrlHeld={ctrlHeld}
+            onDrawArea={() => {
+              setGenOpen(false);
+              setPaletteTool("draw");
+              setPaletteCollapsed(false);
+            }}
           />
           ) : null}
 
@@ -2383,17 +2435,22 @@ export default function LayoutEditor({
                   </div>
                 ) : null}
                 <Scene3D
+                  key={`scene3d-${layout.contentRevision}-${planogram3dViewEpoch}-${planogram3dReturn?.shelfId || "store"}`}
                   layout={layout}
                   products={products}
                   categories={categories}
                   walkMode={walkMode}
                   highlightShelfId={highlightShelf3d?.shelfId}
                   highlightPairId={null}
-                  highlightFaceId={highlightShelf3d?.faceId || selection?.faceId || "A"}
+                  highlightFaceId={
+                    planogram3dReturn?.faceId ||
+                    highlightShelf3d?.faceId ||
+                    selection?.faceId ||
+                    "A"
+                  }
                   highlightAisleId={highlightShelf3d?.aisleId || null}
                   focusPhysicalShelfId={planogram3dReturn?.shelfId || null}
                   focusPhysicalShelfIds={shelf3dFocusGroup?.physicalShelfIds || null}
-                  focusLevelIndex={planogram3dReturn?.levelIndex ?? null}
                   shelfFocusMode={Boolean(planogram3dReturn)}
                   focusRequest={focus3dRequest}
                   contentRevision={layout.contentRevision}

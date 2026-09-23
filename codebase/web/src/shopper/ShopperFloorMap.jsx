@@ -24,6 +24,8 @@ export default function ShopperFloorMap({
   highlightShelfId = null,
   highlightMapUnitId = null,
   highlightAisleId = null,
+  highlightShelfIds = null,
+  shelfMarkers = null,
   categories = [],
   products = [],
   className = "",
@@ -54,11 +56,29 @@ export default function ShopperFloorMap({
   const scale = hostBox && bounds ? fitLayoutScale(bounds, hostBox.width, hostBox.height) : 0;
   const hostWidth = hostBox?.width || 0;
 
+  const markerList = useMemo(() => {
+    if (shelfMarkers?.length) return shelfMarkers;
+    if (highlightShelfId) {
+      return [{ shelfId: highlightShelfId, isPrimary: true, spotIndex: null, footprint: null }];
+    }
+    return [];
+  }, [shelfMarkers, highlightShelfId]);
+
   const overlay = useMemo(() => {
     if (!layout || !bounds) return null;
     const walked = routePolylineForMap(layout, route, highlightShelfId);
     const aisleNear = walked.length >= 2 ? walked[walked.length - 2] : walked[walked.length - 1];
-    const footprint = highlightShelfId ? shelfMarkerFootprint(layout, highlightShelfId, aisleNear) : null;
+    const resolvedMarkers = markerList.map((m) => {
+      if (m.footprint) return m;
+      const footprint = shelfMarkerFootprint(
+        layout,
+        m.shelfId,
+        m.isPrimary ? aisleNear : null
+      );
+      return footprint ? { ...m, footprint } : null;
+    }).filter(Boolean);
+    const primaryMarker = resolvedMarkers.find((m) => m.isPrimary) || resolvedMarkers[0];
+    const footprint = primaryMarker?.footprint || null;
     const pinWorld = footprint?.badge || null;
     const toStage = (p) => {
       if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.y))) return null;
@@ -76,10 +96,24 @@ export default function ShopperFloorMap({
     }
     const boardW = bounds.width * Math.max(scale, 1);
     const strokeOpts = { minPx: path.length >= 2 ? 5 : 4, renderWidthPx: Math.max(boardW, hostWidth, 560) };
+    const mapTargets = resolvedMarkers.map((m) => {
+      const fp = m.footprint;
+      const corners = fp?.corners?.map(toStage).filter(Boolean) || [];
+      const badgeAtStage = fp?.badge ? toStage(fp.badge) : null;
+      return {
+        key: m.placementId || m.shelfId,
+        outline: corners,
+        badge: badgeAtStage,
+        spotIndex: markerList.length > 1 ? m.spotIndex : null,
+        variant: m.isPrimary ? "primary" : "secondary",
+      };
+    }).filter((t) => t.outline.length >= 3 && t.badge);
+
     return {
       path,
       shelfOutline,
       badgeAt,
+      mapTargets,
       entry,
       wayW: routeStrokeUserUnits(bounds.width, strokeOpts),
       wayDash: routeDashPatternUserUnits(bounds.width, {
@@ -90,7 +124,7 @@ export default function ShopperFloorMap({
       labelFs: 11 / Math.max(scale, 1),
       markR: Math.min(0.11, Math.max(0.055, 2.8 / Math.max(scale, 1))),
     };
-  }, [layout, bounds, entryPoint, route, highlightShelfId, scale, hostWidth]);
+  }, [layout, bounds, entryPoint, route, highlightShelfId, scale, hostWidth, markerList]);
 
   // Keep the shelf visible — kiosk uses a thin SVG outline instead of editor selection chrome.
   const selection = null;
@@ -150,13 +184,24 @@ export default function ShopperFloorMap({
               />
             ) : null}
             <EntryMarker entryPoint={overlay.entry} fontSize={overlay.labelFs} />
-            {overlay.badgeAt && overlay.shelfOutline?.length >= 3 ? (
-              <ShelfTargetMarker
-                outline={overlay.shelfOutline}
-                badge={overlay.badgeAt}
-                markR={overlay.markR}
-              />
-            ) : null}
+            {overlay.mapTargets?.length
+              ? overlay.mapTargets.map((target) => (
+                  <ShelfTargetMarker
+                    key={target.key}
+                    outline={target.outline}
+                    badge={target.badge}
+                    markR={overlay.markR}
+                    spotIndex={target.spotIndex}
+                    variant={target.variant}
+                  />
+                ))
+              : overlay.badgeAt && overlay.shelfOutline?.length >= 3 ? (
+                  <ShelfTargetMarker
+                    outline={overlay.shelfOutline}
+                    badge={overlay.badgeAt}
+                    markR={overlay.markR}
+                  />
+                ) : null}
           </svg>
         </div>
       ) : null}

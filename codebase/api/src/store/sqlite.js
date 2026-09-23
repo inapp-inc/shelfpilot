@@ -40,6 +40,20 @@ export function resetDbForTests() {
     }
   }
   dbInstance = null;
+  preparedCache.clear();
+}
+
+// Cache of prepared statements keyed by SQL text, so hot-path repo methods (e.g. getSession,
+// called on every authenticated request) don't re-parse the same SQL on every invocation.
+// Cleared in resetDbForTests() since statements are bound to a specific DatabaseSync instance.
+const preparedCache = new Map();
+function prepared(sql) {
+  let stmt = preparedCache.get(sql);
+  if (!stmt) {
+    stmt = getDb().prepare(sql);
+    preparedCache.set(sql, stmt);
+  }
+  return stmt;
 }
 
 function migrate(db) {
@@ -148,6 +162,10 @@ function migrate(db) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_categories_vertical ON categories(vertical);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_layouts_status ON layouts(status);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_layouts_updated_at ON layouts(updated_at);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_layouts_vertical ON layouts(vertical);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);");
 }
 
 function upsertMissingConfigs(db) {
@@ -230,6 +248,8 @@ const DEFAULT_CONFIGS = {
     fixtureTemplates: [
       { type: "gondola", defaultWidthMeters: 1.8, defaultDepthMeters: 0.9, defaultLevels: 3 },
       { type: "shelf", defaultWidthMeters: 1.2, defaultDepthMeters: 0.6, defaultLevels: 2 },
+      { type: "chilled", defaultWidthMeters: 2.5, defaultDepthMeters: 0.9, defaultLevels: 4 },
+      { type: "frozen", defaultWidthMeters: 2.5, defaultDepthMeters: 0.9, defaultLevels: 4 },
     ],
     complianceRules: ["Min aisle 1.5m", "Chilled zone adjacency to back wall"],
     approvalWorkflowEnabled: true,
@@ -450,15 +470,16 @@ function layoutToPayload(layout) {
     lastSubmittedAt: n.lastSubmittedAt ?? null,
     portfolioKpis: n.portfolioKpis ?? null,
     namingConvention: n.namingConvention ?? null,
+    importSource: n.importSource ?? null,
   });
 }
 
 export const repo = {
   findUserByEmail(email) {
-    return getDb().prepare("SELECT * FROM users WHERE email = ?").get(email) || null;
+    return prepared("SELECT * FROM users WHERE email = ?").get(email) || null;
   },
   findUserById(id) {
-    return getDb().prepare("SELECT * FROM users WHERE id = ?").get(id) || null;
+    return prepared("SELECT * FROM users WHERE id = ?").get(id) || null;
   },
   listUsers() {
     return getDb()
@@ -570,7 +591,7 @@ export const repo = {
       .run(token, userId, role, createdAt, expiresAt);
   },
   getSession(token) {
-    const row = getDb().prepare("SELECT * FROM sessions WHERE token = ?").get(token);
+    const row = prepared("SELECT * FROM sessions WHERE token = ?").get(token);
     if (!row) return null;
     if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
       this.deleteSession(token);
@@ -579,7 +600,7 @@ export const repo = {
     return row;
   },
   deleteSession(token) {
-    getDb().prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    prepared("DELETE FROM sessions WHERE token = ?").run(token);
   },
   versioningEnabled() {
     const raw = process.env.LAYOUT_VERSIONING;
@@ -639,10 +660,10 @@ export const repo = {
   },
   getConfig(vertical) {
     const key = String(vertical || "retail").toLowerCase();
-    const row = getDb().prepare("SELECT payload FROM configs WHERE vertical = ?").get(key);
+    const row = prepared("SELECT payload FROM configs WHERE vertical = ?").get(key);
     if (row) return JSON.parse(row.payload);
     if (DEFAULT_CONFIGS[key]) return { ...DEFAULT_CONFIGS[key] };
-    const retail = getDb().prepare("SELECT payload FROM configs WHERE vertical = 'retail'").get();
+    const retail = prepared("SELECT payload FROM configs WHERE vertical = 'retail'").get();
     return retail ? JSON.parse(retail.payload) : DEFAULT_CONFIGS.retail;
   },
   putConfig(config) {
@@ -655,7 +676,7 @@ export const repo = {
     return config;
   },
   getShopperExperience() {
-    const row = getDb().prepare("SELECT payload FROM configs WHERE vertical = '__shopper__'").get();
+    const row = prepared("SELECT payload FROM configs WHERE vertical = '__shopper__'").get();
     if (row) return JSON.parse(row.payload);
     return { enabled: false, layoutId: null, displayName: "", entryPointId: null };
   },
@@ -759,7 +780,7 @@ export const repo = {
                 width_meters AS widthMeters, depth_meters AS depthMeters,
                 updated_at AS updatedAt
          FROM layouts ORDER BY updated_at DESC`;
-    return status ? getDb().prepare(sql).all(status) : getDb().prepare(sql).all();
+    return status ? prepared(sql).all(status) : prepared(sql).all();
   },
   /** Portfolio analytics — metadata + stored KPIs only (no shelves/planograms). */
   listLayoutPortfolioSummaries(status) {
@@ -770,7 +791,7 @@ export const repo = {
       : `SELECT id, name, vertical, status, width_meters AS widthMeters, depth_meters AS depthMeters,
                 updated_at AS updatedAt, json_extract(payload, '$.portfolioKpis') AS portfolioKpisJson
          FROM layouts ORDER BY updated_at DESC`;
-    const rows = status ? getDb().prepare(sql).all(status) : getDb().prepare(sql).all();
+    const rows = status ? prepared(sql).all(status) : prepared(sql).all();
     return rows.map((row) => {
       let portfolioKpis = null;
       if (row.portfolioKpisJson) {
@@ -793,7 +814,7 @@ export const repo = {
     });
   },
   patchPortfolioKpis(layoutId, portfolioKpis) {
-    const row = getDb().prepare("SELECT payload FROM layouts WHERE id = ?").get(layoutId);
+    const row = prepared("SELECT payload FROM layouts WHERE id = ?").get(layoutId);
     if (!row) return false;
     const payload = JSON.parse(row.payload);
     payload.portfolioKpis = portfolioKpis;
@@ -861,7 +882,7 @@ export const repo = {
     return { ...product, attributes: attrs, imageUrl: attrs.imageUrl || null };
   },
   deleteProduct(id) {
-    const info = getDb().prepare("DELETE FROM products WHERE id = ?").run(id);
+    const info = prepared("DELETE FROM products WHERE id = ?").run(id);
     if (info.changes > 0) invalidateCatalogCache();
     return info.changes > 0;
   },
@@ -876,7 +897,7 @@ export const repo = {
     return info.changes > 0 ? { ok: true } : { ok: false, error: "not_found" };
   },
   getLayout(id) {
-    return rowToLayout(getDb().prepare("SELECT * FROM layouts WHERE id = ?").get(id));
+    return rowToLayout(prepared("SELECT * FROM layouts WHERE id = ?").get(id));
   },
   saveLayout(layout) {
     getDb()
@@ -910,6 +931,8 @@ export const repo = {
   },
   deleteLayout(id) {
     const db = getDb();
+    db.prepare("DELETE FROM user_store_access WHERE layout_id = ?").run(id);
+    db.prepare("UPDATE users SET shopper_layout_id = NULL WHERE shopper_layout_id = ?").run(id);
     db.prepare("DELETE FROM layout_versions WHERE layout_id = ?").run(id);
     const info = db.prepare("DELETE FROM layouts WHERE id = ?").run(id);
     return info.changes > 0;
@@ -939,7 +962,7 @@ export function getConfig(vertical) {
 
 export const db = {
   get users() {
-    return getDb().prepare("SELECT * FROM users").all();
+    return prepared("SELECT * FROM users").all();
   },
   get categories() {
     return repo.listCategories();
@@ -957,7 +980,7 @@ export const db = {
     return repo.listAudit(100);
   },
   get configs() {
-    const rows = getDb().prepare("SELECT vertical, payload FROM configs").all();
+    const rows = prepared("SELECT vertical, payload FROM configs").all();
     const out = {};
     for (const r of rows) out[r.vertical] = JSON.parse(r.payload);
     return out;

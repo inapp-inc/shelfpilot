@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ShelfPilot API
-  version: 0.8.0
+  version: 0.9.0
   description: |
     UI + mock API contract for ShelfPilot store layout design (demo stack).
     Auth is email/password. Role is stored on the user record (not chosen at login). Persistence is SQLite.
@@ -18,6 +18,8 @@ info:
     v0.8 adds shelf bay segments (horizontal splits), segment-scoped planogram preview/placement,
     and documents the visual planogram editor contract (changes: layout-dimensions-rotation-shelf-bays,
     shelf-planogram-visual-editor).
+    v0.9 documents fixture-level floor plan import on create (change: plan-fixture-import / SEED-PI-03).
+    See `Docs/PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md`.
 servers:
   - url: http://localhost:3000
   - url: http://localhost:3001
@@ -102,6 +104,42 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /layouts/analyze-plan:
+    post:
+      tags: [Layouts]
+      operationId: analyzePlanUpload
+      description: |
+        Designer/Admin. Parse uploaded plan bytes (PDF with text, SVG, or `.txt` extract) into
+        `fixturePlan` + dimensions. Raster PNG/JPG returns 501/503 unless OCR is configured
+        (`PLAN_FIXTURE_OCR_ENABLED`); prefer PDF export for fixture labels.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dataBase64]
+              properties:
+                fileName: { type: string }
+                mimeType: { type: string }
+                dataBase64:
+                  type: string
+                  description: Raw file or data-URL base64 payload (max 12 MB decoded)
+      responses:
+        "200":
+          description: Parsed fixture plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyzePlanResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "501":
+          description: OCR disabled
+        "503":
+          description: Raster OCR not supported
+
   /layouts:
     get:
       tags: [Layouts]
@@ -132,7 +170,11 @@ paths:
     post:
       tags: [Layouts]
       operationId: createLayout
-      description: Roles — Designer, Admin
+      description: |
+        Roles — Designer, Admin.
+        Optional `floorPlanImport` with `importMode: fixture` and `runs[]` builds shelves/aisles from
+        parsed architect plan data (SEED-PI-05 when enabled). Envelope-only import unchanged.
+        Contract — `Docs/PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md` §8.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1453,6 +1495,127 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Point"
+        floorPlanImport:
+          $ref: "#/components/schemas/FloorPlanImport"
+        autoGenerateFixtures:
+          type: boolean
+          default: true
+          description: When false with fixture import, skips rules packer (fixture builder used instead).
+        categoryMix:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    FloorPlanImport:
+      type: object
+      description: Analyzed floor plan metadata and optional fixture runs (plan-fixture-import).
+      properties:
+        sourceFileName: { type: string }
+        sourceType:
+          type: string
+          enum: [pdf, image, svg]
+        dimensionSource: { type: string }
+        matchedText: { type: string, nullable: true }
+        pageIndex: { type: integer, default: 0 }
+        importMode:
+          type: string
+          enum: [fixture, envelope]
+        parserVersion: { type: string }
+        scale:
+          $ref: "#/components/schemas/FloorPlanImportScale"
+        storeEnvelope:
+          $ref: "#/components/schemas/FloorPlanImportStoreEnvelope"
+        runs:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/FixtureImportRun"
+        aisleHints:
+          type: array
+          items:
+            $ref: "#/components/schemas/FixtureImportAisleHint"
+        warnings:
+          type: array
+          items: { type: string }
+        planText:
+          type: string
+          description: Optional raw plan text for BOH obstacle hints on create
+    FloorPlanImportScale:
+      type: object
+      properties:
+        method: { type: string }
+        ratio: { type: number, nullable: true }
+        metersPerPixel: { type: number, nullable: true }
+    FloorPlanImportStoreEnvelope:
+      type: object
+      properties:
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        derivedFrom: { type: string }
+        userConfirmed: { type: boolean }
+    FixtureImportRun:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        kind:
+          type: string
+          enum: [ambient_gondola, chiller, freezer, low_level, unknown]
+        lengthMeters: { type: number, minimum: 0.01, maximum: 120 }
+        depthMeters: { type: number, minimum: 0.05, maximum: 5 }
+        bayCount: { type: integer, nullable: true }
+        levelCount: { type: integer, nullable: true }
+        doorCount: { type: integer, nullable: true }
+        confidence: { type: number }
+        suggestedCategoryName: { type: string, nullable: true }
+        geometry:
+          $ref: "#/components/schemas/FixtureImportRunGeometry"
+      description: geometry optional until SEED-PI-08 (PDF text positions).
+    FixtureImportRunGeometry:
+      type: object
+      properties:
+        centerXMeters: { type: number }
+        centerYMeters: { type: number }
+        rotationDeg: { type: number, default: 0 }
+    FixtureImportAisleHint:
+      type: object
+      properties:
+        widthMeters: { type: number }
+        source: { type: string }
+        confidence: { type: number }
+    AnalyzePlanResponse:
+      type: object
+      properties:
+        fileName: { type: string }
+        sourceType: { type: string }
+        widthMeters: { type: number }
+        depthMeters: { type: number }
+        fixturePlan:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items: { type: string }
+        textItemCount: { type: integer }
+    LayoutImportSource:
+      type: object
+      properties:
+        fileName: { type: string }
+        sourceType: { type: string }
+        dimensionSource: { type: string }
+        matchedText: { type: string, nullable: true }
+        pageIndex: { type: integer }
+        fixtureImport:
+          type: object
+          properties:
+            importMode: { type: string }
+            scale:
+              $ref: "#/components/schemas/FloorPlanImportScale"
+            runCount: { type: integer }
+            warnings:
+              type: array
+              items: { type: string }
+            parserVersion: { type: string }
     UpdateLayoutRequest:
       type: object
       properties:
@@ -1913,6 +2076,8 @@ components:
             aisleViolations:
               type: array
               items: { type: string }
+        importSource:
+          $ref: "#/components/schemas/LayoutImportSource"
         updatedAt: { type: string, format: date-time }
     LayoutVersion:
       type: object

@@ -66,6 +66,26 @@ test("Designer deletes a layout; it disappears from the list", async () => {
   });
 });
 
+test("Admin deletes layout linked in user_store_access", async () => {
+  await withServer(async (port) => {
+    const token = await login(port, "Admin", "admin@shelfpilot.local");
+    const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
+    const layout = await createLayout(port, headers);
+    const { getDb } = await import("../src/store/sqlite.js");
+    getDb()
+      .prepare("INSERT INTO user_store_access (user_id, layout_id) VALUES (?, ?)")
+      .run("u-customer", layout.id);
+
+    const del = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}`, {
+      method: "DELETE",
+      headers,
+    });
+    const body = await del.json();
+    assert.equal(del.status, 200, JSON.stringify(body));
+    assert.equal(body.ok, true);
+  });
+});
+
 test("delete unknown layout returns 404; Viewer forbidden", async () => {
   await withServer(async (port) => {
     const token = await login(port, "Designer");
@@ -75,7 +95,7 @@ test("delete unknown layout returns 404; Viewer forbidden", async () => {
     assert.equal(missing.status, 404);
 
     const layout = await createLayout(port, headers);
-    const viewer = await login(port, "Viewer");
+    const viewer = await login(port, "Viewer", "viewer@shelfpilot.local");
     const denied = await fetch(`http://127.0.0.1:${port}/layouts/${layout.id}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${viewer}` },

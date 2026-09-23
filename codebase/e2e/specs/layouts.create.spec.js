@@ -1,9 +1,14 @@
 import { test, expect } from "@playwright/test";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loginAs } from "../fixtures/auth.js";
 import { API_URL } from "../fixtures/env.js";
 import { LayoutsPortfolioPage } from "../pages/LayoutsPortfolioPage.js";
 import { LayoutCreateModal } from "../pages/LayoutCreateModal.js";
 import { LayoutEditorPage } from "../pages/LayoutEditorPage.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const layout2Extract = path.join(__dirname, "../fixtures/layout2-text-extract.txt");
 
 test.describe("Layouts create & demo @smoke", () => {
   test.beforeAll(async () => {
@@ -64,6 +69,18 @@ test.describe("Layouts create & demo @smoke", () => {
     await expect(page.getByTestId("layout-create-modal")).toBeVisible();
     await expect(page.getByTestId("layout-create-errors")).toBeVisible();
     await expect(page.getByText(/Store name is required/i)).toBeVisible();
+  });
+
+  test("@smoke floor plan text extract shows fixture import preview", async ({ page }) => {
+    await loginAs(page, "Designer");
+    const portfolio = new LayoutsPortfolioPage(page);
+    await portfolio.goto();
+    await portfolio.openCreateModal();
+    await page.getByTestId("layout-create-mode-floorplan").click();
+    await page.getByTestId("layout-create-floorplan-input").setInputFiles(layout2Extract);
+    await expect(page.getByTestId("layout-create-fixture-preview")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("layout-create-import-mode-fixture")).toBeVisible();
+    await expect(page.getByText(/AMBIENT 9m/i)).toBeVisible();
   });
 
   test("@smoke open demo layout has no aisle width violations", async ({ page }) => {

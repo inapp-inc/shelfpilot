@@ -10,7 +10,7 @@ import {
 
 test("FR-BUF-01: product slot includes 1 cm lateral buffer", () => {
   assert.equal(PRODUCT_LATERAL_BUFFER_TOTAL_M, 0.01);
-  assert.equal(productSlotWidthMeters(0.2), 0.21);
+  assert.ok(Math.abs(productSlotWidthMeters(0.2) - 0.21) < 1e-9);
 });
 
 test("FR-BUF-01: max facings = floor((U - bayReserve) / (W + buffer))", () => {

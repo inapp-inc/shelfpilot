@@ -4,6 +4,8 @@
 **Author:** ShelfPilot team  
 **Last updated:** 2026-08-10  
 
+**Related (Sep 2026 demo):** Fixture-level import (shelf/aisle dimensions from architect plans, sample assets in `Docs/plan/`) is specified separately in **`PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md`** — review that document before implementing; this file remains the **store envelope + packer** path.
+
 ---
 
 ## 1. Problem statement

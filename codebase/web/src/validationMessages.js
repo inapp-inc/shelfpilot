@@ -24,6 +24,10 @@ const ERROR_MESSAGES = {
   arrangement_not_accepted: "Accept the shelf arrangement & volume summary before allocating products.",
   no_shelves: "Arrange shelves before accepting the layout summary.",
   fixture_area_required: "Draw and apply a fixture area on the floor plan before running Smart Generate.",
+  fixture_import_empty_runs: "Fixture import requires at least one parsed run.",
+  invalid_run_length: "Fixture run length is invalid.",
+  invalid_floor_plan_import: "Floor plan import data is invalid.",
+  invalid_import_mode: "Unknown floor plan import mode.",
   fixture_templates_required: "Add shelf fixtures in Admin → Store Master before generating.",
   floor_plan_not_found: "No floor plan is attached to this layout.",
   product_category_mismatch: "Product category or storage type does not match this shelf face.",
@@ -70,6 +74,13 @@ export function validateLayoutCreate(draft) {
     if (d) errors.depthMeters = d;
     const h = positiveNumber(draft?.heightMeters, "Height", { min: 1, max: 20 });
     if (h) errors.heightMeters = h;
+    if (
+      draft?.floorPlanImportMode === "fixture" &&
+      draft?.floorPlanEnvelopeDerived &&
+      !draft?.floorPlanEnvelopeConfirmed
+    ) {
+      errors.floorPlan = "Confirm store dimensions (or edit length/width) before creating.";
+    }
   } else {
     const w = positiveNumber(draft?.widthMeters, "Length", { min: 1, max: 500 });
     if (w) errors.widthMeters = w;

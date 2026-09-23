@@ -55,20 +55,32 @@ function sliceWindow(ids, idx, windowSize) {
   return ids.slice(start, end);
 }
 
-/** Fallback when aisle binding is missing — colinear shelves along the same fixture run. */
-export function spatialFocusGroupFor(layout, targetShelfId, windowSize = SHELF_3D_GROUP_SIZE) {
-  const shelves = (layout?.shelves || layout?.fixtures || []).filter((s) => s && !s.pairDisplay);
-  const target = shelves.find((s) => s.id === targetShelfId);
-  if (!target) return [targetShelfId];
-
+/**
+ * Shelves sharing the target's physical run: same facing (within 14°) and close enough
+ * laterally to sit on the same gondola line, ordered by position along that run.
+ *
+ * The rotation filter also drops the target's own back half (front/back of a gondola differ by
+ * 180°) — that matters because the two halves render as ONE unit, so keeping both would waste a
+ * slot in the window and yield only two visible units.
+ */
+function colinearRun(shelves, target) {
   const maxLateral = Math.max(Number(target.depthMeters) || 0.6, 0.5) * 1.85;
-  const row = shelves
+  return shelves
     .filter(
       (s) =>
         s.id === target.id ||
         (rotationDelta(s, target) < 14 && lateralAxisDistance(s, target) < maxLateral)
     )
     .sort((a, b) => runAxisProjection(a) - runAxisProjection(b));
+}
+
+/** Fallback when aisle binding is missing — colinear shelves along the same fixture run. */
+export function spatialFocusGroupFor(layout, targetShelfId, windowSize = SHELF_3D_GROUP_SIZE) {
+  const shelves = (layout?.shelves || layout?.fixtures || []).filter((s) => s && !s.pairDisplay);
+  const target = shelves.find((s) => s.id === targetShelfId);
+  if (!target) return [targetShelfId];
+
+  const row = colinearRun(shelves, target);
   const idx = row.findIndex((s) => s.id === targetShelfId);
   if (idx < 0) return [targetShelfId];
   return sliceWindow(
@@ -98,7 +110,13 @@ export function focusGroupFor(layout, targetShelfId, windowSize = SHELF_3D_GROUP
     };
   }
 
-  const aisleShelves = shelvesOnAisle(layout, target.aisleId);
+  // Candidates come from the aisle binding (project.md §9: aisle binding owns shelf identity),
+  // but the window must be ordered by real position along the run — NOT by shelfIndexAlongAisle.
+  // One aisle routinely binds both halves of every gondola plus more than one gondola column, so
+  // consecutive indices are not neighbours: on a generated vertical layout, indices 0/1/2 were
+  // the target, the target's own back half (same rendered unit), and a gondola in the next column
+  // 2.5m to the side — a "three-shelf" window that drew two units, one of them across the way.
+  const aisleShelves = colinearRun(shelvesOnAisle(layout, target.aisleId), target);
   const idx = aisleShelves.findIndex((s) => s.id === targetShelfId);
   if (idx < 0) {
     return {
@@ -109,7 +127,7 @@ export function focusGroupFor(layout, targetShelfId, windowSize = SHELF_3D_GROUP
 
   const aisleIds = aisleShelves.map((s) => s.id);
   let physicalShelfIds = sliceWindow(aisleIds, idx, windowSize);
-  if (physicalShelfIds.length < 2) {
+  if (physicalShelfIds.length < windowSize) {
     const spatialIds = spatialFocusGroupFor(layout, targetShelfId, windowSize);
     if (spatialIds.length > physicalShelfIds.length) {
       physicalShelfIds = spatialIds;

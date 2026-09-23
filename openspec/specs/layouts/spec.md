@@ -165,3 +165,27 @@ Autogenerate SHALL omit shelves/aisles that do not fully fit inside the polygon 
 - **GIVEN** a tight L-shaped polygon
 - **WHEN** autogenerate cannot place all grid slots
 - **THEN** the response includes `skippedOutsideCount` ≥ 0 and zero containment violations
+
+### Requirement: Fixture-level floor plan import
+
+The system SHALL accept an extended `floorPlanImport` payload on layout create that includes parsed fixture **runs** (length, depth, kind, bay/level counts) and SHALL materialize native **aisles** and **shelves** when `importMode` is `fixture` and `PLAN_FIXTURE_IMPORT_ENABLED` is true. PDF text positions MAY populate optional `run.geometry` for placement (see `Docs/PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md`).
+
+#### Scenario: Fixture import from parsed runs
+
+- **GIVEN** a valid `floorPlanImport` with `importMode: "fixture"` and at least one run with `lengthMeters > 0`
+- **WHEN** the client POSTs `/layouts` with fixture import enabled
+- **THEN** the response layout includes non-empty `shelves` and `aisles` derived from runs
+- **AND** `importSource.fixtureImport` records scale method, run count, warnings, and parser version
+- **AND** generic packer autogenerate is not used for that request unless the user opts into envelope fallback
+
+#### Scenario: Analyze plan (server)
+
+- **GIVEN** an authenticated Designer
+- **WHEN** they POST `/layouts/analyze-plan` with plan file bytes (PDF text layer or `.txt` extract)
+- **THEN** the response includes `fixturePlan` with parsed runs and suggested store dimensions
+
+#### Scenario: Envelope-only import unchanged
+
+- **GIVEN** `floorPlanImport` without `importMode: fixture` or with fixture import disabled
+- **WHEN** the client POSTs `/layouts` with existing envelope import fields
+- **THEN** behaviour matches the envelope + packer create path

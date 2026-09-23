@@ -1,0 +1,11 @@
+KALEA FREEZE GM FR AIR GD 3125
+6 DOORS 3 BAYS
+AMBIENT 4.5m
+AMBIENT 3.5m
+AMBIENT VEG 3m
+Low level shelving 11m long 250mm deep
+3 BAYS 3 SHELVES
+Gondola aisle clearance 1500
+Secondary passage 1250 mm
+KALEA CHILLED 3750
+6 DOORS 3 BAYS

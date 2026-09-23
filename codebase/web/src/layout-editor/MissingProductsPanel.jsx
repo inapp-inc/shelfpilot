@@ -189,8 +189,6 @@ export default function MissingProductsPanel({
   refreshLoading = false,
   hideDragHint = false,
 }) {
-  if (!alwaysShow && !coverage && !loading) return null;
-
   const missing = coverage?.missingProducts || [];
   const total = coverage?.totalProducts ?? 0;
   const placed = coverage?.placedCount ?? 0;
@@ -520,6 +518,11 @@ export default function MissingProductsPanel({
       ) : null}
     </>
   );
+
+  // Moved here from the top of the function: hooks must run unconditionally on every render, so
+  // this "nothing to show" bail-out can't happen before the useState/useMemo/useEffect calls
+  // above (that was a React rules-of-hooks violation — see Docs/need-works.md TOOL-01/BUG-01).
+  if (!alwaysShow && !coverage && !loading) return null;
 
   if (embedded) {
     return (

@@ -38,11 +38,27 @@ export const EMPTY_CREATE_DRAFT = {
   floorPlanDimensionSource: "",
   floorPlanDimensionSourceLabel: "",
   floorPlanMatchedText: "",
+  fixturePlan: null,
+  floorPlanImportMode: "envelope",
+  floorPlanEnvelopeDerived: false,
+  floorPlanEnvelopeConfirmed: true,
+  floorPlanScaleRatio: null,
+  floorPlanScaleMatched: null,
 };
 
-export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSubmit, submitting, shelfTemplates = [] }) {
+export default function LayoutCreateModal({
+  open,
+  onClose,
+  draft,
+  setDraft,
+  onSubmit,
+  submitting,
+  shelfTemplates = [],
+  authToken = null,
+}) {
   const [errors, setErrors] = useState({});
   const [fileBusy, setFileBusy] = useState(false);
+  const [analyzeStatus, setAnalyzeStatus] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
 
@@ -55,6 +71,9 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
   const form = draft || EMPTY_CREATE_DRAFT;
   const footprintMode = form.footprintMode === "floorPlan" ? "floorPlan" : "dimensions";
   const pdfSource = form.floorPlanSourceType === "pdf";
+  const fixtureRuns = form.fixturePlan?.runs || [];
+  const hasFixtureRuns = fixtureRuns.length > 0;
+  const importModeFixture = form.floorPlanImportMode === "fixture" && hasFixtureRuns;
 
   function clearError(field) {
     if (errors[field]) setErrors((prev) => ({ ...prev, [field]: "" }));
@@ -72,6 +91,12 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
       floorPlanDimensionSource: "",
       floorPlanDimensionSourceLabel: "",
       floorPlanMatchedText: "",
+      fixturePlan: null,
+      floorPlanImportMode: "envelope",
+      floorPlanEnvelopeDerived: false,
+      floorPlanEnvelopeConfirmed: true,
+      floorPlanScaleRatio: null,
+      floorPlanScaleMatched: null,
     };
   }
 
@@ -91,8 +116,15 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
 
   async function ingestFloorPlanFile(file) {
     setFileBusy(true);
+    setAnalyzeStatus("");
     try {
-      const imported = await analyzeFloorPlanUpload(file);
+      const imported = await analyzeFloorPlanUpload(file, {
+        token: authToken,
+        onPhase: (phase) => {
+          if (phase === "ocr") setAnalyzeStatus("Reading fixture labels from image (OCR)…");
+          else if (phase === "parse") setAnalyzeStatus("Parsing shelves and refrigeration…");
+        },
+      });
       setDraft({
         ...form,
         ...imported,
@@ -103,6 +135,7 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
       setErrors((prev) => ({ ...prev, floorPlan: err.message || "Could not read that file." }));
     } finally {
       setFileBusy(false);
+      setAnalyzeStatus("");
     }
   }
 
@@ -279,10 +312,14 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
                       🗺️
                     </div>
                     <div style={{ fontWeight: 700, fontSize: 13 }}>
-                      {fileBusy ? "Analyzing file…" : dragOver ? "Drop floor plan here" : "Choose or drop floor plan"}
+                      {fileBusy
+                        ? analyzeStatus || "Analyzing file…"
+                        : dragOver
+                          ? "Drop floor plan here"
+                          : "Choose or drop floor plan"}
                     </div>
                     <div className="muted" style={{ fontSize: 12 }}>
-                      PNG, JPG, WEBP, SVG or PDF (page 1) · max 12 MB
+                      PNG, JPG, WEBP, SVG, PDF (page 1), or .txt extract · max 12 MB
                     </div>
                   </>
                 )}
@@ -291,6 +328,91 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
             </div>
             {form.floorPlanAnalyzed ? (
               <>
+                {!hasFixtureRuns && form.floorPlanSourceType === "image" ? (
+                  <AlertBanner variant="warning" data-testid="layout-create-no-fixture-labels">
+                    No fixture labels were read from this image. The layout will use Smart Generate from store
+                    dimensions only. Try a clearer PNG, a PDF with a text layer, or upload a{" "}
+                    <span className="mono">.txt</span> extract from the plan.
+                  </AlertBanner>
+                ) : null}
+                {hasFixtureRuns && importModeFixture ? (
+                  <p className="muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
+                    Create with <strong>Fixture layout</strong> selected to place shelves like the uploaded plan
+                    (refrigeration, gondolas, ambient runs). Smart Generate can fill categories afterward.
+                  </p>
+                ) : null}
+                {hasFixtureRuns ? (
+                  <div className="field" data-testid="layout-create-fixture-preview">
+                    <label>Import mode</label>
+                    <div className="mode-toggle" role="group" aria-label="Floor plan import mode">
+                      <button
+                        type="button"
+                        className={importModeFixture ? "active" : ""}
+                        data-testid="layout-create-import-mode-fixture"
+                        onClick={() => setDraft({ ...form, floorPlanImportMode: "fixture" })}
+                      >
+                        Fixture layout ({fixtureRuns.length} runs)
+                      </button>
+                      <button
+                        type="button"
+                        className={!importModeFixture ? "active" : ""}
+                        data-testid="layout-create-import-mode-envelope"
+                        onClick={() => setDraft({ ...form, floorPlanImportMode: "envelope" })}
+                      >
+                        Store envelope only
+                      </button>
+                    </div>
+                    {importModeFixture ? (
+                      <>
+                        <div className="fixture-import-table-wrap">
+                          <table className="fixture-import-table">
+                            <thead>
+                              <tr>
+                                <th>Label</th>
+                                <th>Kind</th>
+                                <th>Length</th>
+                                <th>Depth</th>
+                                <th>Bays</th>
+                                <th>Levels</th>
+                                <th>Doors</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {fixtureRuns.map((run) => (
+                                <tr key={run.id}>
+                                  <td>{run.label}</td>
+                                  <td className="mono">{run.kind}</td>
+                                  <td className="mono">{run.lengthMeters != null ? `${run.lengthMeters} m` : "—"}</td>
+                                  <td className="mono">{run.depthMeters != null ? `${run.depthMeters} m` : "—"}</td>
+                                  <td className="mono">{run.bayCount ?? "—"}</td>
+                                  <td className="mono">{run.levelCount ?? "—"}</td>
+                                  <td className="mono">{run.doorCount ?? "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {form.floorPlanScaleMatched ? (
+                          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                            Scale: <span className="mono">{form.floorPlanScaleMatched}</span>
+                            {form.floorPlanScaleRatio ? ` (1:${form.floorPlanScaleRatio})` : null}
+                          </div>
+                        ) : null}
+                        {(form.fixturePlan?.warnings || []).length ? (
+                          <ul className="fixture-import-warnings" style={{ fontSize: 12, marginTop: 8 }}>
+                            {form.fixturePlan.warnings.map((w) => (
+                              <li key={w}>{w.replace(/_/g, " ")}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                        Uses store dimensions below and Smart Generate packing (ignores parsed fixture runs).
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 <div
                   data-testid="layout-create-floorplan-analysis"
                   style={{
@@ -313,10 +435,29 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
                     ) : null}
                   </div>
                   <div className="muted" style={{ marginTop: 4 }}>
-                    Shelves and aisles will be generated automatically from these store dimensions — the drawing is not
-                    shown on the canvas.
+                    {importModeFixture
+                      ? "Confirm store length and width if derived from fixture runs. Shelves are placed from parsed labels — the drawing is not shown on the canvas."
+                      : "Shelves and aisles will be generated automatically from these store dimensions — the drawing is not shown on the canvas."}
                   </div>
                 </div>
+                {form.floorPlanEnvelopeDerived && !form.floorPlanEnvelopeConfirmed ? (
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                    Store size was estimated from fixture runs — adjust length/width or check the box below to confirm.
+                  </div>
+                ) : null}
+                {form.floorPlanEnvelopeDerived ? (
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, marginBottom: 8 }}>
+                    <input
+                      type="checkbox"
+                      data-testid="layout-create-envelope-confirm"
+                      checked={form.floorPlanEnvelopeConfirmed}
+                      onChange={(e) =>
+                        setDraft({ ...form, floorPlanEnvelopeConfirmed: e.target.checked })
+                      }
+                    />
+                    Store dimensions are correct
+                  </label>
+                ) : null}
                 <div className="form-grid-3">
                   <div className={`field${errors.widthMeters ? " field-invalid" : ""}`}>
                     <label data-testid="layout-create-length-label">Length (m)</label>
@@ -328,7 +469,11 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
                       data-testid="layout-create-length"
                       value={form.widthMeters}
                       onChange={(e) => {
-                        setDraft({ ...form, widthMeters: e.target.value });
+                        setDraft({
+                          ...form,
+                          widthMeters: e.target.value,
+                          floorPlanEnvelopeConfirmed: true,
+                        });
                         clearError("widthMeters");
                       }}
                     />
@@ -344,7 +489,11 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
                       data-testid="layout-create-width"
                       value={form.depthMeters}
                       onChange={(e) => {
-                        setDraft({ ...form, depthMeters: e.target.value });
+                        setDraft({
+                          ...form,
+                          depthMeters: e.target.value,
+                          floorPlanEnvelopeConfirmed: true,
+                        });
                         clearError("depthMeters");
                       }}
                     />
@@ -448,7 +597,7 @@ export default function LayoutCreateModal({ open, onClose, draft, setDraft, onSu
               >
                 <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Shared shelf layer</div>
                 <div className="mono" style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
-                  Inherited from Admin → Configuration for this store type. Edit templates there before creating layouts.
+                  Inherited from Admin → Store Master for this store type. Edit templates there before creating layouts.
                 </div>
                 <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
                   {shelfTemplates.map((t) => (

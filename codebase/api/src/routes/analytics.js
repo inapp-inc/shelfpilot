@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { repo, getConfig } from "../store/sqlite.js";
 import { authRequired } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
 import { computeAnalytics, computePortfolioAnalytics } from "../services/layoutMath.js";
 import {
   computePortfolioKpis,
@@ -49,36 +50,41 @@ function ensurePortfolioKpis(records) {
   return records;
 }
 
-analyticsRouter.get("/analytics/portfolio", authRequired, (req, res) => {
-  const vertical = req.query.vertical || null;
-  const cached = getCachedPortfolio(vertical);
-  if (cached) {
-    return res.json({ ...cached, cached: true });
-  }
+analyticsRouter.get(
+  "/analytics/portfolio",
+  authRequired,
+  rateLimit({ label: "analytics_portfolio", windowMs: 60_000, max: 30 }),
+  (req, res) => {
+    const vertical = req.query.vertical || null;
+    const cached = getCachedPortfolio(vertical);
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
 
-  const started = performance.now();
-  let records = repo.listLayoutPortfolioSummaries();
-  if (records.some((r) => !r.portfolioKpis)) {
-    records = ensurePortfolioKpis(records);
+    const started = performance.now();
+    let records = repo.listLayoutPortfolioSummaries();
+    if (records.some((r) => !r.portfolioKpis)) {
+      records = ensurePortfolioKpis(records);
+    }
+    const categories = repo.listCategories();
+    const summary = computePortfolioAnalytics(records, categories, vertical);
+    const durationMs = Number((performance.now() - started).toFixed(3));
+    if (durationMs > 500) {
+      console.log(
+        JSON.stringify({
+          level: "info",
+          message: "analytics_portfolio",
+          layoutCount: records.length,
+          durationMs,
+          backfill: records.filter((r) => r.portfolioKpis).length,
+        })
+      );
+    }
+    const payload = { ...summary, durationMs, cached: false };
+    setCachedPortfolio(vertical, payload);
+    res.json(payload);
   }
-  const categories = repo.listCategories();
-  const summary = computePortfolioAnalytics(records, categories, vertical);
-  const durationMs = Number((performance.now() - started).toFixed(3));
-  if (durationMs > 500) {
-    console.log(
-      JSON.stringify({
-        level: "info",
-        message: "analytics_portfolio",
-        layoutCount: records.length,
-        durationMs,
-        backfill: records.filter((r) => r.portfolioKpis).length,
-      })
-    );
-  }
-  const payload = { ...summary, durationMs, cached: false };
-  setCachedPortfolio(vertical, payload);
-  res.json(payload);
-});
+);
 
 analyticsRouter.get("/analytics/audit-summary", authRequired, (req, res) => {
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));

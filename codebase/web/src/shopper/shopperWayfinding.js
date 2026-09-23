@@ -902,10 +902,123 @@ function routeSegmentsClear(layout, route, ignoreShelfId = null) {
   return true;
 }
 
-/** Walking line for map overlay — aisle network only, never through fixtures. */
-export function routePolylineForMap(layout, route, shelfId = null) {
+function resolveRouteShelf(layout, shelfId) {
+  if (!layout || !shelfId) return null;
+  return (
+    (layout.shelves || []).find((s) => s.id === shelfId && !s.pairDisplay) ||
+    (layout.shelves || []).find((s) => s.id === shelfId)
+  );
+}
+
+/** Last leg: snap map arrow + pin to the customer-facing shelf edge. */
+function appendShelfApproach(layout, walked, shelfId) {
+  if (!walked?.length || !layout || !shelfId) return walked || [];
+  const shelf = resolveRouteShelf(layout, shelfId);
+  if (!shelf) return walked.length >= 2 ? walked : [];
+
+  const { lines } = buildAisleGraph(layout);
+  const aisleNear =
+    nearestCenterlinePoint(lines, shelfCenter(shelf)).point ||
+    (walked.length >= 2 ? walked[walked.length - 2] : walked[0]);
+  const dest = shelfRouteDestination(shelf, layout, aisleNear);
+  if (!dest) return walked.length >= 2 ? walked : [];
+
+  const last = walked[walked.length - 1];
+  if (!eqPt(last, dest, 0.08)) {
+    const connector = pickAxisConnector(last, dest, layout, shelfId);
+    if (connector.length) {
+      for (const leg of connector) {
+        if (!eqPt(walked[walked.length - 1], leg, 0.05)) walked.push({ x: leg.x, y: leg.y });
+      }
+    } else if (!segmentCrossesShelves(layout, last, dest, shelfId)) {
+      walked.push({ x: dest.x, y: dest.y });
+    }
+  }
+
+  // Map arrow + pin must land on the shelf front (customer-facing edge).
+  if (dest) {
+    if (walked.length >= 2) {
+      walked[walked.length - 1] = { x: dest.x, y: dest.y };
+    } else if (walked.length === 1) {
+      walked.push({ x: dest.x, y: dest.y });
+    }
+  }
+  return walked.length >= 2 ? walked : [];
+}
+
+/** Extend or snap the polyline terminus to the customer-facing shelf edge (arrow + pin target). */
+export function ensureRouteEndsAtShelf(layout, route, shelfId) {
+  if (!route?.length || !layout || !shelfId) return route || [];
+  const shelf = resolveRouteShelf(layout, shelfId);
+  if (!shelf) return route;
+
+  let walked = sanitizeRoutePolyline(layout, route, shelfId);
+  if (walked.length < 1) walked = [{ x: route[0].x, y: route[0].y }];
+  return appendShelfApproach(layout, walked, shelfId);
+}
+
+/**
+ * Best walkable path: aisle network (with cross-aisle aprons) → grid fallback → shelf front.
+ * Single source for kiosk map lines and route length hints.
+ */
+export function buildWalkPolylineToShelf(layout, start, shelfId) {
+  if (!layout || !shelfId || !start) return [];
+  const shelf = resolveRouteShelf(layout, shelfId);
+  if (!shelf) return [];
+
+  const targetCenter = shelfCenter(shelf);
+  const { lines } = buildAisleGraph(layout);
+  const targetAisle = resolveTargetAisle(layout, shelf, targetCenter);
+  const aisleGoal =
+    (targetAisle
+      ? projectToCenterline(centerline(targetAisle, layout), targetCenter)
+      : null) ||
+    nearestCenterlinePoint(lines, targetCenter).point ||
+    targetCenter;
+
+  let walked = [];
+  if (lines.length) {
+    walked = walkAisleNetwork(start, aisleGoal, lines, layout);
+    walked = simplifyAxisPath(walked);
+  }
+
+  const networkOk =
+    walked.length >= 2 && routeSegmentsClear(layout, walked, shelfId);
+  if (!networkOk) {
+    const grid = simplifyAxisPath(
+      walkGridAroundShelves(layout, start, aisleGoal, shelfId)
+    );
+    if (grid.length >= 2 && routeSegmentsClear(layout, grid, shelfId)) {
+      const preferGrid =
+        walked.length < 2 ||
+        routeLengthMeters(grid) < routeLengthMeters(walked) * 1.15;
+      if (preferGrid) walked = grid;
+    }
+  }
+
+  if (walked.length < 2) {
+    walked = simplifyAxisPath(walkGridAroundShelves(layout, start, aisleGoal, shelfId));
+  }
+  if (walked.length < 2) {
+    walked = [{ x: start.x, y: start.y }, { x: aisleGoal.x, y: aisleGoal.y }];
+  }
+
+  return appendShelfApproach(layout, walked, shelfId);
+}
+
+/** Walking line for map overlay — recomputed on aisle network for the actual best walk. */
+export function routePolylineForMap(layout, route, shelfId = null, entryPoint = null) {
+  if (shelfId && layout) {
+    const start = route?.length
+      ? { x: route[0].x, y: route[0].y }
+      : (() => {
+          const entry = resolveShopperEntry(layout, entryPoint);
+          return entry ? { x: Number(entry.x), y: Number(entry.y) } : null;
+        })();
+    if (start) return buildWalkPolylineToShelf(layout, start, shelfId);
+  }
   if (!route?.length) return [];
-  return sanitizeRoutePolyline(layout, route, shelfId);
+  return sanitizeRoutePolyline(layout, route, null);
 }
 
 /** Final leg from the aisle walk onto the highlighted shelf (axis-aligned, no shelf cuts). */
@@ -943,62 +1056,9 @@ export function computeShopperRoute(layout, entryPoint, shelfId) {
   const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
   if (!shelf) return [];
 
-  const aisles = walkAisles(layout);
   const entry = resolveShopperEntry(layout, entryPoint);
   const start = { x: Number(entry.x), y: Number(entry.y) };
-  const targetCenter = shelfCenter(shelf);
-
-  if (!aisles.length) {
-    const gridPath = walkGridAroundShelves(layout, start, targetCenter, shelfId);
-    return finishShopperRoute(
-      layout,
-      gridPath.length >= 2 ? gridPath : [start],
-      shelfId
-    );
-  }
-
-  const { lines } = buildAisleGraph(layout);
-  const targetAisle = resolveTargetAisle(layout, shelf, targetCenter);
-  if (!targetAisle) {
-    const gridPath = walkGridAroundShelves(layout, start, targetCenter, shelfId);
-    return finishShopperRoute(
-      layout,
-      gridPath.length >= 2 ? gridPath : [start],
-      shelfId
-    );
-  }
-
-  const onTarget = projectToCenterline(centerline(targetAisle, layout), targetCenter);
-  const entrySnap = nearestCenterlinePoint(lines, start);
-  if (!entrySnap.point) {
-    const gridPath = walkGridAroundShelves(layout, start, onTarget, shelfId);
-    return finishShopperRoute(
-      layout,
-      gridPath.length >= 2 ? gridPath : [start],
-      shelfId
-    );
-  }
-
-  const aislePath = walkAisleNetwork(entrySnap.point, onTarget, lines, layout);
-  const out = [];
-  for (const p of entranceConnector(start, entrySnap, layout, shelfId)) pushUnique(out, p);
-  if (!out.length || !eqPt(out[out.length - 1], entrySnap.point, 0.1)) {
-    pushUnique(out, entrySnap.point);
-  }
-  for (const p of aislePath) {
-    if (eqPt(out[out.length - 1], p, 0.06)) continue;
-    pushUnique(out, p);
-  }
-
-  if (out.length >= 2 && pathReaches(out, onTarget, 1.6)) {
-    return finishShopperRoute(layout, out, shelfId);
-  }
-
-  const gridPath = walkGridAroundShelves(layout, start, onTarget, shelfId);
-  if (routeSegmentsClear(layout, gridPath, shelfId)) {
-    return finishShopperRoute(layout, gridPath, shelfId);
-  }
-  return finishShopperRoute(layout, out.length ? out : [start], shelfId);
+  return buildWalkPolylineToShelf(layout, start, shelfId);
 }
 
 /** Exact shelf footprint plus a badge on the customer-facing shelf edge. */
@@ -1079,4 +1139,10 @@ export function buildAisleWalkSteps(layout, route, entryPoint, shelfId) {
   return steps;
 }
 
-export { shelfCenter, buildAisleGraph, segmentCrossesShelves };
+export {
+  shelfCenter,
+  buildAisleGraph,
+  segmentCrossesShelves,
+  nearestCenterlinePoint,
+  simplifyAxisPath,
+};

@@ -8,18 +8,18 @@ import {
 } from "../layout-editor/placementIndex.js";
 import { pathForModule } from "../routes.js";
 import { useAppRoute } from "../useAppRoute.js";
-import ShopperFloorMap from "../shopper/ShopperFloorMap.jsx";
 import ShopperLayoutPlanMap from "../shopper/ShopperLayoutPlanMap.jsx";
 import ShopperShelfGuide from "../shopper/ShopperShelfGuide.jsx";
 import ShopperStorePicker from "../shopper/ShopperStorePicker.jsx";
 import ShopperStoreSwitcher from "../shopper/ShopperStoreSwitcher.jsx";
-import { mapHighlightShelfId } from "../shopper/shopperKioskHelpers.js";
-import { readPinnedStoreId } from "../shopper/shopperStorePin.js";
 import {
-  computeShopperRoute,
-  resolveShopperEntry,
-  routeLengthMeters,
-} from "../shopper/shopperWayfinding.js";
+  buildShelfMarkersForPlacements,
+  highlightShelfIdsForPlacements,
+  mapHighlightShelfId,
+  placementSpotLabel,
+} from "../shopper/shopperKioskHelpers.js";
+import { readPinnedStoreId } from "../shopper/shopperStorePin.js";
+import { computeShopperRoute, resolveShopperEntry } from "../shopper/shopperWayfinding.js";
 import { productImageUrl } from "../productCatalog.js";
 
 function LogoMark() {
@@ -84,43 +84,6 @@ function ProductThumb({ product, size = 52, className = "" }) {
       height={size}
       loading="lazy"
     />
-  );
-}
-
-function useClock() {
-  const [time, setTime] = useState("");
-  useEffect(() => {
-    function tick() {
-      setTime(
-        new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      );
-    }
-    tick();
-    const id = setInterval(tick, 10000);
-    return () => clearInterval(id);
-  }, []);
-  return time;
-}
-
-function MapViewToggle({ mode, onChange }) {
-  return (
-    <div className="sp-kiosk-map-toggle" role="tablist" aria-label="Map style">
-      {[
-        { id: "simple", label: "Simple map" },
-        { id: "plan", label: "Store plan" },
-      ].map((opt) => (
-        <button
-          key={opt.id}
-          type="button"
-          role="tab"
-          className={`sp-kiosk-map-toggle-btn${mode === opt.id ? " is-active" : ""}`}
-          aria-selected={mode === opt.id}
-          onClick={() => onChange(opt.id)}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -215,12 +178,17 @@ function HeaderProductSearch({
                   <span className="sp-kiosk-tile-name">{p.productName}</span>
                   <span className="sp-kiosk-tile-row">
                     {p.placementCount > 1 ? (
-                      <span className="sp-kiosk-tile-spots">{p.placementCount} spots</span>
-                    ) : null}
-                    {p.aisleLabel ? (
-                      <span className="sp-kiosk-tile-aisle">Aisle {p.aisleLabel}</span>
-                    ) : null}
-                    {p.shelfLabel ? <span className="sp-kiosk-tile-shelf mono">{p.shelfLabel}</span> : null}
+                      <span className="sp-kiosk-tile-spots">{p.placementCount} locations</span>
+                    ) : (
+                      <>
+                        {p.aisleLabel ? (
+                          <span className="sp-kiosk-tile-aisle">Aisle {p.aisleLabel}</span>
+                        ) : null}
+                        {p.shelfLabel ? (
+                          <span className="sp-kiosk-tile-shelf mono">{p.shelfLabel}</span>
+                        ) : null}
+                      </>
+                    )}
                   </span>
                 </span>
               </button>
@@ -232,82 +200,62 @@ function HeaderProductSearch({
   );
 }
 
-function MapLegend() {
+function MapOverlayLegend({ multiSpot }) {
   return (
-    <div className="sp-kiosk-map-legend-inline">
+    <div className="sp-kiosk-map-legend-float" aria-label="Map legend">
       <span><i className="sp-kiosk-legend-dot sp-kiosk-legend-dot--here" />Entrance</span>
-      <span><i className="sp-kiosk-legend-line" />Walk this line</span>
-      <span><i className="sp-kiosk-legend-dot sp-kiosk-legend-dot--product" />Your product</span>
+      <span><i className="sp-kiosk-legend-line sp-kiosk-legend-line--dotted" />Walk lines</span>
+      <span>
+        <i className="sp-kiosk-legend-dot sp-kiosk-legend-dot--product" />
+        {multiSpot ? "Tap a number to highlight a shelf" : "Product"}
+      </span>
     </div>
   );
 }
 
-function SelectionContextBar({
-  product,
-  placement,
-  bayLabel,
-  walkMeters,
-  hasRoute,
-  productPlacements,
-  layout,
-  products,
-  onSelectPlacement,
-  onClear,
-}) {
-  const facts = [
-    placement.aisleLabel ? { label: "Aisle", value: placement.aisleLabel } : null,
-    bayLabel ? { label: "Bay", value: bayLabel } : null,
-    placement.levelLabel ? { label: "Level", value: placement.levelLabel } : null,
-    placement.positionLabel ? { label: "Pos", value: placement.positionLabel } : null,
-    hasRoute ? { label: "Walk", value: `~${walkMeters} meters` } : null,
-  ].filter(Boolean);
-
+function FloatingProductChip({ product, placementCount, onClear }) {
   return (
-    <div className="sp-kiosk-selection-bar" aria-label="Selected product">
-      <ProductThumb product={product} size={36} />
-      <div className="sp-kiosk-selection-main">
-        <div className="sp-kiosk-selection-name">{placement.productName}</div>
-        <div className="sp-kiosk-selection-hint">
-          Follow the <b>blue line</b> from the entrance
-          {hasRoute ? ` · ~${walkMeters} meters` : ""}
+    <div className="sp-kiosk-map-float sp-kiosk-map-float--product" aria-label="Selected product">
+      <ProductThumb product={product} size={32} />
+      <div className="sp-kiosk-map-float-text">
+        <div className="sp-kiosk-map-float-name">{product?.name || "Product"}</div>
+        <div className="sp-kiosk-map-float-sub">
+          {placementCount > 1
+            ? `${placementCount} locations · dotted lines to each shelf`
+            : "Follow the dotted line from entrance"}
         </div>
       </div>
-      <div className="sp-kiosk-selection-facts">
-        {facts.map((fact) => (
-          <span key={fact.label} className="sp-kiosk-selection-fact">
-            <span className="sp-kiosk-selection-fact-label">{fact.label}</span>
-            <span className="sp-kiosk-selection-fact-val mono">{fact.value}</span>
-          </span>
-        ))}
-      </div>
-      {productPlacements.length > 1 ? (
-        <div className="sp-kiosk-loc-tabs sp-kiosk-loc-tabs--inline">
-          {productPlacements.map((row, idx) => (
-            <button
-              key={row.id}
-              type="button"
-              className={`sp-kiosk-loc-tab${row.id === placement.id ? " is-active" : ""}`}
-              onClick={() => onSelectPlacement(row.id)}
-            >
-              Spot {idx + 1}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <div className="sp-kiosk-selection-shelf">
-        <ShopperShelfGuide
-          layout={layout}
-          placement={placement}
-          product={product}
-          products={products}
-          aisleLabel={placement.aisleLabel}
-          shelfLabel={bayLabel}
-          className="sp-kiosk-shelf-guide--compact"
-        />
-      </div>
-      <button type="button" className="sp-kiosk-selection-clear btn-secondary" onClick={onClear}>
+      <button type="button" className="sp-kiosk-map-float-clear btn-secondary" onClick={onClear}>
         Clear
       </button>
+    </div>
+  );
+}
+
+function FloatingShelfLevelPanel({ product, placement, spotLabel, bayLabel, layout, products, onClose }) {
+  if (!placement) return null;
+  return (
+    <div className="sp-kiosk-map-float sp-kiosk-map-float--level" aria-label="Shelf level">
+      <div className="sp-kiosk-map-float-level-head">
+        <div>
+          <div className="sp-kiosk-map-float-level-title">{spotLabel}</div>
+          {placement.levelLabel ? (
+            <div className="sp-kiosk-map-float-level-meta mono">Level {placement.levelLabel}</div>
+          ) : null}
+        </div>
+        <button type="button" className="sp-kiosk-map-float-clear btn-secondary" onClick={onClose} aria-label="Close shelf detail">
+          ×
+        </button>
+      </div>
+      <ShopperShelfGuide
+        layout={layout}
+        placement={placement}
+        product={product}
+        products={products}
+        aisleLabel={placement.aisleLabel}
+        shelfLabel={bayLabel}
+        className="sp-kiosk-shelf-guide--float"
+      />
     </div>
   );
 }
@@ -318,7 +266,6 @@ export default function ShopperKioskPage({ layoutId, session = null, onSignOut }
   const [meta, setMeta] = useState(null);
   const [stores, setStores] = useState([]);
   const [activeLayoutId, setActiveLayoutId] = useState(null);
-  const [mapViewMode, setMapViewMode] = useState("simple");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [layout, setLayout] = useState(null);
   const [products, setProducts] = useState([]);
@@ -328,9 +275,8 @@ export default function ShopperKioskPage({ layoutId, session = null, onSignOut }
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [selectedProductId, setSelectedProductId] = useState(null);
-  const [selectedPlacementId, setSelectedPlacementId] = useState(null);
+  const [focusedPlacementId, setFocusedPlacementId] = useState(null);
   const searchInputRef = useRef(null);
-  const clock = useClock();
 
   const token = session?.token || null;
 
@@ -410,7 +356,7 @@ export default function ShopperKioskPage({ layoutId, session = null, onSignOut }
     setProducts([]);
     setCategories([]);
     setSelectedProductId(null);
-    setSelectedPlacementId(null);
+    setFocusedPlacementId(null);
     setQuery("");
 
     (async () => {
@@ -526,48 +472,112 @@ export default function ShopperKioskPage({ layoutId, session = null, onSignOut }
     return placements.filter((p) => p.productId === selectedProductId);
   }, [placements, selectedProductId]);
 
-  const activePlacement = useMemo(() => {
-    if (!productPlacements.length) return null;
-    return productPlacements.find((p) => p.id === selectedPlacementId) || productPlacements[0];
-  }, [productPlacements, selectedPlacementId]);
-
-  const selectedProduct = selectedProductId ? productById.get(selectedProductId) : null;
-  const hasSelection = Boolean(activePlacement);
-
-  const shelfShortLabel = useMemo(() => {
-    const label = activePlacement?.shelfLabel;
-    if (!label) return null;
-    return label.replace(/\s·\sFace\s[AB]$/, "") || label;
-  }, [activePlacement?.shelfLabel]);
-
   const entryPoint = useMemo(
     () => (layout ? resolveShopperEntry(layout, meta?.entryPoint) : null),
     [layout, meta?.entryPoint]
   );
 
+  const selectedProduct = selectedProductId ? productById.get(selectedProductId) : null;
+  const hasSelection = productPlacements.length > 0;
+
+  const focusedPlacement = useMemo(() => {
+    if (!productPlacements.length) return null;
+    if (focusedPlacementId) {
+      return productPlacements.find((p) => p.id === focusedPlacementId) || null;
+    }
+    if (productPlacements.length === 1) return productPlacements[0];
+    return null;
+  }, [productPlacements, focusedPlacementId]);
+
+  const focusedSpotLabel = useMemo(() => {
+    if (!focusedPlacement) return "";
+    const idx = productPlacements.findIndex((p) => p.id === focusedPlacement.id);
+    return placementSpotLabel(focusedPlacement, idx >= 0 ? idx : 0);
+  }, [focusedPlacement, productPlacements]);
+
+  const shelfShortLabel = useMemo(() => {
+    const label = focusedPlacement?.shelfLabel;
+    if (!label) return null;
+    return label.replace(/\s·\sFace\s[AB]$/, "") || label;
+  }, [focusedPlacement?.shelfLabel]);
+
   const mapHighlightId = useMemo(() => {
-    if (!layout || !activePlacement?.shelfId) return null;
-    return mapHighlightShelfId(layout, activePlacement.shelfId);
-  }, [layout, activePlacement?.shelfId]);
+    if (!layout || !focusedPlacement?.shelfId) return null;
+    return mapHighlightShelfId(layout, focusedPlacement.shelfId);
+  }, [layout, focusedPlacement?.shelfId]);
 
-  const route = useMemo(() => {
-    if (!layout || !activePlacement) return [];
-    return computeShopperRoute(layout, entryPoint, activePlacement.shelfId);
-  }, [layout, entryPoint, activePlacement]);
+  const highlightShelfIds = useMemo(
+    () => (layout ? highlightShelfIdsForPlacements(layout, productPlacements) : []),
+    [layout, productPlacements]
+  );
 
-  const walkMeters = useMemo(() => Math.max(1, Math.round(routeLengthMeters(route))), [route]);
+  const productRoutes = useMemo(() => {
+    if (!layout || !productPlacements.length) return [];
+    return productPlacements.map((p) => ({
+      placementId: p.id,
+      shelfId: p.shelfId,
+      route: computeShopperRoute(layout, entryPoint, p.shelfId),
+    }));
+  }, [layout, entryPoint, productPlacements]);
+
+  /** Active spot: tapped number, or location 1 by default so the walk line is always visible. */
+  const activePlacementId = useMemo(() => {
+    if (!productPlacements.length) return null;
+    if (focusedPlacementId) return focusedPlacementId;
+    return productPlacements[0].id;
+  }, [productPlacements, focusedPlacementId]);
+
+  /** Every shelf that stocks the product gets a walk line; focused spot is drawn on top (first). */
+  const routesForMap = useMemo(() => {
+    if (!productRoutes.length) return [];
+    if (productRoutes.length === 1) return productRoutes;
+    const focusId = activePlacementId;
+    if (!focusId) return productRoutes;
+    const idx = productRoutes.findIndex((r) => r.placementId === focusId);
+    if (idx <= 0) return productRoutes;
+    const ordered = [...productRoutes];
+    const [focused] = ordered.splice(idx, 1);
+    ordered.unshift(focused);
+    return ordered;
+  }, [productRoutes, activePlacementId]);
+
+  const guideRoute = useMemo(() => {
+    if (!productRoutes.length) return [];
+    if (focusedPlacementId) {
+      return productRoutes.find((r) => r.placementId === focusedPlacementId)?.route || [];
+    }
+    if (productPlacements.length === 1) return productRoutes[0]?.route || [];
+    return productRoutes[0]?.route || [];
+  }, [productRoutes, focusedPlacementId, productPlacements.length]);
+
+  const shelfMarkers = useMemo(() => {
+    if (!layout || !productPlacements.length) return [];
+    const primaryShelfId =
+      focusedPlacement?.shelfId ||
+      (productPlacements.length === 1 ? productPlacements[0].shelfId : null);
+    return buildShelfMarkersForPlacements(layout, productPlacements, {
+      primaryShelfId,
+      route: guideRoute,
+    });
+  }, [layout, productPlacements, focusedPlacement?.shelfId, guideRoute]);
+
+  const multiSpotSelection = productPlacements.length > 1;
 
   function selectProduct(productId) {
     setSelectedProductId(productId);
-    setSelectedPlacementId(null);
+    setFocusedPlacementId(null);
     setQuery(inStoreProducts.find((p) => p.productId === productId)?.productName || "");
   }
 
   function clearSelection() {
     setSelectedProductId(null);
-    setSelectedPlacementId(null);
+    setFocusedPlacementId(null);
     setQuery("");
     searchInputRef.current?.focus();
+  }
+
+  function handleSpotSelect(placementId) {
+    setFocusedPlacementId(placementId);
   }
 
   function selectStore(nextId) {
@@ -622,107 +632,86 @@ export default function ShopperKioskPage({ layoutId, session = null, onSignOut }
   }
 
   return (
-    <div className={`sp-kiosk sp-kiosk--map-first${hasSelection ? " sp-kiosk--guided" : ""}`} data-testid="shopper-kiosk">
-      <header className="sp-kiosk-topbar sp-kiosk-topbar--map-first">
-        <div className="sp-kiosk-topbar-row sp-kiosk-topbar-row--primary">
-          <div className="sp-kiosk-brand">
-            <LogoMark />
-            <div>
-              <h1>
-                Shelf<b>Pilot</b> · Shelf Finder
-              </h1>
-            </div>
-          </div>
-          <ShopperStoreSwitcher
-            stores={stores}
-            activeId={activeLayoutId}
-            onSelect={selectStore}
-            disabled={layoutLoading}
-            userId={session?.user?.id}
-            userName={session?.user?.name || ""}
-          />
-          <HeaderProductSearch
-            searchInputRef={searchInputRef}
-            query={query}
-            onQueryChange={setQuery}
-            onClearQuery={clearSelection}
-            items={filtered}
-            selectedProductId={selectedProductId}
-            onSelectProduct={selectProduct}
-          />
-          <div className="sp-kiosk-clock mono">{clock || "--:--"}</div>
-          {onSignOut ? (
-            <button type="button" className="sp-kiosk-sign-out btn-secondary" onClick={onSignOut}>
-              Sign out
-            </button>
-          ) : null}
-        </div>
+    <div
+      className={`sp-kiosk sp-kiosk--map-first sp-kiosk--plan-max${hasSelection ? " sp-kiosk--guided" : ""}`}
+      data-testid="shopper-kiosk"
+    >
+      <header className="sp-kiosk-topbar sp-kiosk-topbar--compact">
+        <LogoMark />
+        <h1 className="sp-kiosk-compact-title">
+          Shelf<b>Pilot</b>
+        </h1>
+        <ShopperStoreSwitcher
+          stores={stores}
+          activeId={activeLayoutId}
+          onSelect={selectStore}
+          disabled={layoutLoading}
+          userId={session?.user?.id}
+          userName={session?.user?.name || ""}
+        />
+        <HeaderProductSearch
+          searchInputRef={searchInputRef}
+          query={query}
+          onQueryChange={setQuery}
+          onClearQuery={clearSelection}
+          items={filtered}
+          selectedProductId={selectedProductId}
+          onSelectProduct={selectProduct}
+        />
+        {onSignOut ? (
+          <button type="button" className="sp-kiosk-sign-out btn-secondary" onClick={onSignOut}>
+            Sign out
+          </button>
+        ) : null}
       </header>
 
-      {hasSelection ? (
-        <SelectionContextBar
-          product={selectedProduct}
-          placement={activePlacement}
-          bayLabel={shelfShortLabel}
-          walkMeters={walkMeters}
-          hasRoute={route.length >= 2}
-          productPlacements={productPlacements}
-          layout={layout}
-          products={products}
-          onSelectPlacement={setSelectedPlacementId}
-          onClear={clearSelection}
-        />
-      ) : null}
-
       <div className="sp-kiosk-main sp-kiosk-main--map">
-        <section className="sp-kiosk-card sp-kiosk-mapcol" aria-label="Store map">
-          <div className="sp-kiosk-card-head sp-kiosk-card-head--map">
-            <h2>{hasSelection ? "Follow the blue line" : "Store map"}</h2>
-            <div className="sp-kiosk-card-head-actions">
-              <MapViewToggle mode={mapViewMode} onChange={setMapViewMode} />
-              <MapLegend />
-            </div>
-          </div>
-
+        <section className="sp-kiosk-card sp-kiosk-mapcol sp-kiosk-mapcol--max" aria-label="Store plan">
           <div
-            className={`sp-kiosk-mapwrap${hasSelection ? " sp-kiosk-mapwrap--routed" : ""}${loading ? " sp-kiosk-mapwrap--loading" : ""}`}
+            className={`sp-kiosk-mapwrap sp-kiosk-mapwrap--max${hasSelection ? " sp-kiosk-mapwrap--routed" : ""}${loading ? " sp-kiosk-mapwrap--loading" : ""}`}
             data-testid="shopper-mapwrap"
           >
             {layout ? (
-              mapViewMode === "plan" ? (
+              <>
                 <ShopperLayoutPlanMap
                   layout={layout}
                   entryPoint={entryPoint}
-                  route={route}
-                  highlightShelfId={activePlacement?.shelfId || null}
+                  routes={routesForMap}
+                  focusedPlacementId={focusedPlacementId}
+                  focusedRoutePlacementId={activePlacementId}
+                  mapEntryPoint={meta?.entryPoint}
+                  highlightShelfId={focusedPlacement?.shelfId || productPlacements[0]?.shelfId || null}
                   highlightMapUnitId={mapHighlightId}
-                  highlightAisleId={activePlacement?.aisleId || null}
+                  highlightShelfIds={highlightShelfIds}
+                  shelfMarkers={shelfMarkers}
+                  onSpotSelect={handleSpotSelect}
                   categories={categories}
                   className="sp-kiosk-floor-map"
                 />
-              ) : (
-                <ShopperFloorMap
-                  layout={layout}
-                  entryPoint={entryPoint}
-                  route={route}
-                  highlightShelfId={activePlacement?.shelfId || null}
-                  highlightMapUnitId={mapHighlightId}
-                  highlightAisleId={activePlacement?.aisleId || null}
-                  categories={categories}
-                  products={products}
-                  className="sp-kiosk-floor-map"
-                />
-              )
+                <MapOverlayLegend multiSpot={multiSpotSelection} />
+                {hasSelection ? (
+                  <FloatingProductChip
+                    product={selectedProduct}
+                    placementCount={productPlacements.length}
+                    onClear={clearSelection}
+                  />
+                ) : null}
+                {focusedPlacement ? (
+                  <FloatingShelfLevelPanel
+                    product={selectedProduct}
+                    placement={focusedPlacement}
+                    spotLabel={focusedSpotLabel}
+                    bayLabel={shelfShortLabel}
+                    layout={layout}
+                    products={products}
+                    onClose={() => setFocusedPlacementId(null)}
+                  />
+                ) : null}
+              </>
             ) : loading ? (
               <LoadingState label="Loading floor plan…" />
             ) : null}
           </div>
-
-          {!hasSelection ? (
-            <div className="sp-kiosk-dock is-empty" aria-live="polite">
-              <p>Search for a product above — we will draw a line from the entrance to that shelf.</p>
-            </div>
-          ) : null}
         </section>
       </div>
     </div>

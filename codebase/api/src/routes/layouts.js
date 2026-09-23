@@ -2,6 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { repo, audit, getConfig, now } from "../store/sqlite.js";
 import { authRequired, requireRoles } from "../middleware/auth.js";
+import { rateLimit } from "../middleware/rateLimit.js";
 import { permittedStoresFor } from "../services/storeAccess.js";
 import { customerMayAccessLayout as userMayAccessLayout } from "../services/storeAccess.js";
 import { computeAutoCalc, validateAisles } from "../services/layoutMath.js";
@@ -32,6 +33,12 @@ import { normalizeEntryPoint, normalizeZone, normalizeZoneType } from "../servic
 import { normalizeObstacle, normalizeObstacleType } from "../services/obstacles.js";
 import { normalizeFloorPlan, patchFloorPlan } from "../services/floorPlan.js";
 import { floorPlanEnvelopeBinding, fullStorePolygon, inferFloorPlanSourceType } from "../services/floorPlanImport.js";
+import { buildLayoutFromFixtureImport } from "../services/planFixtureImport.js";
+import {
+  fixtureImportValidationStatus,
+  validateFixtureImportPayload,
+} from "../services/planFixtureImportSchema.js";
+import { analyzePlanFromUploadBuffer } from "../services/planAnalyzeFromUpload.js";
 import { deleteFloorPlanImage, saveFloorPlanImage } from "../services/floorPlanImages.js";
 import { autogenerateLayoutFixtures, clearArrangementAcceptance } from "../services/layoutAutogenerate.js";
 import { computeShelfLoad } from "../services/weightMath.js";
@@ -102,6 +109,14 @@ function autogenerateEnabled() {
   return raw !== "0" && String(raw).toLowerCase() !== "false";
 }
 
+function planFixtureImportEnabled() {
+  const raw = process.env.PLAN_FIXTURE_IMPORT_ENABLED;
+  if (raw == null || raw === "") {
+    return process.env.NODE_ENV !== "production";
+  }
+  return raw !== "0" && String(raw).toLowerCase() !== "false";
+}
+
 function refreshValidation(layout) {
   normalizeLayout(layout);
   const started = Date.now();
@@ -115,14 +130,17 @@ function refreshValidation(layout) {
   const categories = listCategoriesForLayout(layout.vertical, (v) => repo.listCategories(v));
   layout.portfolioKpis = computePortfolioKpis(layout, categories, config);
   layout.updatedAt = now();
-  console.log(
-    JSON.stringify({
-      event: "auto_calc",
-      layoutId: layout.id,
-      durationMs: layout.autoCalc.durationMs,
-      maxFixtures: layout.autoCalc.maxFixtures,
-    })
-  );
+  // Runs on nearly every mutating layout request (via saveNormalized) — keep off by default.
+  if (process.env.DEBUG_AUTO_CALC === "1") {
+    console.log(
+      JSON.stringify({
+        event: "auto_calc",
+        layoutId: layout.id,
+        durationMs: layout.autoCalc.durationMs,
+        maxFixtures: layout.autoCalc.maxFixtures,
+      })
+    );
+  }
   return layout;
 }
 
@@ -169,6 +187,15 @@ layoutsRouter.get("/layouts", authRequired, (req, res) => {
     const browsableIds = new Set(permittedStoresFor(req.user).map((s) => s.id));
     items = items.filter((l) => browsableIds.has(l.id));
   }
+  // Optional, opt-in pagination (applied after the RBAC filter above, so results stay correct
+  // for Customer role) — omitting limit/offset preserves the existing full-list response.
+  const total = items.length;
+  const limit = req.query.limit != null ? Math.max(0, Number(req.query.limit) || 0) : null;
+  if (limit != null) {
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    items = items.slice(offset, offset + limit);
+    return res.json({ items, total, limit, offset });
+  }
   res.json({ items });
 });
 
@@ -202,6 +229,35 @@ function persistFloorPlanUpload(layoutId, dataBase64, fileName) {
     throw err;
   }
 }
+
+function decodePlanUploadBase64(body = {}) {
+  const raw = body.dataBase64 || body.data;
+  if (!raw || typeof raw !== "string") return null;
+  const b64 = raw.replace(/^data:[^;]+;base64,/, "");
+  try {
+    return Buffer.from(b64, "base64");
+  } catch {
+    return null;
+  }
+}
+
+layoutsRouter.post("/layouts/analyze-plan", authRequired, requireRoles("Designer", "Admin"), async (req, res) => {
+  const buffer = decodePlanUploadBase64(req.body);
+  if (!buffer?.length) return res.status(400).json({ error: "data_required" });
+  try {
+    const result = await analyzePlanFromUploadBuffer(buffer, {
+      fileName: req.body?.fileName,
+      mimeType: req.body?.mimeType,
+    });
+    if (result.error) {
+      const status = result.error === "ocr_disabled" ? 501 : 503;
+      return res.status(status).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    return res.status(400).json({ error: err.code || err.message || "analyze_failed" });
+  }
+});
 
 layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), (req, res) => {
   const {
@@ -277,7 +333,68 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
       matchedText: importMeta.matchedText || null,
       pageIndex: importMeta.pageIndex ?? 0,
     };
-    if (autoGenerateFixtures !== false && autogenerateEnabled()) {
+
+    const fixtureImportRequested =
+      importMeta.importMode === "fixture" && planFixtureImportEnabled();
+    if (fixtureImportRequested) {
+      const validated = validateFixtureImportPayload(importMeta);
+      if (!validated.ok) {
+        return res.status(fixtureImportValidationStatus(validated.error)).json({
+          error: validated.error,
+          detail: validated.detail,
+        });
+      }
+    }
+
+    const useFixtureBuilder =
+      fixtureImportRequested &&
+      Array.isArray(importMeta.runs) &&
+      importMeta.runs.length > 0;
+
+    if (useFixtureBuilder) {
+      try {
+        const config = getConfig(layout.vertical);
+        const fixtureResult = buildLayoutFromFixtureImport(layout, importMeta, { config });
+        layout.storeEnvelope = {
+          x: 0,
+          y: 0,
+          widthMeters: layout.widthMeters,
+          depthMeters: layout.depthMeters,
+        };
+        layout.polygon = fullStorePolygon(layout.widthMeters, layout.depthMeters);
+        console.log(
+          JSON.stringify({
+            level: "info",
+            message: "plan_fixture_import",
+            layoutId: layout.id,
+            runCount: importMeta.runs.length,
+            shelfCount: fixtureResult.shelfCount,
+            aisleCount: fixtureResult.aisleCount,
+          })
+        );
+        generatedFromImport = {
+          gondolaUnits: countGondolaUnits(layout.shelves),
+          categoryMapped: false,
+          skippedOutsideCount: 0,
+          fixtureImport: true,
+          ...fixtureResult,
+        };
+        if (planogramEnabled() && autoGenerateFixtures !== false) {
+          const { categories: fillCats, products: fillProducts } = loadProductsForLayoutVertical(
+            layout.vertical,
+            (v) => repo.listCategories(v),
+            () => repo.listProducts()
+          );
+          const pogCount = fillPlanogramsForLayout(layout, fillProducts, fillCats);
+          if (pogCount > 0) generatedFromImport.planogramPlacements = pogCount;
+        }
+      } catch (err) {
+        if (err.code) {
+          return res.status(400).json({ error: err.code, detail: err.detail });
+        }
+        throw err;
+      }
+    } else if (autoGenerateFixtures !== false && autogenerateEnabled()) {
       try {
         generatedFromImport = autogenerateLayoutFixtures(
           layout,
@@ -361,6 +478,7 @@ layoutsRouter.post("/layouts", authRequired, requireRoles("Designer", "Admin"), 
       walkAisles: layout.aisles.length,
       categoryMapped: generatedFromImport.categoryMapped,
       skippedOutsideCount: generatedFromImport.skippedOutsideCount,
+      fixtureImport: generatedFromImport.fixtureImport === true,
     };
   }
   res.status(201).json(response);
@@ -370,12 +488,26 @@ layoutsRouter.get("/layouts/:layoutId", authRequired, (req, res) => {
   if (!customerMayAccessLayout(req, req.params.layoutId)) {
     return res.status(403).json({ error: "forbidden" });
   }
+  const started = performance.now();
   const layout = repo.getLayout(req.params.layoutId);
   if (!layout) return res.status(404).json({ error: "not_found" });
   normalizeLayout(layout);
   const payload = layoutIncludesPlanograms(req.query)
     ? layout
     : stripPlanogramsFromLayout(layout);
+  const durationMs = Number((performance.now() - started).toFixed(3));
+  if (durationMs > 200) {
+    console.log(
+      JSON.stringify({
+        level: "info",
+        message: "get_layout_slow",
+        layoutId: req.params.layoutId,
+        durationMs,
+        shelfCount: (layout.shelves || []).length,
+        includesPlanograms: layoutIncludesPlanograms(req.query),
+      })
+    );
+  }
   res.json(payload);
 });
 
@@ -410,14 +542,26 @@ layoutsRouter.post(
 layoutsRouter.delete(
   "/layouts/:layoutId",
   authRequired,
-  requireRoles("Designer", "Admin"),
-  (req, res) => {
-    const layout = repo.getLayout(req.params.layoutId);
-    if (!layout) return res.status(404).json({ error: "not_found" });
-    repo.deleteLayout(req.params.layoutId);
-    invalidatePortfolioAnalyticsCache();
-    audit(req.user.email, "layout.delete", req.params.layoutId);
-    res.json({ ok: true, id: req.params.layoutId });
+  requireRoles("Designer", "Admin", "SuperAdmin"),
+  (req, res, next) => {
+    try {
+      const layout = repo.getLayout(req.params.layoutId);
+      if (!layout) return res.status(404).json({ error: "not_found" });
+      const fileName = layout.floorPlan?.fileName;
+      if (fileName) {
+        try {
+          deleteFloorPlanImage(fileName);
+        } catch {
+          /* best-effort disk cleanup */
+        }
+      }
+      repo.deleteLayout(req.params.layoutId);
+      invalidatePortfolioAnalyticsCache();
+      audit(req.user.email, "layout.delete", req.params.layoutId);
+      res.json({ ok: true, id: req.params.layoutId });
+    } catch (err) {
+      next(err);
+    }
   }
 );
 
@@ -1306,6 +1450,11 @@ layoutsRouter.delete(
     layout.shelfMappings = (layout.shelfMappings || []).filter(
       (m) => !removeIds.has(m.shelfId) && !removeIds.has(m.fixtureId)
     );
+    // Legacy synced field (layoutNormalize.js backfills shelfMappings from this when
+    // shelfMappings is empty) — must be filtered too, or normalize resurrects the mapping.
+    layout.mappings = (layout.mappings || []).filter(
+      (m) => !removeIds.has(m.shelfId) && !removeIds.has(m.fixtureId)
+    );
     clearArrangementAcceptance(layout);
     saveNormalized(layout);
     audit(req.user.email, "layout.shelf.delete", `${layout.id}:${[...removeIds].join("+")}`);
@@ -1544,6 +1693,7 @@ layoutsRouter.post(
   "/layouts/:layoutId/autogenerate",
   authRequired,
   requireRoles("Designer", "Admin"),
+  rateLimit({ label: "autogenerate", windowMs: 60_000, max: 10 }),
   (req, res) => {
     if (!autogenerateEnabled()) return res.status(403).json({ error: "autogenerate_disabled" });
     const slot = tryAcquireAutogenerate();

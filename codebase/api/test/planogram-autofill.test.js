@@ -121,7 +121,7 @@ test("fillPlanogramsForLayout places products on paired front/back gondola shelv
   );
 });
 
-test("fillPlanogramsForLayout places each product on at most one shelf", () => {
+test("fillPlanogramsForLayout may repeat a SKU across different shelves, but never within one shelf face's own levels", () => {
   const makeShelf = (id, categoryId) =>
     normalizeShelf({
       id,
@@ -142,17 +142,41 @@ test("fillPlanogramsForLayout places each product on at most one shelf", () => {
     ],
   };
   fillPlanogramsForLayout(layout, products, categories);
-  const ids = [];
-  for (const shelf of layout.shelves) {
-    for (const face of shelf.faces || []) {
-      for (const p of face.planogram || []) ids.push(p.productId);
-    }
+
+  // Only one dairy SKU in the catalog ("prod-milk") but two dairy shelves — real stores repeat
+  // the same product across many facings, so both shelves should get it rather than leaving
+  // the second one empty (that was the old, intentionally-changed behavior).
+  const dairyIds = (shelf) => (shelf.faces[0].planogram || []).map((p) => p.productId);
+  assert.deepEqual(dairyIds(layout.shelves[0]), ["prod-milk"]);
+  assert.deepEqual(dairyIds(layout.shelves[1]), ["prod-milk"]);
+
+  // Within a single shelf face, no product repeats across its own levels (2 grocery SKUs,
+  // 2 levels — each level gets a different one).
+  const groceryIds = (shelf) => (shelf.faces[0].planogram || []).map((p) => p.productId);
+  for (const shelf of [layout.shelves[2], layout.shelves[3]]) {
+    const ids = groceryIds(shelf);
+    assert.equal(new Set(ids).size, ids.length, `duplicate placements on one shelf face: ${ids.join(",")}`);
   }
-  assert.equal(new Set(ids).size, ids.length, `duplicate placements: ${ids.join(",")}`);
-  assert.ok(ids.includes("prod-milk"));
-  assert.ok(ids.includes("prod-bread") || ids.includes("prod-unused"));
-  // Only one dairy SKU in catalog → second dairy shelf stays empty for other products elsewhere
-  assert.equal(layout.shelves[1].faces[0].planogram.length, 0);
+  assert.ok(groceryIds(layout.shelves[2]).includes("prod-bread"));
+  assert.ok(groceryIds(layout.shelves[2]).includes("prod-unused"));
+});
+
+test("fillPlanogramsForLayout places every catalog SKU at least once when bays allow", () => {
+  const shelf = normalizeShelf({
+    id: "s1",
+    categoryId: "cat-grocery",
+    usableWidthMeters: 1.2,
+    depthMeters: 0.6,
+    heightMeters: 2,
+    defaultLevels: 3,
+    faces: [{ id: "A", categoryId: "cat-grocery", planogram: [] }],
+  });
+  const layout = { vertical: "retail", shelves: [shelf] };
+  fillPlanogramsForLayout(layout, products, categories);
+  const placed = collectPlacedProductIds(layout);
+  for (const p of products) {
+    assert.equal(placed.has(p.id), true, `expected ${p.id} on layout after autofill`);
+  }
 });
 
 test("loadProductsForLayoutVertical resolves legacy category aliases", () => {

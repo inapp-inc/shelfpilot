@@ -11,8 +11,13 @@ the top.
 
 ## Iteration 6 — Aug 2026 demo cycle + customer feedback capture
 
+### Kiosk multi-spot product search (2026-09-17)
+- **Spec:** `Docs/KIOSK_MULTI_SPOT_PRODUCT_SPEC.md`
+- Kiosk uses **store plan only** (larger map, compact header). Multi-location SKUs show **all routes + numbered pins** at once; **tap a pin** for shelf level (no spot picker row).
+
+
 ### Delivered
-1. **Floor plan import** — PNG/PDF dimensions → analyze/build layout (not image underlay as primary UX). Spec: `FLOOR_PLAN_IMPORT_SPEC.md`.
+1. **Floor plan import** — Envelope path: `FLOOR_PLAN_IMPORT_SPEC.md`. **Fixture import (implemented):** parse shelf/aisle labels from PDF text or `.txt` extract → create layout when `PLAN_FIXTURE_IMPORT_ENABLED=true` — `PLAN_IMPORT_FIXTURE_LAYOUT_SPEC.md`, samples in `Docs/plan/`.
 2. **Smart Generate / packer** — leftover fill, aisle clear, no-overlap; arrangement summary accept UI.
 3. **Planogram auto-fill** — wide × deep × stack from product vs shelf dimensions; stack capped by level clear height + `clearanceMeters` + layer gap.
 4. **Shelf layout mode** — Ctrl+click move/resize; Enter exits; normal click opens planogram (Ctrl no longer pans when clicking shelves).
@@ -20,15 +25,20 @@ the top.
 6. **Docs** — BRD addendum + `project.md` / `openspec/project.md` updated for demo feedback.
 7. **FR-AISLE-01/02** — aisle-based shelf selection (2D per-face; 3D face highlight + corridor emphasis; no gondola pair co-select).
 
-### Customer feedback captured (planned)
-| ID | Item |
-|----|------|
-| ~~FR-AISLE-01/02~~ | ~~Done~~ |
-| FR-BUF-01 | 1 cm product buffer (0.5 cm each side) |
-| FR-TEMP-01 | Temporary storage (tables / pallets) |
-| FR-CUST-01 | Customer role — find product, layout select, no edit |
-| FR-VIEW-01 | Flat adjacent/opposite shelves viewing menu |
-| FR-WH-01 | Warehouse store type (design first) |
+### Customer feedback captured — all delivered
+
+_Updated 2026-09-11: every item below has shipped since this table was first written. See
+[PENDING.md](./PENDING.md) §10 for the authoritative status and §2 for remaining follow-ups
+(Customer 2D map UX polish, Warehouse editor-UX decision)._
+
+| ID | Item | Status |
+|----|------|--------|
+| FR-AISLE-01/02 | Aisle-based shelf selection (2D + 3D) | **Done** |
+| FR-BUF-01 | 1 cm product buffer (0.5 cm each side) | **Done** |
+| FR-TEMP-01 | Temporary storage (tables / pallets) | **Done** |
+| FR-CUST-01 | Customer role — find product, layout select, no edit | **Done** (core) |
+| FR-VIEW-01 | Flat adjacent/opposite shelves viewing menu | **Done** |
+| FR-WH-01 | Warehouse store type (design first) | **Done** (core; editor-UX design question open) |
 
 ---
 
